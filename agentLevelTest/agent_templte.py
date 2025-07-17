@@ -13,7 +13,7 @@ from baseService.agent_class import Agent
 from baseService.llm_client import ModelType
 
 global agent_name
-agent_name = "summary_from_one_paper"
+agent_name = "「修改这里」"
 
 def _get_available_tools(level:int) -> List[str]:
     """从 tools_level.yaml 文件中加载所有级别为 level 的工具。"""
@@ -46,23 +46,27 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
         Agent: 配置好的 修改 Agent实例
     """
     
-    agent_responsibility="你的职责是 「改」"
+    agent_responsibility="你的职责是「修改这里」"
     agent_workflow=f'''
     **你的流程:**
+    重要：不要在根目录运行递归的文件展开！！！！
+    创建文件前应该使用dir_list工具检查创建文件的地址下有无其他同名文件，不要覆盖不是自己的文件！文件命名尽量独特，根据相关信息进行命名！！！不要创建已经存在的目录！
     0. 你这次任务的 taskid 是{task_id}，你每次调用工具时，都应该将 taskid 作为参数传递给工具。如果你调用的工具返回结果提供了 judge agent 的报告，而且 judge 结果不好，你应该基于 judge 结果和当前产出，重新使用对应工具，并调整任务，指导其可以完成剩下任务。这个重试最多重试三次。
-    「改」
-    3. 当你认为完成所有任务前，你应该调用 judge_agent 来判断你是否完成任务。你应该给 judge_agent 「改」
-    无论 judge agent是否通过你都应该进行最终输出，基于 agent 的意见诚实的输出你的进度，和所有有价值的产出的文件地址和文字产物。并附上 judge agent 的报告作为 output。并说明这是来自于judge agent 的报告。
+    1. 「修改这里」下面是例子 你应该根据提供的论文地址，读取论文内容，然后将文章分成几个部分，比如 introduction，abstract 等，对每个部分进行summary，主要说明这部分做了什么，结果等。你应该输出一个 json 文件。文件名命名规则参考提示词！
+    3. 当你认为完成所有任务前，你应该调用 judge_agent 来判断你是否完成任务。你应该给 judge_agent「修改这里」 下面是例子 文章地址，和你的总结报告，让其大致检查一下。
+    无论 judge agent是否通过你都应该进行最终输出，基于 agent 的意见诚实的输出你的进度，成果，和所有有价值的产出的文件地址和文字产物。并附上 judge agent 的报告作为 output。并说明这是来自于judge agent 的报告。
+    4. 创建文件前应该检查创建文件的地址下有无其他同名文件，不要覆盖不是自己的文件。
+    5. 在最终输出时，使用 final_output 工具输出你的结果。文件命名尽量包含你总结的文件名。
+    6. 即使调用工具也需要输出指定的JSON对象内容。
     '''
 
 
     agent_output_format='''
-    「改」
          **JSON对象**: 当你准备输出思考过程或做出最终裁决时，必须输出一个严格符合以下格式的JSON字符串,只返回 json 字符串，不要添加任何额外内容：
         ```
         {{
           "status": "thinking" | "success" | "error",
-          "output": "你的思考过程、计划或最终的裁决摘要",
+          "output": "你的思考过程(我的初始任务是什么，现在完成到哪一步了，接下去应该做什么）、计划或最终的裁决摘要，如果你的生成物包括文件，必须给出文件的相对地址和说明，不用重复文件中已经有的内容",
           "error_information": "仅在最终裁决为 'error' 时填写失败原因。"
         }}
         ```
@@ -73,9 +77,9 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     '''
     # Judge Agent专用的系统提示
     judge_system_prompt = f"""
-    你是一个名为 "{agent_name}" 的AI猪手。你的职责是{agent_responsibility}
+    你是一个名为 "{agent_name}" 的AI自动化工具，你高效，善于一步步思考并行动但是思考没有废话。你的职责是{agent_responsibility}
     你和工具还有其他 agent 在相同的工作环境中，因此对方提供的相对路径你也可以使用。注意相对路径是直接从 task 对应文件夹下开始的，不用你额外添加/workspace/tasks/task_id/等多余内容，
-    比如如果你想执行/code_run/hello.py，你直接写 /code_run/hello.py 即可，不用写/workspace/tasks/task_id/code_run/hello.py 等多余内容。
+    比如如果你想执行/code_run/hello.py，你直接写 /code_run/hello.py 即可，不用写/workspace/tasks/task_id/code_run/hello.py 等多余内容，执行工具的默认执行位置为/workspace/tasks/task_id/code_run/下但提供相对/workspace/tasks/task_id的相对路径。
 
     {agent_workflow}
     **严格的输出格式:**
@@ -85,8 +89,8 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     
     """
     
-    # 获取可用工具 change_here 「改」
-    available_tools = ['parse_document','paper_search_agent','get_searchPdf_by_doi_or_title','judge_agent','file_read','dir_list','dir_create']
+    # 「修改这里」下面是例子 原则上下面的工具列表控制在 5 个左右，不要超过十个，除了通用 agent 之外
+    available_tools = ['parse_document','judge_agent','file_read','dir_list','dir_create','file_write','final_output']
     
     # 创建Judge Agent实例
     agent = Agent(
@@ -120,7 +124,7 @@ if __name__ == '__main__':
     # 模拟一个场景：一个Agent被要求创建一个文件，并声称它成功了。
     
     # 1. 原始指令
-    mock_instruction = "我想要研究 cyber-physical Internet 的物流问题"
+    mock_instruction = "文章的地址是/upload/ut-of-Order Architecture for Real-Time Data-Driven Resilient Planning and Scheduling of Cyber-Physical Manufacturing Systems.pdf"
 
    
 
