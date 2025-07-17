@@ -1,0 +1,484 @@
+tools:
+  file_write:
+    name: "file_write"
+    description: "向指定文件写入内容。如果文件不存在，会自动创建文件；如果文件已存在，可以选择覆盖或追加内容。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "要写入的文件的相对路径，例如：'src/main.py' 或 'data/output.txt'。 写入的文件不要覆盖不是自己的文件！在使用前应该用文件夹展开工具查看是否有同名文件"
+        content:
+          type: "string"
+          description: "要写入文件的文本内容。对于二进制文件，应为Base64编码的字符串。"
+        mode:
+          type: "string"
+          enum: ["overwrite", "append"]
+          default: "overwrite"
+          description: "写入模式。'overwrite'会覆盖整个文件，'append'会在文件末尾追加内容。"
+        is_base64:
+          type: "boolean"
+          default: false
+          description: "指明 'content' 是否为Base64编码的字符串，用于写入二进制文件。默认为false。"
+      required: ["file_path", "content"]
+
+  file_read:
+    name: "file_read"
+    description: "读取指定文件的内容。可以读取整个文件，也可以指定起止行号来读取特定范围。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "要读取的文件的相对路径，例如：'src/main.py'。只能是文本文档，不要读取二进制文件或者 pdf 和 ppt 等类型文件"
+        start_line:
+          type: "integer"
+          description: "读取的起始行号（从1开始），可选。"
+        end_line:
+          type: "integer"
+          description: "读取的结束行号（包含此行），可选。"
+      required: ["file_path"]
+
+  dir_list:
+    name: "dir_list"
+    description: "列出指定目录的内容。可以递归列出所有子目录和文件。"
+    parameters:
+      type: "object"
+      properties:
+        dir_path:
+          type: "string"
+          description: "要列出内容的目录路径。如果省略，则列出任务根目录。"
+        recursive:
+          type: "boolean"
+          default: false
+          description: "如果为true，则递归地列出所有子目录的内容。绝不允许在根目录下使用！！"
+      required: []
+
+  execute_shell:
+    name: "execute_shell"
+    description: "在安全沙箱环境中执行一条Shell命令。"
+    parameters:
+      type: "object"
+      properties:
+        command:
+          type: "string"
+          description: "要执行的Shell命令，例如：'ls -la' 或 'pip list'。"
+        workdir:
+          type: "string"
+          description: "执行命令的工作目录，默认为'code_run/'。可选。"
+        timeout:
+          type: "integer"
+          default: 60
+          description: "命令执行的超时时间（秒）。"
+      required: ["command"]
+
+  google_search:
+    name: "google_search"
+    description: "使用Google进行网页搜索。"
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "要搜索的关键词或问题。"
+        num_results:
+          type: "integer"
+          default: 10
+          description: "期望返回的搜索结果数量。"
+      required: ["query"]
+
+  file_upload:
+    name: "file_upload"
+    description: "上传一个或多个文件到工作区。可用于上传代码、数据或二进制文件。"
+    parameters:
+      type: "object"
+      properties:
+        files:
+          type: "array"
+          description: "一个文件对象的列表。"
+          items:
+            type: "object"
+            properties:
+              filename:
+                type: "string"
+                description: "包含相对路径的文件名，例如 'src/utils.py'。"
+              content:
+                type: "string"
+                description: "文件内容，可以是文本或Base64编码的字符串。"
+              is_base64:
+                type: "boolean"
+                description: "指明内容是否为Base64编码。"
+            required: ["filename", "content", "is_base64"]
+        target_path:
+          type: "string"
+          description: "上传到的目标子目录，位于'upload/'下。可选。"
+      required: ["files"]
+
+  file_replace_lines:
+    name: "file_replace_lines"
+    description: "用新内容替换文件中的指定行范围。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "要修改的文件的路径。"
+        start_line:
+          type: "integer"
+          description: "替换的起始行号（从1开始）。"
+        end_line:
+          type: "integer"
+          description: "替换的结束行号。"
+        new_content:
+          type: "string"
+          description: "用于替换的新内容，多行请使用'\\n'分隔。"
+      required: ["file_path", "start_line", "end_line", "new_content"]
+
+  file_delete:
+    name: "file_delete"
+    description: "删除指定的文件或目录。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "要删除的文件或目录的路径。"
+      required: ["file_path"]
+
+  file_move:
+    name: "file_move"
+    description: "移动或重命名一个文件或目录。"
+    parameters:
+      type: "object"
+      properties:
+        src_path:
+          type: "string"
+          description: "要移动的源文件或目录的路径。"
+        dest_path:
+          type: "string"
+          description: "移动的目标路径。"
+      required: ["src_path", "dest_path"]
+
+  dir_create:
+    name: "dir_create"
+    description: "创建一个新目录，如果父目录不存在，会自动创建它们。"
+    parameters:
+      type: "object"
+      properties:
+        dir_path:
+          type: "string"
+          description: "要创建的目录的路径。"
+      required: ["dir_path"]
+
+  execute_code:
+    name: "execute_code"
+    description: "在任务的独立虚拟环境中执行指定的Python脚本。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "要执行的Python脚本的路径。"
+        timeout:
+          type: "integer"
+          default: 300
+          description: "执行超时时间（秒）。"
+      required: ["file_path"]
+
+  pip_install:
+    name: "pip_install"
+    description: "在任务的虚拟环境中安装一个或多个Python包。"
+    parameters:
+      type: "object"
+      properties:
+        packages:
+          type: "array"
+          description: "要安装的Python包的名称列表。"
+          items:
+            type: "string"
+      required: ["packages"]
+
+  git_clone:
+    name: "git_clone"
+    description: "从指定的URL克隆一个Git仓库到工作区。"
+    parameters:
+      type: "object"
+      properties:
+        repo_url:
+          type: "string"
+          description: "要克隆的仓库的URL。"
+        target_dir:
+          type: "string"
+          description: "克隆到`upload/`目录下的子目录名称。可选。"
+        branch:
+          type: "string"
+          description: "要克隆的特定分支。可选。"
+        token:
+          type: "string"
+          description: "用于认证私有仓库的个人访问令牌。可选。"
+      required: ["repo_url"]
+
+  parse_document:
+    name: "parse_document"
+    description: "解析一个文档文件并提取其文本内容。支持PDF, Word, PPT, Markdown格式。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "要解析的文档的路径。"
+      required: ["file_path"]
+
+  tex2pdf_convert:
+    name: "tex2pdf_convert"
+    description: "将包含LaTeX源文件(main.tex)的目录编译成一个PDF文件。目前只有默认编译器"
+    parameters:
+      type: "object"
+      properties:
+        input_path:
+          type: "string"
+          description: "包含.tex文件的目录的路径。"
+        output_path:
+          type: "string"
+          description: "PDF输出目录的路径。可选，默认为输入目录。"
+        engine:
+          type: "string"
+          enum: ["pdflatex", "xelatex", "lualatex"]
+          default: "pdflatex"
+          description: "用于编译的LaTeX引擎。"
+        clean_aux:
+          type: "boolean"
+          default: true
+          description: "是否在编译后清理辅助文件（.aux, .log等）。"
+      required: ["input_path"]
+
+  crawl_page:
+    name: "crawl_page"
+    description: "爬取指定URL的网页内容，并将其转换为Markdown格式返回。"
+    parameters:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+          description: "要爬取的网页的完整URL。"
+        output_dir:
+          type: "string"
+          description: "保存Markdown文件的目录，位于`upload/`下，默认为`crawled_content`。可选。"
+      required: ["url"]
+
+  google_scholar_search:
+    name: "google_scholar_search"
+    description: "在Google Scholar上搜索学术论文。搜索结果以 md 文件保存在 upload/scholar_results/ 目录下也可以自定义文件地址"
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "搜索的关键词或主题。"
+        output_dir:
+          type: "string"
+          description: "保存搜索结果文件的目录，位于`upload/`下，默认为`scholar_results`。可选。"
+        pages:
+          type: "integer"
+          default: 1
+          description: "要爬取的搜索结果页数。"
+        year_low:
+          type: "integer"
+          description: "筛选论文的起始年份。可选。"
+        year_high:
+          type: "integer"
+          description: "筛选论文的结束年份。可选。"
+      required: ["query"]
+
+  github_search_repositories:
+    name: "github_search_repositories"
+    description: "根据关键词在GitHub上搜索仓库。"
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "在仓库名称和描述中搜索的关键词。"
+        sort:
+          type: "string"
+          enum: ["stars", "forks", "updated"]
+          default: "stars"
+          description: "排序依据。"
+        order:
+          type: "string"
+          enum: ["desc", "asc"]
+          default: "desc"
+          description: "排序顺序。"
+        per_page:
+          type: "integer"
+          default: 10
+          description: "每页返回的结果数量。"
+        page:
+          type: "integer"
+          default: 1
+          description: "要获取的页码。"
+        token:
+          type: "string"
+          description: "用于认证的GitHub个人访问令牌，可提高API速率限制。可选。"
+      required: ["query"]
+
+  github_get_repository_info:
+    name: "github_get_repository_info"
+    description: "获取指定GitHub仓库的详细信息。"
+    parameters:
+      type: "object"
+      properties:
+        full_name:
+          type: "string"
+          description: "仓库的完整名称，格式为 'owner/repo'，例如 'microsoft/vscode'。"
+        token:
+          type: "string"
+          description: "用于认证的GitHub个人访问令牌。可选。"
+      required: ["full_name"]
+
+  get_searchPdf_by_doi_or_title:
+    name: "get_searchPdf_by_doi_or_title"
+    description: "提示用户根据DOI或标题手动搜索一篇学术论文，并将其PDF版本下载到工作区。这是一个交互式工具，执行会暂停，直到用户在控制台确认完成手动操作。"
+    parameters:
+      type: "object"
+      properties:
+        doi:
+          type: "string"
+          description: "论文的数字对象标识符 (DOI)，例如 '10.48550/arXiv.1706.03762'。"
+        title:
+          type: "string"
+          description: "论文的完整标题，例如 'Attention Is All You Need'。"
+      # 该工具要求至少提供DOI或标题之一。
+      required: []
+
+  judge_agent:
+    name: "judge_agent"
+    description: "启动一个AI审查员（Judge Agent）来严格验证另一个Agent或工具的任务执行结果是否符合原始指令。它可以通过调用其他工具进行调查，并最终给出一个'success'或'error'的裁决。同时提供指导意见，帮助重构任务。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "被审查的任务的唯一ID。Judge Agent将在此任务ID下执行所有检查工具。"
+        task_input:
+          type: "string"
+          description: "可以让judgeagent 检查的任务,包含上下文，比如检查文件的地址，要求和原始指令"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+  
+  paper_search_agent:
+    name: "paper_search_agent"
+    description: "更具提示任务的要求，如相关领域最好是子领域例如 cyber-physical Internet 的物流相关，路由相关最好的文献10篇以内。根据要求完成论文的搜素工作，提供标题或者 doi 作为输出"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID"
+        task_input:
+          type: "string"
+          description: "具体的任务要求，详见描述"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  paper_material_collectt:
+    name: "paper_material_collectt"
+    description: "根据用户初步的想法，收集相关的论文，并将其下载到目录中，以便后期的 idea 产生和实验制定"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的任务要求，详见描述"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+
+  summary_from_one_paper:
+    name: "summary_from_one_paper"
+    description: "根据用户提供的论文地址，读取论文内容，然后将文章分成几个部分，比如 introduction，abstract 等，对每个部分进行summary，主要说明这部分做了什么，结果等。并输出一个 json 文件。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的任务要求，应该提供一篇文章的地址，不要提供原文内容。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+  
+  answer_from_one_paper:
+    name: "answer_from_one_paper"
+    description: "根据用户提供的论文地址，读取论文内容，并根据问题从文章中得到答案，如果有必要提供数学公式，应该使用 latex 风格。并输出一个 json 文件。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的任务要求，应该提供一篇文章的地址，不要提供原文内容。并且提供具体的问题和你预期想要获得的答案形式。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  get_idea_and_experiment_plan:
+    name: "get_idea_and_experiment_plan"
+    description: "根据用户的最初需求和paper_material_collectt整理的文献，生成一个idea和实验计划。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "详细的文献列表包含地址例如paper_material_collectt整理的文献，以及用户最初的需求"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  final_output:
+    name: "final_output"
+    description: "用于Agent输出最终结果的工具。当Agent完成任务或需要终止执行时调用此工具。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        status:
+          type: "string"
+          enum: ["success", "error"]
+          description: "任务执行状态，'success'表示成功完成，'error'表示执行失败。"
+        output:
+          type: "string"
+          description: "关于成功和失败的说明，如果你的生成物包括文件，必须给出文件的相对地址和说明，不用重复文件中已经有的内容，还要包含 judge 代理的返回意见"
+        error_information:
+          type: "string"
+          description: "仅在status为'error'时填写的错误信息。"
+      required: ["task_id", "status", "output"]
+
+

@@ -1,0 +1,58 @@
+# 定义不同工具的访问和执行级别
+# Level 4: 代表可以直接由高级Agent（如JudgeAgent）调用的、封装好的工具。
+
+tools:
+  file_write:
+    level: 4
+  file_read:
+    level: 4
+  dir_list:
+    level: 4
+  execute_shell:
+    level: 4
+  google_search:
+    level: 4
+  file_upload:
+    level: 4
+  file_replace_lines:
+    level: 4
+  file_delete:
+    level: 4
+  file_move:
+    level: 4
+  dir_create:
+    level: 4
+  execute_code:
+    level: 4
+  pip_install:
+    level: 4
+  git_clone:
+    level: 4
+  parse_document:
+    level: 4
+  tex2pdf_convert:
+    level: 4
+  crawl_page:
+    level: 4
+  google_scholar_search:
+    level: 4
+  github_search_repositories:
+    level: 4
+  github_get_repository_info:
+    level: 4
+  get_searchPdf_by_doi_or_title:
+    level: 3
+  judge_agent:
+    level: 4 
+  paper_search_agent:
+    level: 3
+  paper_material_collectt:
+    level: 2
+  summary_from_one_paper:
+    level: 3
+  answer_from_one_paper:
+    level: 3
+  get_idea_and_experiment_plan:
+    level: 2
+  final_output:
+    level: 4
