@@ -29,4 +29,5 @@ def run(
     if output_path:
         params["output_path"] = output_path
         
-    return execute_tool(tool_name="tex2pdf_convert", params=params, task_id=task_id) 
+    return execute_tool(tool_name="tex2pdf_convert", params=params, task_id=task_id)
+

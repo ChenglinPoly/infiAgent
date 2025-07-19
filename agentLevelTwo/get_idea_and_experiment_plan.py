@@ -56,7 +56,7 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     idea+研究计划哲学：应该聚焦于一篇文章或者最多两三篇文章的方向上！研究问题针对一个点进行研究和改进！不是每一篇文章都对研究方案有用！目标单一，明确，可实现（要考虑 llm 模型的局限性）是第一要务！
     0. 你这次任务的 taskid 是{task_id}，你每次调用工具时，都应该将 taskid 作为参数传递给工具。如果你调用的工具返回结果提供了 judge agent 的报告，而且 judge 结果不好，你应该基于 judge 结果和当前产出，重新使用对应工具，并调整任务和说明改进意见，指导其可以完成剩下任务。这个重试最多重试三次。
     1. 对于每篇论文，你应该使用 summary_from_one_paper 工具对齐总结，然后基于总结后的内容思考以下问题：是否让自己有了新的 idea，是否比之前的已有 idea 更好（实现率高是你首要考虑的目标）。是否需要针对这篇文章提出一个更详细的问题来获取更详细的知识和完成你的 idea 与实验计划？
-    2. 如果需要针对文章提供更详细的问题答案（如果你重点参考改文章应该明确其中，你应该使用 answer_from_one_paper 工具，并提供具体的问题，文章地址和你预期想要获得的答案形式。
+    2. 如果需要针对文章提供更详细的问题答案（如果你重点参考某文章，你应该使用 answer_from_one_paper 工具，并提供具体的问题，文章地址和你预期想要获得的答案形式。
     3. 重复以上过程，直到你获得满意的 idea 和具体实验计划（包括实验方案，实验数据，实验结果，实验分析，产生的图表等）。对于有数值对比的实验，你应该基于文章设计一个简单的 baseline 实验。
     4. 当你认为完成所有任务前，你应该调用 judge_agent 来判断你是否完成任务。你应该给 judge_agent你的 idea的文件地址（注意不是内容），不需要提供文章，只需要说明你的思路是基于什么文章的什么内容产生的。
     无论 judge agent是否通过你都应该进行最终输出，基于 agent 的意见诚实的输出你的进度，成果，和所有有价值的产出的文件地址（一定要说明其相对地址！）和文字产物。并附上 judge agent 的报告作为 output。并说明这是来自于judge agent 的报告。
@@ -96,7 +96,6 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     
     # 获取可用工具 change_here 「改」
     available_tools = ["summary_from_one_paper","judge_agent","file_read","dir_list","answer_from_one_paper","file_write","final_output"]
-    
     # 创建Judge Agent实例
     agent = Agent(
         agent_name=agent_name,

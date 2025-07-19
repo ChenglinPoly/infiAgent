@@ -56,3 +56,23 @@ tools:
     level: 2
   final_output:
     level: 4
+  experment_plan_to_coding_task_agent:
+    level: 3
+  coding_task_agent:
+    level: 3
+  experment_material_data_agent:
+    level: 2
+  move_data_to_clean_directory:
+    level: 3
+  create_figures_gpt_agent:
+    level: 3
+  create_figures_python_agent:
+    level: 3
+  experment_material_to_figures_agent:
+    level: 2
+  latex_to_pdf_repair_agent:
+    level: 3
+  sub_part_tex_editor_agent:
+    level: 3
+  material_to_paper_agent:
+    level: 2

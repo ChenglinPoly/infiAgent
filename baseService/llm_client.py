@@ -365,7 +365,7 @@ class LLMClient:
                          temperature: float = 0.7,
                          max_tokens: int = None,
                          tool_list: List[str] = None,
-                         tool_choice: Union[str, Dict] = "any",
+                         tool_choice: Union[str, Dict] = "required",
                          parallel_tool_calls: bool = False) -> LLMResponse:
         """使用 OpenAI 客户端进行调用"""
         try:
@@ -517,6 +517,8 @@ class LLMClient:
                 tool_choice=tool_choice
             )
         else:
+            if tool_choice == "any":
+                tool_choice = "required"
             print(f"🤖 使用 OpenAI 客户端调用 {model.value}")
             return self._call_with_openai(
                 history=valid_history,

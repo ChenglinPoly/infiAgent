@@ -545,7 +545,8 @@ class Agent:
         # 超过最大轮次
         error_msg = f"{self.agent_name} 执行超过最大轮次限制。"
         self.agent_logger.warning(f"执行达到最大轮次限制: {self.max_turns}")
-        error_result = {"status": "error", "output": "", "error_information": error_msg}
+        thinking_analysis = self._trigger_thinking_agent(user_input, history)
+        error_result = {"status": "error", "output": thinking_analysis, "error_information": error_msg}
         # 保存超时时的对话历史
         self._save_conversation(task_id, user_input, history, self.max_turns - 1)
         self.agent_logger.end(error_result, "max_turns_exceeded")
@@ -599,6 +600,8 @@ class Agent:
                 return result
             # 获取工具级别并动态导入模块
             tool_level = self._get_tool_level(tool_call.name)
+
+            print(tool_call.name,tool_level,'tool_level')
             
             # 根据级别构建模块路径
             if tool_level == 4:
