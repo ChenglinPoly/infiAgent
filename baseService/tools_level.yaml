@@ -76,3 +76,5 @@ tools:
     level: 3
   material_to_paper_agent:
     level: 2
+  get_data_set_from_github_agent:
+    level: 3

@@ -511,7 +511,7 @@ tools:
           description: "任务的唯一ID。"
         task_input:
           type: "string"
-          description: "实验计划的地址或者文本，地址优先。配合描述语言，例如get_idea_and_experiment_plan 的输出"
+          description: "实验计划的地址或者文本，地址优先。配合描述语言，例如get_idea_and_experiment_plan 的输出,以及可以辅助制定实验的参考文件地址"
         max_turns:
           type: "integer"
           default: 100
@@ -663,6 +663,26 @@ tools:
         task_input:
           type: "string"
           description: "paper_material_collectt 的输出，即paper 下载的地址，get_idea_and_experiment_plan 的输出，以及实验计划和 idea 的文件地址,experment_material_to_figures_agent 的输出，即实验数据和图的地址或文件夹"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+
+
+  get_data_set_from_github_agent:
+    name: "get_data_set_from_github_agent"
+    description: "从 github 上找到相关数据集"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "数据集的名称和描述"
         max_turns:
           type: "integer"
           default: 100

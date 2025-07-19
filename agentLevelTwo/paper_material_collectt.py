@@ -124,13 +124,13 @@ if __name__ == '__main__':
     # 模拟一个场景：一个Agent被要求创建一个文件，并声称它成功了。
     
     # 1. 原始指令
-    mock_instruction = "我想要研究 cyber-physical Internet 的物流问题"
+    mock_instruction = "我想要研究当前主流大模型幻觉问题，我已经在工作空间的 code_run 文件夹下写好一个主流大模型调用的 python 文件，不过先请你专注于自己的职责，不要执行这个文件！"
 
    
 
     # 3. 启动 Judge Agent 进行审查
     final_judgement = run(
-        task_id="agent_test",
+        task_id="agent_test_2",
         task_input=mock_instruction,
         max_turns=100
     )

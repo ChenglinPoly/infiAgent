@@ -70,6 +70,7 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     7. 重要：创建文件前应该使用dir_list工具检查创建文件的地址下有无其他同名文件，不要覆盖不是自己的文件！文件命名尽量独特，根据相关信息进行命名！！！不要创建已经存在的目录！
     8. 重要：执行代码时，你应该使用可以跑通的最小规模进行测试！当然也包括给judge_agent的测试！
     9. 重要：严格保证你的最终产物的代码文件名复合要求不要有更改！！包括自己添加后缀等，优先查看其他相关模块的 md 文件而不是代码文件！
+    
 
     '''
 
@@ -104,7 +105,8 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     
     # 「修改这里」下面是例子 原则上下面的工具列表控制在 5 个左右，不要超过十个，除了通用 agent 之外
     available_tools = ['judge_agent','final_output','file_read','file_write','execute_code',
-                       'dir_list','dir_create','pip_install','execute_shell','file_replace_lines']
+                       'dir_list','dir_create','pip_install','execute_shell','file_replace_lines','google_search','github_search_repositories',
+                      'github_get_repository_info']
     
     # 创建Judge Agent实例
     agent = Agent(

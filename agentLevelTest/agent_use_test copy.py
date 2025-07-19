@@ -13,7 +13,7 @@ from baseService.agent_class import Agent
 from baseService.llm_client import ModelType
 
 global agent_name
-agent_name = "sub_part_tex_editor_agent"
+agent_name = "get_data_set_from_github_agent"
 
 def _get_available_tools(level:int) -> List[str]:
     """从 tools_level.yaml 文件中加载所有级别为 level 的工具。"""
@@ -46,15 +46,13 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
         Agent: 配置好的 修改 Agent实例
     """
     
-    agent_responsibility="你的职责是写指定部分的 tex 文件，如写introduction 部分introduction.tex，或者写conclusion 部分conclusion.tex"
+    agent_responsibility="你的职责是从github 上找到相关数据集"
     agent_workflow=f'''
     **你的流程:**
     重要：不要在根目录运行递归的文件展开！！！！
     创建文件前应该使用dir_list工具检查创建文件的地址下有无其他同名文件，不要覆盖不是自己的文件！文件命名尽量独特，根据相关信息进行命名！！！不要创建已经存在的目录！
     0. 你这次任务的 taskid 是{task_id}，你每次调用工具时，都应该将 taskid 作为参数传递给工具。如果你调用的工具返回结果提供了 judge agent 的报告，你应该基于 judge 结果和当前产出，重新使用对应工具，并调整任务，直到其可以完成剩下任务。这个重试最多重试三次。
-    1. 你会获得你的任务部分，已经已经完成的其他部分，还有相关材料，例如实验数据，图表，图的说明等。你只能读取文本数据，但是你应该尽可能通过文本数据了解所有材料。
-    2. 你将根据材料撰写指定部分，但是在撰写 introduction和 related work/review 部分时，如果你觉得提供的材料不足，你应该通过谷歌搜索，谷歌学术搜素，和网页打开工具来获取更多的参考文献，记得及时更新 bib 文件，如果没有则新建， 有的话就在已有基础上更新。
-    2. 根据要求撰写对应部分的内容，要求和已经存在的其他 tex 不冲突，语言要有顶级期刊的学术风格，清晰但不废话。
+    1. 你会获得一个数据集的名称和描述，尝试去 github 上搜素，注意使用英文，如果找到请使用 git 下载到code_run 目录下。如果无法找到也请如实报告。
     2. 当你认为完成所有任务前，你应该给 judge_agent你的实果的文件地址（如有），你的任务是什么，你的完成结果是什么，请 judge进行判断。需要提示 judge agent 只需判断 pdf 文件存在即可，不要尝试重新编译。
     4. 当你觉得可以最终输出，使用 final_output 工具输出你的结果，你必须详细说明每个文件对应什么实验，实验数据的表格中所有的列代表什么含义。
     ** 注意事项 **
@@ -100,7 +98,8 @@ def create_agent(max_turns: int = 100,task_id:str = "default_agent_task") -> Age
     
     # 「修改这里」下面是例子 原则上下面的工具列表控制在 5 个左右，不要超过十个，除了通用 agent 之外
     available_tools = ['judge_agent','final_output',
-                       'dir_list','dir_create','file_read','file_write','google_search','google_scholar_search','crawl_page','parse_document']
+                       'dir_list','dir_create','file_read','file_write','github_search_repositories',
+                      'github_get_repository_info']
     
     # 创建Judge Agent实例
     agent = Agent(
