@@ -1,0 +1,15 @@
+✅ 使用新的Agent协同服务
+🚀 Multi-Level Agent API Server v3 (Fixed) 启动中...
+📁 项目根目录: /Users/chenglin/Desktop/research/agent_framwork/divid_serivce
+📝 日志目录: /Users/chenglin/Desktop/research/agent_framwork/divid_serivce/logs/api_state
+🌐 API服务器已启动，访问 http://localhost:5002
+ * Serving Flask app 'api_server'
+ * Debug mode: on
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5002
+ * Running on http://192.168.31.211:5002
+Press CTRL+C to quit
+ * Restarting with watchdog (fsevents)
+ * Debugger is active!
+ * Debugger PIN: 626-581-527

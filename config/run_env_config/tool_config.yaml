@@ -1,0 +1,6 @@
+# 工具服务器配置（Docker环境使用宿主机IP）
+tools_server: "http://192.168.31.211:8001/"
+
+# 其他配置项可以在这里添加
+# timeout: 30
+# max_retries: 3 

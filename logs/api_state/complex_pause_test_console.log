@@ -1,0 +1,15 @@
+🚀 任务启动时间: 2025-08-31 16:38:53
+📋 任务ID: complex_pause_test
+🤖 Agent系统: infiHelper-2
+📝 用户指令: []
+================================================================================
+
+🚀 启动任务: complex_pause_test
+📝 指令列表: []
+Traceback (most recent call last):
+  File "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/TestFolder/start.py", line 92, in <module>
+    result = run_with_multiple_instructions(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/TestFolder/start.py", line 41, in run_with_multiple_instructions
+    raise ValueError("user_history不能为空")
+ValueError: user_history不能为空

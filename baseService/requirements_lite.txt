@@ -1,0 +1,24 @@
+# 基于 LiteLLM 的简化依赖列表
+# 大幅减少依赖数量，LiteLLM 内置了大部分提供商支持
+
+# 核心依赖
+litellm>=1.73.0  # 统一的LLM API客户端
+pyyaml>=6.0      # YAML配置文件解析
+typing-extensions>=4.0  # 类型提示支持
+
+# 可选依赖（根据需要安装）
+# openai>=1.0.0      # 如果需要直接使用OpenAI（LiteLLM已包含）
+# anthropic>=0.25.0  # 如果需要直接使用Claude（LiteLLM已包含）
+# google-genai>=0.1.0  # 如果需要Gemini原生API（LiteLLM已包含）
+
+# 工具和实用程序
+requests>=2.25.0    # HTTP请求
+pathlib2>=2.3.0     # 路径处理（Python 3.4+已内置）
+
+# 注意：LiteLLM 已经包含了以下功能，无需单独安装：
+# - OpenAI API 支持
+# - Anthropic API 支持  
+# - Google Gemini API 支持
+# - 统一的错误处理
+# - 自动重试机制
+# - 消息格式转换 

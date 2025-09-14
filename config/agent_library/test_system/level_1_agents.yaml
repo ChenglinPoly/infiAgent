@@ -1,0 +1,471 @@
+tools:
+  answer_from_one_paper:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - parse_document
+      - judge_agent
+      - file_read
+      - dir_list
+      - dir_create
+      - file_write
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:    
+      agent_responsibility: |
+        你的职责是根据问题从文章中得到答案
+      agent_workflow: |
+        **你的流程:**
+        1. 你应该根据提供的论文地址，读取论文内容，并根据问题从文章中得到答案，如果有必要提供数学公式，应该使用 latex 风格。你应该输出一个 json 文件，文件名命名规则参考提示词！
+    name: "answer_from_one_paper"
+    description: "根据用户提供的论文地址，读取论文内容，并根据问题从文章中得到答案，如果有必要提供数学公式，应该使用 latex 风格。并输出一个 json 文件。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的任务要求，应该提供一篇文章的地址，不要提供原文内容。并且提供具体的问题和你预期想要获得的答案形式。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "审查过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+
+  paper_search_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - google_search
+      - google_scholar_search
+      - judge_agent
+      - file_read
+      - crawl_page
+      - file_write
+      - dir_list
+      - dir_create
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是根据任务搜索论文，并返回任务所需论文的完整标题或者doi，或者搜索网页内容返回md 文档或者相关答案和数据源。
+      agent_workflow: |
+        **你的流程:**
+        重要！！！：你搜索到的任何有用的结果都应该说明起来源，方便后期写作的引用，论文流程如下，但是其他网络来源也应该记录！例如维基百科，新闻等（提供标题，source_url, 作者，文献类型（web））
+        1. 使用谷歌学术或者工具中提供的其他论文搜素工具进行搜索，不应该盲目进行搜索，要确保搜素条件尽可能找到所需的论文列表。
+        2. 你应该之后通过读取文件的方式读取搜索结果，查看是否有满足要求的论文并记录，你可以在最终输出中输出论文的标题或者doi，注意不要将结果生成文本传递，而是保存在 selected_paper_result.md文件（如果不是文献收集目的，请你自定义文件名）中。
+        3. 如果搜索结果中有可能满足要求的论文，但是你不确定或者无法读取其 doi 或者完整标题，你应该用打开指定 url 的工具打开搜索列表中对应的 url。同样在之后读取 md 文件获取相关知识。
+        4. 当你认为完成所欲任务前，你应该调用 judge_agent 来判断你是否完成任务。你应该给 judge_agent 提供你的初始任务，你找到的论文标题和 doi，以及这些论文的简要介绍。
+    name: "paper_search_agent"
+    description: "根据任务搜索论文，并返回任务所需论文的完整标题或者doi，或者搜索网页内容返回md 文档或者相关答案和数据源。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的搜索任务要求，包括论文主题、关键词、数量要求等。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "搜索过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+
+  get_searchPdf_by_doi_or_title:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - file_read
+      - human_in_loop
+      - file_write
+      - dir_list
+      - dir_create
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是指导用户下载指定文献到upload文件夹中
+      agent_workflow: |
+        **你的流程:**
+        1. 收到一篇或多篇文献名称和 doi或者相关信息。
+        2. 使用人类交互工具向用户发送请求，描述将什么类型的文件下载，然后命名为什么名称最后，上传到 upload 文件夹。
+        （你必须告诉用户文件名应该命名成什么！不然你无法检查用户是否上传成功！）
+        3. 观察用户是否上传成功，如果成功则进入最终审查输出阶段，否则请求用户再次帮助。
+    name: "get_searchPdf_by_doi_or_title"
+    description: "根据提供的文献信息下载一篇文献到upload文件夹中。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的要下载文献的文献名和其他一些有助于找到文献的信息"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "搜索过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  summary_from_one_paper:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - parse_document
+      - judge_agent
+      - file_read
+      - dir_list
+      - dir_create
+      - file_write
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是提炼一篇文章内容
+      agent_workflow: |
+        **你的流程:**
+        1. 你应该根据提供的论文地址，读取论文内容，然后将文章分成几个部分，比如 introduction，abstract 等，对每个部分进行summary，主要说明这部分做了什么，结果等。你应该输出一个 json 文件。文件命名尽量包含你总结的文件名。
+        2. 当你认为完成所有任务前，你应该调用 judge_agent 来判断你是否完成任务。你应该给 judge_agent文章地址，和你的总结报告，让其大致检查一下。
+        3. 创建文件前应该检查创建文件的地址下有无其他同名文件，不要覆盖不是自己的文件。
+    name: "summary_from_one_paper"
+    description: "根据提供的论文地址，读取论文内容并提炼总结，将文章分成不同部分进行summary，输出为json文件。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的任务要求，应该提供一篇文章的地址，不要提供原文内容。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "处理过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  experment_plan_to_coding_task_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - final_output
+      - file_read
+      - file_write
+      - dir_list
+      - dir_create
+      - execute_shell
+      - file_replace_lines
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是根据一个详细的论文创意和实验计划分解成一个一个的编码任务
+      agent_workflow: |
+        **你的流程:**
+        1. 分析给你的任务(提供的实验计划和idea）（基于任务的需求，提供的参考文件等（如果有）），确定任务的可行性，你可以在任务可行性显而易见不可行的情况下，输出 error，并给出拒绝任务的原因和修改建议。如果没有问题执行下一步。
+        2. 代码和实验计划你要进行再次理解，要通过高度抽象的方式，尽量简化实验难度，只需要确保思想符合即可，因为这是实验代码，不是生产代码，不需要考虑太多细节和严格按照最初实验要求。
+        3. 根据分析完成详细的全面的逻辑正确完善的实验计划到代码任务分解的方案，尽量将代码任务控制在 5 个以内，也就是说整个实验依靠五个 python 文件就可以完成。每个文件中所有可以调用的函数都需要给出详细的预期输入和输出，以及最后总体实验的调用方式。
+        4. 当你认为完成所有任务前，你应该给 judge_agent你的输出文件地址，你的任务是什么，你的完成结果是什么，请 judge进行判断。
+        **注意事项:**
+        1. 注意每次创建自己的文件前检查是否存在别人的文件，不要覆盖，有些别人已经写过的可以复用的功能文件你可以复用。
+        2. 你应该将实验分解为一个个最简单的子功能，很多情况下，不同实验会复用相同的功能，对于每个功能你都应该严格明确其输入和输出，和脚本文件名称。
+        3. 文件的读取并不限于使用 file_read 工具，你可以使用execute_shell工具，来读取特定行数的文件，或者搜索文件内容等。
+        4. 重要：你不是编程 ai，你只需要确保你的 task 分解足够细致，需求，输入输出足够明确，不需要进行编程！
+        5. 重要：你的实验编程计划应该对原来的实验进行高度抽象，确保使得代码任务尽可能简单。
+        6. 重要：你的编程任务应该完全明确其输入输出的格式和输入的类型，确保前后模块可以完美衔接。
+    name: "experment_plan_to_coding_task_agent"
+    description: "根据详细的论文创意和实验计划，分解成具体的编码任务，将实验分解为简单的子功能模块。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "详细的论文创意和实验计划，需要分解成编码任务。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "任务分解过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  coding_task_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - final_output
+      - file_read
+      - file_write
+      - execute_code
+      - dir_list
+      - dir_create
+      - pip_install
+      - execute_shell
+      - file_replace_lines
+    max_turns: 100
+    model_type: gemini-2.5-pro
+    prompts:
+      agent_responsibility: |
+        你的职责是根据一个详细的编码任务指示准确无误的完成要求，或者根据用户要求运行实验。
+      agent_workflow: |
+        **你的流程:**
+        1. 分析给你的编码任务（基于任务的需求，提供的参考文件等（如果有）），确定任务的可行性，你可以在任务可行性显而易见不可行的情况下，输出 error，并给出拒绝任务的原因和修改建议。如果没有问题执行下一步。
+        2. 确定你要做的 todolist，并输出一个 todolist_{{task_id}}_{{你的任务缩写或任务名}}.txt 文件，文件内容为你的 todolist。你的 todo_list应该专注于你的任务，注意区分你的任务和实验计划中的任务的区别，不要混淆！！！！
+        3. 根据 todolist 执行下一步任务,完成一个任务则更新自己的todolist。执行任务时，应该严格注意到所有注意事项。
+        4. 当你认为完成所有任务前，你应该撰写一个 readme_{{sub_name，你的脚本入口文件名}}.md文件，详细说明脚本名称，位置，执行方法，输入输出预期和示例。
+        5. 你应该调用 judge_agent 来判断你是否完成任务。你应该给 judge_agent你的可运行代码地址，运行所需调用的工具和指令，运行应该期望的结果形式，以及readme文件地址。
+        6. judge_agent 会判断你的任务是否完成，如果完成，则输出 success，最后再使用 final_output 工具输出你的结果。
+        **注意事项:**
+        1. 作为编码任务，你应该都在 code_run 目录下创建文件（包括所有代码，todolist 和 readme 文件）,注意每次创建自己的文件前检查是否存在别人的文件，不要覆盖，有些别人已经写过的可以复用的功能文件你可以复用。
+        2. 执行代码时，应该使用 execute_code 工具，并给出文件的相对路径。注意execute_code的执行逻辑，再运行代码前，你应该检查是否需要安装一些额外的包，并执行安装。
+        3. 代码中关于文件的读取，写入这些操作，应该考虑到execute_code的执行逻辑（默认在code_run目录下执行任何位置的代码），确保文件的读取和写入操作是正确的。
+        4. 你的代码应该易于其他代码进行功能调用，易于其他代码引入，并调用，你的 main 函数测试也应该遵循这个逻辑。
+        5. 执行代码时，你应该使用可以跑通的最小规模进行测试！当然也包括给judge_agent的测试！你只需要确保最后的整体功能测试没问题即可，你可以自己选择分阶段测试还是一次性测试。
+        6. 文件的读取并不限于使用 file_read 工具，你可以使用execute_shell工具，来读取特定行数的文件，或者搜索文件内容等。
+        7. 重要：当遇到无法解决的问题重复解决三次以上后无法解决，你应该直接输出 error 并给出拒绝任务的原因和修改建议。
+        8. 重要：严格保证你的最终产物的代码文件名复合要求不要有更改！！包括自己添加后缀等，优先查看其他相关模块的 md 文件而不是代码文件！
+        9. 重要：只能使用pip_install工具来安装包，如果失败了，如果是超时问题应该增加超时时长而不是使用execute_shell
+        10. 重要：必须使用execute_code来执行代码！！！不要使用execute_shell！！！！因为环境和pip_install的虚拟环境不同
+    name: "coding_task_agent"
+    description: "根据详细的编码任务指示，准确完成编程要求，包括代码编写、测试和文档生成。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "详细的编码任务指示和要求。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "编码过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  move_data_to_clean_directory:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - final_output
+      - dir_list
+      - dir_create
+      - execute_shell
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是将用户要求的各种文件移动到用户指定的文件夹中。
+      agent_workflow: |
+        **你的流程:**
+        1. 你将会得到之前的 agent或者用户给你提供的实验代码和生成结果的文件位置，或需要你根据其提示信息自己寻找，一般在，你首先应该确保文件存在。否则进行最终输出并给出错误信息。
+        2. 你的总体流程应该是将所有文件成功的移动到对应位置。注意原位置的文件不要删除，使用拷贝的形式移动过去，不要删除原位置的文件。你可以使用&符号一次性执行多条命令行代码。但是注意，移动前应该使用 pwd 命令确定绝对路径再移动，相对路径不一定成功。
+        3. 当你认为完成所有任务前，你应该给 judge_agent你的的文件地址（如有），你的任务是什么，你的完成结果是什么，请 judge进行判断。
+        **注意事项:**
+        1. 使用 cp 移动时，使用绝对路径，通过 pwd 分析所有文件的绝对路径，再进行移动。
+        2. 重要：你不是编程 ai，不要进行编程。
+    name: "move_data_to_clean_directory"
+    description: "将用户要求的各种文件移动到指定文件夹中，使用拷贝方式保留原文件。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "文件移动的具体要求，包括源文件位置和目标文件夹。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "文件移动过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  create_figures_python_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - final_output
+      - dir_list
+      - dir_create
+      - file_read
+      - file_write
+      - pip_install
+      - execute_code
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是将用户要求的各种 python作图实现，并输出图片。
+      agent_workflow: |
+        **你的流程:**
+        1. 你将会得到详细的作图需求，你应该根据需求，理解作图意图，如果你对数据不了解，可以对数据进行读取，甚至读取产生数据的相关代码。
+        2. 使用一个 python 文件在相同目录下进行作图，但是运行时你需要搞清楚，运行工具默认在/code_run 目录下。图片必须是英文的。
+        3. 应该使用一个 json 文件或者 md 文件对所做的每一张图（文件名：描述）进行详细描述，并给出文件地址。描述应该经可能详细，比如发现，意义等，有助于后期写作。
+        4. 当你认为完成所有任务前，你应该给 judge_agent你的实果的文件地址（如有），你的任务是什么，你的完成结果是什么，请 judge进行判断。需要提示 judge agent 因为运行工具默认在/code_run 目录下，因此你需要使用../或者其他路径代码正确的读取当前目录下的数据。不要使用命令行进行运行，使用封装好的工具进行运行。
+    name: "create_figures_python_agent"
+    description: "根据用户要求实现Python作图功能，生成图片并提供详细描述文档。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "详细的作图需求和要求,所需的数据和产生数据的相关代码。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "作图过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+  
+
+
+  create_figures_gpt_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - file_read
+      - human_in_loop
+      - file_write
+      - dir_list
+      - dir_create
+      - final_output
+      - file_move
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是指导用户下载指定文献到upload文件夹中
+      agent_workflow: |
+        **你的流程:**
+        1. 收到详细作图的提示词。
+        2. 使用人类交互工具向用户发送请求，描述作图提示词，要求其使用 gpt 或者手工作图，并上传到 upload 文件夹。
+        （你必须告诉用户文件名应该命名成什么！不然你无法检查用户是否上传成功！）
+        3. 观察用户是否上传成功，如果成功则移动到指定文件夹中（若有指定文件夹），最后进入最终审查输出阶段，否则请求用户再次帮助。
+    name: "create_figures_gpt_agent"
+    description: "根据提供的文献信息下载一篇文献到upload文件夹中。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的要下载文献的文献名和其他一些有助于找到文献的信息"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "搜索过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  sub_part_tex_editor_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - final_output
+      - dir_list
+      - dir_create
+      - file_read
+      - file_write
+      - google_search
+      - google_scholar_search
+      - crawl_page
+      - parse_document
+      - get_searchPdf_by_doi_or_title
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是写指定部分的 tex 文件，如写introduction 部分introduction.tex，或者写conclusion 部分conclusion.tex
+      agent_workflow: |
+        **你的流程:**
+        **重要！！**不要不基于已有材料乱编，特别是参考文献，应该使用阅读 parse_document  或者 google_scholar_search 工具来获取参考文献。文章作者应该真实！！abstract，introduction，conclusion 部分一般没有子标题！注意遵守常见写作格式！！
+        引用图片时应该仔细思考图片位置，如果在同层目录，则直接引用即可，不用带父文件夹名！！
+        1. 你会获得你的任务部分，已经已经完成的其他部分，还有相关材料，例如实验数据，图表，图的说明等。你只能读取文本数据，但是你应该尽可能通过文本数据了解所有材料。(注意 main.tex的引用 sub_tex文件的方法，不要重复添加标题)
+        2. 你将根据材料撰写指定部分，但是在撰写 introduction和 related work/review 部分时，一般来说材料不足，你应该通过谷歌搜索，谷歌学术搜素，和网页打开工具来获取更多的参考文献（如果不用下载就可以用来作为参考文献就尽量不要下载，浏览网页即可），记得及时更新 bib 文件，如果没有则新建， 有的话就在已有基础上更新。当然你也可以引用 参考文献pdf 中的参考文献作为自己的参考文献，注意不要乱编参考文献！如果查询到的参考文献只有标题，或者部分作者，那么引用时候就不要编造作者，可以写你查询到的部分。
+        3. 根据要求撰写对应部分的内容，要求和已经存在的其他 tex 不冲突，语言要有顶级期刊的学术风格，清晰但不废话。
+        4. 当你认为完成所有任务前，你应该给 judge_agent你的实果的文件地址（如有），你的任务是什么，你的完成结果是什么，请 judge进行判断。
+        **注意事项:**
+        1. 重要：内容不要太短，尽可能像学术期刊论文看齐。
+        2. 重要：related work 时必须使用联网功能添加新的参考文献！现在时间是 2025-07-26！不要使用太多太老的文献！找到新文献以后一定一定一定要及时更新到 bib 文件中去
+        3. 重要：introduction 和conclusion 部分不需要子标题！
+    name: "sub_part_tex_editor_agent"
+    description: "撰写学术论文的指定章节tex文件，支持联网搜索参考文献并更新bib文件。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "要撰写的章节部分、已完成的其他部分信息、相关材料位置等。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "撰写过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 
+
+  latex_to_pdf_repair_agent:
+    level: 1
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - final_output
+      - dir_list
+      - dir_create
+      - file_read
+      - file_write
+      - tex2pdf_convert
+      - execute_shell
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是编译指定文件夹下的tex 文件编程 pdf，如果报错则通过查看同文件夹下的 log文件修复 tex 错误，直到编译成功
+      agent_workflow: |
+        **你的流程:**
+        file_read只能读取文本文件！
+        1. 直接调用编译工具，尝试转换为 pdf。
+        2. 检查文件夹下是否成功生成 pdf 文件，如果没有则查看当前文件夹里的日志尝试修复。例如main.tex是否匹配其他部分？缺少宏包时，你可能需要命令行来安装宏包？或者图片和表格导入路径出现问题，如果是上级文件夹应该使用../图片，应该理解 tex 中的路径的相对路径和沙盒工具中相对路径概念不同。等等。并重新编译。
+        3. 当你认为完成所有任务前，你应该给 judge_agent你的实果的文件地址（如有），你的任务是什么，你的完成结果是什么，请 judge进行判断。需要提示 judge agent 只需判断 pdf 文件存在即可，不要尝试重新编译。
+        **注意事项:**
+        1. 重要：main.tex引用和你读取文件的地址是不一样的，是相对的！main.tex引用的文件应该相对自己所在文件夹！
+    name: "latex_to_pdf_repair_agent"
+    description: "编译LaTeX文件生成PDF，并自动修复编译错误，包括缺失宏包安装等。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "要编译的LaTeX文件路径和相关要求。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "编译修复过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"] 

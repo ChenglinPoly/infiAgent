@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tool Server 管理界面</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+        }
+
+        body {
+            background-color: #f5f7fa;
+            color: #2c3e50;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* 左侧任务列表 */
+        .sidebar {
+            width: 300px;
+            background: white;
+            border-right: 1px solid #e1e8ed;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #e1e8ed;
+            background: #3498db;
+            color: white;
+        }
+
+        .sidebar-header h1 {
+            font-size: 20px;
+            margin-bottom: 8px;
+        }
+
+        .sidebar-header .subtitle {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .task-list {
+            padding: 0;
+        }
+
+        .task-item {
+            padding: 15px 20px;
+            border-bottom: 1px solid #f1f3f4;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .task-item:hover {
+            background-color: #f8f9fa;
+        }
+
+        .task-item.active {
+            background-color: #e3f2fd;
+            border-right: 3px solid #3498db;
+        }
+
+        .task-name {
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .task-id {
+            font-size: 12px;
+            color: #7f8c8d;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }
+
+        .task-time {
+            font-size: 11px;
+            color: #95a5a6;
+            margin-top: 4px;
+        }
+
+        /* 主内容区 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .main-header {
+            background: white;
+            padding: 20px;
+            border-bottom: 1px solid #e1e8ed;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .main-header h2 {
+            font-weight: 500;
+            color: #34495e;
+        }
+
+        .refresh-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .refresh-btn:hover {
+            background: #2980b9;
+        }
+
+        /* 内容区域 */
+        .content-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        /* 日志部分 */
+        .logs-section {
+            flex: 1;
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            margin-bottom: 20px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .section-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #e1e8ed;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .section-header h3 {
+            font-size: 16px;
+            font-weight: 500;
+            color: #34495e;
+        }
+
+        .section-content {
+            padding: 15px 20px;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .logs-content {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .log-line {
+            margin-bottom: 3px;
+        }
+
+        .log-line.info {
+            color: #2c3e50;
+        }
+
+        .log-line.error {
+            color: #e74c3c;
+        }
+
+        .log-line.warning {
+            color: #f39c12;
+        }
+
+        .log-line.success {
+            color: #27ae60;
+        }
+
+        /* 人类任务部分 */
+        .human-tasks-section {
+            flex: 1;
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .human-tasks-content {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .human-task-item {
+            padding: 15px 20px;
+            border-bottom: 1px solid #f1f3f4;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .human-task-info {
+            flex: 1;
+        }
+
+        .human-task-desc {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .human-task-meta {
+            display: flex;
+            font-size: 12px;
+            color: #7f8c8d;
+        }
+
+        .human-task-id {
+            margin-right: 15px;
+        }
+
+        .human-task-status {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-right: 10px;
+        }
+
+        .status-pending {
+            background-color: #f8f9fa;
+            color: #7f8c8d;
+        }
+
+        .status-completed {
+            background-color: #e8f5e9;
+            color: #27ae60;
+        }
+
+        .complete-btn {
+            background: #2ecc71;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .complete-btn:hover {
+            background: #27ae60;
+        }
+
+        .complete-btn:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        /* 上传按钮 */
+        .upload-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 20px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-btn:hover {
+            background: #2980b9;
+        }
+
+        /* 上传模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 10% auto;
+            padding: 20px;
+            width: 500px;
+            border-radius: 6px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .modal-header {
+            font-size: 18px;
+            font-weight: 500;
+            margin-bottom: 20px;
+            color: #34495e;
+        }
+
+        .modal-buttons {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.2s;
+            margin-left: 10px;
+        }
+
+        .btn-primary {
+            background: #3498db;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2980b9;
+        }
+
+        .btn-secondary {
+            background: #ecf0f1;
+            color: #7f8c8d;
+        }
+
+        .btn-secondary:hover {
+            background: #d6dbdf;
+        }
+
+        /* API配置模态框 */
+        #apiConfigModal .modal-content {
+            width: 400px;
+        }
+
+        /* 错误提示 */
+        .error-toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #e74c3c;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 左侧任务列表 -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>Tool Server</h1>
+                <div class="subtitle">任务管理界面</div>
+            </div>
+            <div class="task-list" id="taskList">
+                <!-- 任务列表将通过JavaScript动态加载 -->
+                <div class="task-item">
+                    <div class="task-name">加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <div class="main-header">
+                <h2 id="currentTaskTitle">请选择一个任务</h2>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 12px; color: #7f8c8d;" id="apiUrlDisplay"></span>
+                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;" onclick="showApiConfig()">设置API</button>
+                    <button class="refresh-btn" onclick="refreshAll()">刷新</button>
+                </div>
+            </div>
+
+            <div class="content-area">
+                <!-- 上传文件按钮 -->
+                <button class="upload-btn" onclick="showUploadModal()">
+                    <span style="margin-right: 5px;">📤</span> 上传文件到 upload 文件夹
+                </button>
+                
+                <!-- 日志部分 -->
+                <div class="logs-section">
+                    <div class="section-header">
+                        <h3>日志</h3>
+                    </div>
+                    <div class="section-content">
+                        <div class="logs-content" id="logsContent">
+                            <!-- 日志内容将通过JavaScript动态加载 -->
+                            <div class="log-line">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 人类任务部分 -->
+                <div class="human-tasks-section">
+                    <div class="section-header">
+                        <h3>人类任务</h3>
+                    </div>
+                    <div class="human-tasks-content" id="humanTasksContent">
+                        <!-- 人类任务将通过JavaScript动态加载 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 上传文件模态框 -->
+    <div class="modal" id="uploadModal">
+        <div class="modal-content">
+            <div class="modal-header">上传文件到 upload 文件夹</div>
+            <div>
+                <input type="file" id="fileInput" multiple>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeUploadModal()">取消</button>
+                <button class="btn btn-primary" onclick="uploadFile()">上传</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- API配置模态框 -->
+    <div class="modal" id="apiConfigModal">
+        <div class="modal-content">
+            <div class="modal-header">API服务器配置</div>
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 5px;">Tool Server URL:</label>
+                <input type="text" id="apiUrlInput" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" placeholder="http://localhost:8001">
+                <div style="font-size: 12px; color: #7f8c8d; margin-top: 5px;">
+                    也可以通过URL参数设置：?api_url=http://your-server:8001
+                </div>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeApiConfig()">取消</button>
+                <button class="btn btn-primary" onclick="saveApiConfig()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 错误提示 -->
+    <div class="error-toast" id="errorToast"></div>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html> 

@@ -1,0 +1,92 @@
+{
+  "web_test": {
+    "start_time": "2025-08-31T15:23:43.665594",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/web_test_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "web_test_2": {
+    "start_time": "2025-08-31T15:30:39.763447",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/web_test_2_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "triangle_test": {
+    "start_time": "2025-08-31T15:40:34.752168",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/triangle_test_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "test_add_instruction": {
+    "start_time": "2025-08-31T15:44:25.414636",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/test_add_instruction_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "complex_task": {
+    "start_time": "2025-08-31T15:47:34.334877",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/complex_task_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "new_test_task": {
+    "start_time": "2025-08-31T15:58:50.870687",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/new_test_task_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "direct_call_test": {
+    "start_time": "2025-08-31T16:03:50.628951",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/direct_call_test_console.log",
+    "status": "error",
+    "error": "'tuple' object has no attribute 'get'"
+  },
+  "subprocess_test": {
+    "start_time": "2025-08-31T16:31:11.045947",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/subprocess_test_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "final_test_2025": {
+    "start_time": "2025-08-31T16:37:10.534113",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/final_test_2025_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "complex_pause_test": {
+    "start_time": "2025-08-31T16:38:55.617327",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/complex_pause_test_console.log",
+    "status": "error",
+    "return_code": 1
+  },
+  "shape_test_001": {
+    "start_time": "2025-08-31T17:06:02.843147",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/agent_server/Multi-Level-Agent/logs/api_state/shape_test_001_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "tt": {
+    "start_time": "2025-08-31T17:57:21.112472",
+    "log_file": "/app/logs/api_state/tt_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "docker_test": {
+    "start_time": "2025-08-31T09:36:10.451680",
+    "log_file": "/app/logs/api_state/docker_test_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "docker_ability_test": {
+    "start_time": "2025-08-31T09:40:57.727986",
+    "log_file": "/app/logs/api_state/docker_ability_test_console.log",
+    "status": "completed",
+    "return_code": 0
+  },
+  "fibonacci_test": {
+    "start_time": "2025-09-14T22:08:23.164690",
+    "log_file": "/Users/chenglin/Desktop/research/agent_framwork/divid_serivce/logs/api_state/fibonacci_test_console.log",
+    "status": "completed",
+    "return_code": 0
+  }
+}

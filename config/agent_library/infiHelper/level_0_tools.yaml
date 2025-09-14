@@ -1,0 +1,412 @@
+tools:
+  file_write:
+    level: 0
+    type: tool_call_agent
+    name: "file_write"
+    description: "Write content to the specified file. If the file does not exist, it will be created automatically; if it exists, you can choose to overwrite or append content."
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "Relative path of the file to write to, e.g., 'src/main.py' or 'data/output.txt'. Do not overwrite files that are not your own! Before using, check for files with the same name using the directory listing tool."
+        content:
+          type: "string"
+          description: "Text content to write to the file. For binary files, use a Base64-encoded string."
+        mode:
+          type: "string"
+          enum: ["overwrite", "append"]
+          default: "overwrite"
+          description: "Write mode. 'overwrite' replaces the entire file, 'append' adds content to the end."
+        is_base64:
+          type: "boolean"
+          default: false
+          description: "Indicates whether 'content' is a Base64-encoded string for writing binary files. Default is false."
+      required: ["file_path", "content"]
+  
+  file_read:
+    level: 0
+    type: tool_call_agent
+    name: "file_read"
+    description: "Read the content of the specified file. You can read the entire file or specify start and end lines.警告：不要读取二进制文件，如pdf，ppt，图片等。"
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "Relative path of the file to read, e.g., 'src/main.py'. Only text files are allowed; do not read binary files, PDFs, PPTs, or similar types."
+        start_line:
+          type: "integer"
+          description: "Start line number for reading (starting from 1), optional."
+        end_line:
+          type: "integer"
+          description: "End line number for reading (inclusive), optional."
+      required: ["file_path"]
+
+  dir_list:
+    level: 0
+    type: tool_call_agent
+    name: "dir_list"
+    description: "List the contents of the specified directory. Can recursively list all subdirectories and files."
+    parameters:
+      type: "object"
+      properties:
+        dir_path:
+          type: "string"
+          description: "Directory path to list. If omitted, lists the task root directory."
+      required: []
+
+  execute_shell:
+    level: 0
+    type: tool_call_agent
+    name: "execute_shell"
+    description: "Execute a shell command in a secure sandbox environment."
+    parameters:
+      type: "object"
+      properties:
+        command:
+          type: "string"
+          description: "Shell command to execute, e.g., 'ls -la' or 'pip list'."
+        workdir:
+          type: "string"
+          description: "Working directory for the command, default is 'code_run/'. Optional."
+        timeout:
+          type: "integer"
+          default: 60
+          description: "Timeout for command execution (seconds)."
+      required: ["command"]
+
+  google_search:
+    level: 0
+    type: tool_call_agent
+    name: "google_search"
+    description: "Perform a web search using Google."
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "Keywords or questions to search for."
+        num_results:
+          type: "integer"
+          default: 10
+          description: "Number of search results to return."
+      required: ["query"]
+
+  file_upload:
+    level: 0
+    type: tool_call_agent
+    name: "file_upload"
+    description: "Upload one or more files to the workspace. Can be used for code, data, or binary files."
+    parameters:
+      type: "object"
+      properties:
+        files:
+          type: "array"
+          description: "A list of file objects."
+          items:
+            type: "object"
+            properties:
+              filename:
+                type: "string"
+                description: "Filename with relative path, e.g., 'src/utils.py'."
+              content:
+                type: "string"
+                description: "File content, can be text or Base64-encoded string."
+              is_base64:
+                type: "boolean"
+                description: "Indicates whether the content is Base64-encoded."
+            required: ["filename", "content", "is_base64"]
+        target_path:
+          type: "string"
+          description: "Target subdirectory for upload, under 'upload/'. Optional."
+      required: ["files"]
+
+  file_replace_lines:
+    level: 0
+    type: tool_call_agent
+    name: "file_replace_lines"
+    description: "Replace a specified range of lines in a file with new content."
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "Path of the file to modify."
+        start_line:
+          type: "integer"
+          description: "Start line number for replacement (starting from 1)."
+        end_line:
+          type: "integer"
+          description: "End line number for replacement."
+        new_content:
+          type: "string"
+          description: "New content for replacement, use '\n' for multiple lines."
+      required: ["file_path", "start_line", "end_line", "new_content"]
+
+  file_delete:
+    level: 0
+    type: tool_call_agent
+    name: "file_delete"
+    description: "Delete the specified file or directory."
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "Path of the file or directory to delete."
+      required: ["file_path"]
+
+  file_move:
+    level: 0
+    type: tool_call_agent
+    name: "file_move"
+    description: "Move or rename a file or directory."
+    parameters:
+      type: "object"
+      properties:
+        src_path:
+          type: "string"
+          description: "Source path of the file or directory to move."
+        dest_path:
+          type: "string"
+          description: "Destination path for the move."
+      required: ["src_path", "dest_path"]
+
+  dir_create:
+    level: 0
+    type: tool_call_agent
+    name: "dir_create"
+    description: "Create a new directory. If parent directories do not exist, they will be created automatically."
+    parameters:
+      type: "object"
+      properties:
+        dir_path:
+          type: "string"
+          description: "Path of the directory to create."
+      required: ["dir_path"]
+
+  execute_code:
+    level: 0
+    type: tool_call_agent
+    name: "execute_code"
+    description: "Execute the specified Python script in an isolated virtual environment for the task. By default, the command is initiated from the code_run/ directory, but you can execute files from other locations by providing the relative path. However, the execution start path is still code_run/."
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "Path of the Python script to execute."
+        timeout:
+          type: "integer"
+          default: 300
+          description: "Execution timeout (seconds)."
+      required: ["file_path"]
+
+  pip_install:
+    level: 0
+    type: tool_call_agent
+    name: "pip_install"
+    description: "Install one or more Python packages in the task's virtual environment."
+    parameters:
+      type: "object"
+      properties:
+        packages:
+          type: "array"
+          description: "List of Python package names to install."
+          items:
+            type: "string"
+      required: ["packages"]
+
+  git_clone:
+    level: 0
+    type: tool_call_agent
+    name: "git_clone"
+    description: "Clone a Git repository from the specified URL into the workspace."
+    parameters:
+      type: "object"
+      properties:
+        repo_url:
+          type: "string"
+          description: "URL of the repository to clone."
+        target_dir:
+          type: "string"
+          description: "Name of the subdirectory under 'upload/' to clone into. Optional."
+        branch:
+          type: "string"
+          description: "Specific branch to clone. Optional."
+        token:
+          type: "string"
+          description: "Personal access token for authenticating private repositories. Optional."
+      required: ["repo_url"]
+
+  parse_document:
+    level: 0
+    type: tool_call_agent
+    name: "parse_document"
+    description: "Parse a document file and extract its text content. Supports PDF, Word, PPT, and Markdown formats."
+    parameters:
+      type: "object"
+      properties:
+        file_path:
+          type: "string"
+          description: "Path of the document to parse."
+      required: ["file_path"]
+
+  tex2pdf_convert:
+    level: 0
+    type: tool_call_agent
+    name: "tex2pdf_convert"
+    description: "Compile a directory containing LaTeX source files (main.tex) into a PDF file. Currently, only the default compiler is supported."
+    parameters:
+      type: "object"
+      properties:
+        input_path:
+          type: "string"
+          description: "Path of the directory containing .tex files."
+        output_path:
+          type: "string"
+          description: "Path of the PDF output directory. Optional, defaults to the input directory."
+        engine:
+          type: "string"
+          enum: ["pdflatex", "xelatex", "lualatex"]
+          default: "pdflatex"
+          description: "LaTeX engine to use for compilation."
+        clean_aux:
+          type: "boolean"
+          default: true
+          description: "Whether to clean up auxiliary files (.aux, .log, etc.) after compilation."
+      required: ["input_path"]
+
+  crawl_page:
+    level: 0
+    type: tool_call_agent
+    name: "crawl_page"
+    description: "Crawl the content of the specified URL and return it in Markdown format."
+    parameters:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+          description: "Full URL of the web page to crawl."
+        output_dir:
+          type: "string"
+          description: "Directory to save the Markdown file, under 'upload/', default is 'crawled_content'. Optional."
+      required: ["url"]
+
+  google_scholar_search:
+    level: 0
+    type: tool_call_agent
+    name: "google_scholar_search"
+    description: "Search for academic papers on Google Scholar. Search results are saved as md files in the upload/scholar_results/ directory, or you can specify a custom file path."
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "Keywords or topics to search for."
+        output_dir:
+          type: "string"
+          description: "Directory to save the search results file, under 'upload/', default is 'scholar_results'. Optional."
+        pages:
+          type: "integer"
+          default: 1
+          description: "Number of search result pages to crawl."
+        year_low:
+          type: "integer"
+          description: "Start year for filtering papers. Optional."
+        year_high:
+          type: "integer"
+          description: "End year for filtering papers. Optional."
+      required: ["query"]
+
+  github_search_repositories:
+    level: 0
+    type: tool_call_agent
+    name: "github_search_repositories"
+    description: "Search for repositories on GitHub by keyword."
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "Keywords to search for in repository names and descriptions."
+        sort:
+          type: "string"
+          enum: ["stars", "forks", "updated"]
+          default: "stars"
+          description: "Sort criterion."
+        order:
+          type: "string"
+          enum: ["desc", "asc"]
+          default: "desc"
+          description: "Sort order."
+        per_page:
+          type: "integer"
+          default: 10
+          description: "Number of results per page."
+        page:
+          type: "integer"
+          default: 1
+          description: "Page number to retrieve."
+        token:
+          type: "string"
+          description: "GitHub personal access token for authentication, can increase API rate limits. 必须提供，如无则不用调用此工具"
+      required: ["query"]
+
+  github_get_repository_info:
+    level: 0
+    type: tool_call_agent
+    name: "github_get_repository_info"
+    description: "Get detailed information about a specified GitHub repository."
+    parameters:
+      type: "object"
+      properties:
+        full_name:
+          type: "string"
+          description: "Full name of the repository in the format 'owner/repo', e.g., 'microsoft/vscode'."
+        token:
+          type: "string"
+          description: "GitHub personal access token for authentication. 必须提供，如无则不用调用此工具"
+      required: ["full_name"]
+
+  final_output:
+    level: 0
+    type: tool_call_agent
+    name: "final_output"
+    description: "Tool for agents to output final results. Call this tool when the agent completes the task or needs to terminate execution."
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "Unique ID of the task."
+        status:
+          type: "string"
+          enum: ["success", "error"]
+          description: "Task execution status: 'success' means completed successfully, 'error' means execution failed."
+        output:
+          type: "string"
+          description: "Explanation of success or failure. If your output includes files, you must provide their relative paths and descriptions (do not repeat content already in the files), and include the judge agent's feedback."
+        error_information:
+          type: "string"
+          description: "Error information, only required when status is 'error'."
+      required: ["task_id", "status", "output"]
+
+  human_in_loop:
+    level: 0
+    type: tool_call_agent
+    name: "human_in_loop"
+    description: "Create a human task and wait for completion, used for scenarios requiring human intervention."
+    parameters:
+      type: "object"
+      properties:
+        human_task:
+          type: "string"
+          description: "Description of the task for human to complete."
+        check_interval:
+          type: "number"
+          default: 5.0
+          description: "Check interval in seconds, default is 5.0. Optional."
+      required: ["human_task"]
+  

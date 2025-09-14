@@ -1,0 +1,9 @@
+{
+  "task_id": "docker_test",
+  "agent_system_name": "infiHelper",
+  "user_instructions": [
+    "你好，这是Docker容器测试，直接回复你好即可"
+  ],
+  "created_time": "2025-08-31T09:36:06.553626",
+  "log_file": "/app/logs/api_state/docker_test_console.log"
+}

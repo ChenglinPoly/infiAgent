@@ -1,0 +1,69 @@
+# 基于 LiteLLM 的简化 LLM 配置文件
+# 支持官方API和三种格式的Custom API
+
+# 默认配置
+default:
+  temperature: 0
+  max_tokens: 0  # 0 表示不限制，让模型自然停止
+
+# 环境变量配置（可选，如果不使用可以留空或删除）
+environment_variables: {}
+
+# 官方API配置
+openai:
+  official:
+    api_key: ""  # 从环境变量 OPENAI_API_KEY 读取
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+      - "gpt-4-turbo"
+      - "o1"
+      - "o1-mini"
+      - "o3-mini"
+
+claude:
+  official:
+    api_key: ""  # 从环境变量 ANTHROPIC_API_KEY 读取
+    models:
+      - "claude-3-5-sonnet-20241022"
+      - "claude-3-5-haiku-20241022"
+      - "claude-3-7-sonnet-20250219"
+      - "claude-4-sonnet-20250514"
+      - "claude-4-opus-20250514"
+
+gemini:
+  official:
+    api_key: ""  # 从环境变量 GEMINI_API_KEY 读取
+    models:
+      - "gemini-2.0-flash"
+      - "gemini-2.5-flash"
+      - "gemini-2.5-pro"
+      - "gemini-2.5-pro-preview-03-25"
+
+# Custom API 配置（支持三种格式）
+custom:
+  # OpenAI 格式的 Custom API
+  openai_format:
+    api_key: "sk-REDACTED"
+    base_url: "http://147.8.92.209:22291"
+    models:           # 标准OpenAI模型
+      - "gemini-2.5-flash"    # Gemini模型（通过OpenAI格式调用）
+      - "gemini-2.5-pro"      # Gemini模型（通过OpenAI格式调用）
+  
+  # Gemini 格式的 Custom API（如果有的话）
+  gemini_format:
+    api_key: ""
+    base_url: ""
+    models: []
+  
+  # Claude 格式的 Custom API（如果有的话）
+  claude_format:
+    api_key: ""
+    base_url: ""
+    models: [""]
+
+# 使用说明：
+# 1. 官方API：如果提供了官方API密钥，则该提供商下的所有官方模型都可用
+# 2. Custom API：只有在对应格式的custom配置中明确列出的模型才可用
+# 3. 客户端会自动在模型名称前添加正确的前缀（openai/、gemini/、claude/）
+# 4. 模型回退优先级：custom配置的模型 > 官方API模型 

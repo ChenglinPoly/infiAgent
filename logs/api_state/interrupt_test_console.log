@@ -1,0 +1,204 @@
+
+================================================================================
+🚀 任务启动时间: 2025-08-31 16:06:29
+📋 任务ID: interrupt_test
+🤖 Agent系统: infiHelper-2
+📝 用户指令: 生成一个复杂的数学计算程序，包含多个函数
+================================================================================
+
+🎯 执行单个任务: interrupt_test
+🤖 Agent系统: infiHelper-2
+📝 用户指令: 生成一个复杂的数学计算程序，包含多个函数
+Running tool  writing_agent
+⚖️  启动writing_agent，审查任务: interrupt_test ⚖️
+📝 新指令已添加: instruction_c36b1385696b -> 生成一个复杂的数学计算程序，包含多个函数...
+📝 创建新的Agent时间记录: writing_agent_017f23bf9da4, 启动时间: 2025-08-31T16:06:29.817364
+📚 Agent入栈: writing_agent (ID: writing_agent_017f23bf9da4, Level: 0, Parent: None)
+🤖 启动 writing_agent，处理任务: interrupt_test 🤖
+🆕 开始新的对话
+
+--- writing_agent 第 1/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_dir_list', name='dir_list', arguments={})] llm_response.tool_calls
+[writing_agent] 正在调用工具: ['dir_list']
+ToolCall(id='tool_0_dir_list', name='dir_list', arguments={}) 命令详情
+dir_list tool_call
+Running tool  dir_list
+任务 'interrupt_test' 已成功创建。
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: dir_list, 任务: interrupt_test
+[writing_agent] 工具 'dir_list' (level 0) 执行结果: success
+
+--- writing_agent 第 2/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_file_write', name='file_write', arguments={'content': 'import math\n\ndef add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n\ndef power(base, exponent):\n    return base ** exponent\n\ndef square_root(number):\n    if number < 0:\n        raise ValueError("Cannot calculate square root of a negative number")\n    return math.sqrt(number)\n\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError("Factorial is only defined for non-negative integers")\n    if n == 0:\n        return 1\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\ndef calculate_expression(expression):\n    try:\n        return eval(expression)\n    except Exception as e:\n        raise ValueError(f"Invalid expression: {e}")\n\nif __name__ == "__main__":\n    print("Complex Math Program")\n    print("--------------------")\n\n    num1 = 10\n    num2 = 5\n\n    print(f"{num1} + {num2} = {add(num1, num2)}")\n    print(f"{num1} - {num2} = {subtract(num1, num2)}")\n    print(f"{num1} * {num2} = {multiply(num1, num2)}")\n    print(f"{num1} / {num2} = {divide(num1, num2)}")\n    print(f"{num1} ^ {num2} = {power(num1, num2)}")\n    print(f"Square root of {num1} = {square_root(num1)}")\n    print(f"Factorial of {num2} = {factorial(num2)}")\n\n    expression = "2 * (3 + 4) - 10 / 2"\n    print(f"Expression \\"{expression}\\" = {calculate_expression(expression)}")\n\n    try:\n        print(f"{num1} / 0 = {divide(num1, 0)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Square root of -1 = {square_root(-1)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Factorial of -5 = {factorial(-5)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Invalid expression \\"2 + * 3\\" = {calculate_expression(\\"2 + * 3\\")}")\n    except ValueError as e:\n        print(f"Error: {e}")\n', 'file_path': 'code_run/complex_math_program.py'})] llm_response.tool_calls
+[writing_agent] 正在调用工具: ['file_write']
+ToolCall(id='tool_0_file_write', name='file_write', arguments={'content': 'import math\n\ndef add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n\ndef power(base, exponent):\n    return base ** exponent\n\ndef square_root(number):\n    if number < 0:\n        raise ValueError("Cannot calculate square root of a negative number")\n    return math.sqrt(number)\n\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError("Factorial is only defined for non-negative integers")\n    if n == 0:\n        return 1\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\ndef calculate_expression(expression):\n    try:\n        return eval(expression)\n    except Exception as e:\n        raise ValueError(f"Invalid expression: {e}")\n\nif __name__ == "__main__":\n    print("Complex Math Program")\n    print("--------------------")\n\n    num1 = 10\n    num2 = 5\n\n    print(f"{num1} + {num2} = {add(num1, num2)}")\n    print(f"{num1} - {num2} = {subtract(num1, num2)}")\n    print(f"{num1} * {num2} = {multiply(num1, num2)}")\n    print(f"{num1} / {num2} = {divide(num1, num2)}")\n    print(f"{num1} ^ {num2} = {power(num1, num2)}")\n    print(f"Square root of {num1} = {square_root(num1)}")\n    print(f"Factorial of {num2} = {factorial(num2)}")\n\n    expression = "2 * (3 + 4) - 10 / 2"\n    print(f"Expression \\"{expression}\\" = {calculate_expression(expression)}")\n\n    try:\n        print(f"{num1} / 0 = {divide(num1, 0)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Square root of -1 = {square_root(-1)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Factorial of -5 = {factorial(-5)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Invalid expression \\"2 + * 3\\" = {calculate_expression(\\"2 + * 3\\")}")\n    except ValueError as e:\n        print(f"Error: {e}")\n', 'file_path': 'code_run/complex_math_program.py'}) 命令详情
+file_write tool_call
+Running tool  file_write
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: file_write, 任务: interrupt_test
+[writing_agent] 工具 'file_write' (level 0) 执行结果: success
+
+--- writing_agent 第 3/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_judge_agent', name='judge_agent', arguments={'task_id': 'interrupt_test', 'task_input': '我已生成一个复杂的数学计算程序，包含多个函数，文件路径为：code_run/complex_math_program.py。请判断是否符合要求。'})] llm_response.tool_calls
+[writing_agent] 正在调用工具: ['judge_agent']
+ToolCall(id='tool_0_judge_agent', name='judge_agent', arguments={'task_id': 'interrupt_test', 'task_input': '我已生成一个复杂的数学计算程序，包含多个函数，文件路径为：code_run/complex_math_program.py。请判断是否符合要求。'}) 命令详情
+judge_agent tool_call
+Running tool  judge_agent
+⚖️  启动judge_agent，审查任务: interrupt_test ⚖️
+📈 更新Agent进度 (waiting): writing_agent_017f23... -> 正在等待子Agent judge_agent 返回结果......
+📝 创建新的Agent时间记录: judge_agent_0039b9d28761, 启动时间: 2025-08-31T16:06:37.321934
+📚 Agent入栈: judge_agent (ID: judge_agent_0039b9d28761, Level: 1, Parent: writing_agent_017f23bf9da4)
+🤖 启动 judge_agent，处理任务: interrupt_test 🤖
+🆕 开始新的对话
+
+--- judge_agent 第 1/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['file_read', 'dir_list', 'final_output', 'parse_document', 'execute_code']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_dir_list', name='dir_list', arguments={'dir_path': 'code_run'})] llm_response.tool_calls
+[judge_agent] 正在调用工具: ['dir_list']
+ToolCall(id='tool_0_dir_list', name='dir_list', arguments={'dir_path': 'code_run'}) 命令详情
+dir_list tool_call
+Running tool  dir_list
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: dir_list, 任务: interrupt_test
+[judge_agent] 工具 'dir_list' (level 0) 执行结果: success
+
+--- judge_agent 第 2/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['file_read', 'dir_list', 'final_output', 'parse_document', 'execute_code']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_file_read', name='file_read', arguments={'file_path': 'code_run/complex_math_program.py'})] llm_response.tool_calls
+[judge_agent] 正在调用工具: ['file_read']
+ToolCall(id='tool_0_file_read', name='file_read', arguments={'file_path': 'code_run/complex_math_program.py'}) 命令详情
+file_read tool_call
+Running tool  file_read
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: file_read, 任务: interrupt_test
+[judge_agent] 工具 'file_read' (level 0) 执行结果: success
+
+--- judge_agent 第 3/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['file_read', 'dir_list', 'final_output', 'parse_document', 'execute_code']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_execute_code', name='execute_code', arguments={'file_path': 'code_run/complex_math_program.py'})] llm_response.tool_calls
+[judge_agent] 正在调用工具: ['execute_code']
+ToolCall(id='tool_0_execute_code', name='execute_code', arguments={'file_path': 'code_run/complex_math_program.py'}) 命令详情
+execute_code tool_call
+Running tool  execute_code
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: execute_code, 任务: interrupt_test
+[judge_agent] 工具 'execute_code' (level 0) 执行结果: success
+
+--- judge_agent 第 4/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['file_read', 'dir_list', 'final_output', 'parse_document', 'execute_code']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_final_output', name='final_output', arguments={'task_id': 'instruction_c36b1385696b', 'status': 'error', 'output': '任务失败。`code_run/complex_math_program.py` 文件中的代码存在语法错误，导致程序无法正常运行。具体错误信息为：`SyntaxError: f-string expression part cannot include a backslash`。该错误发生在第75行，需要修正。', 'error_information': 'SyntaxError: f-string expression part cannot include a backslash'})] llm_response.tool_calls
+[judge_agent] 正在调用工具: ['final_output']
+ToolCall(id='tool_0_final_output', name='final_output', arguments={'task_id': 'instruction_c36b1385696b', 'status': 'error', 'output': '任务失败。`code_run/complex_math_program.py` 文件中的代码存在语法错误，导致程序无法正常运行。具体错误信息为：`SyntaxError: f-string expression part cannot include a backslash`。该错误发生在第75行，需要修正。', 'error_information': 'SyntaxError: f-string expression part cannot include a backslash'}) 命令详情
+[judge_agent] 调用 final_output 工具，直接返回结果: error
+[judge_agent] 检测到 final_output 工具调用，直接返回最终结果
+📚 Agent出栈: judge_agent (ID: judge_agent_0039b9d28761)
+🕰️ 更新Agent历史结束时间: judge_agent_0039b9d28761 -> 2025-08-31T16:06:42.618914
+📈 更新Agent进度 (general): writing_agent_017f23... -> 子Agent judge_agent 已完成: 任务失败。`code_run/complex_mat...
+[writing_agent] 工具 'judge_agent' (level -1) 执行结果: error
+
+--- writing_agent 第 4/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_file_write', name='file_write', arguments={'content': 'import math\n\ndef add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n\ndef power(base, exponent):\n    return base ** exponent\n\ndef square_root(number):\n    if number < 0:\n        raise ValueError("Cannot calculate square root of a negative number")\n    return math.sqrt(number)\n\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError("Factorial is only defined for non-negative integers")\n    if n == 0:\n        return 1\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\ndef calculate_expression(expression):\n    try:\n        return eval(expression)\n    except Exception as e:\n        raise ValueError(f"Invalid expression: {e}")\n\nif __name__ == "__main__":\n    print("Complex Math Program")\n    print("--------------------")\n\n    num1 = 10\n    num2 = 5\n\n    print(f"{num1} + {num2} = {add(num1, num2)}")\n    print(f"{num1} - {num2} = {subtract(num1, num2)}")\n    print(f"{num1} * {num2} = {multiply(num1, num2)}")\n    print(f"{num1} / {num2} = {divide(num1, num2)}")\n    print(f"{num1} ^ {num2} = {power(num1, num2)}")\n    print(f"Square root of {num1} = {square_root(num1)}")\n    print(f"Factorial of {num2} = {factorial(num2)}")\n\n    expression = "2 * (3 + 4) - 10 / 2"\n    print(f"Expression \\"{expression}\\" = {calculate_expression(expression)}")\n\n    try:\n        print(f"{num1} / 0 = {divide(num1, 0)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Square root of -1 = {square_root(-1)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Factorial of -5 = {factorial(-5)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Invalid expression \\"2 + * 3\\" = {calculate_expression(\'2 + * 3\')}")\n    except ValueError as e:\n        print(f"Error: {e}")\n', 'file_path': 'code_run/complex_math_program.py'})] llm_response.tool_calls
+[writing_agent] 正在调用工具: ['file_write']
+ToolCall(id='tool_0_file_write', name='file_write', arguments={'content': 'import math\n\ndef add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n\ndef power(base, exponent):\n    return base ** exponent\n\ndef square_root(number):\n    if number < 0:\n        raise ValueError("Cannot calculate square root of a negative number")\n    return math.sqrt(number)\n\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError("Factorial is only defined for non-negative integers")\n    if n == 0:\n        return 1\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\ndef calculate_expression(expression):\n    try:\n        return eval(expression)\n    except Exception as e:\n        raise ValueError(f"Invalid expression: {e}")\n\nif __name__ == "__main__":\n    print("Complex Math Program")\n    print("--------------------")\n\n    num1 = 10\n    num2 = 5\n\n    print(f"{num1} + {num2} = {add(num1, num2)}")\n    print(f"{num1} - {num2} = {subtract(num1, num2)}")\n    print(f"{num1} * {num2} = {multiply(num1, num2)}")\n    print(f"{num1} / {num2} = {divide(num1, num2)}")\n    print(f"{num1} ^ {num2} = {power(num1, num2)}")\n    print(f"Square root of {num1} = {square_root(num1)}")\n    print(f"Factorial of {num2} = {factorial(num2)}")\n\n    expression = "2 * (3 + 4) - 10 / 2"\n    print(f"Expression \\"{expression}\\" = {calculate_expression(expression)}")\n\n    try:\n        print(f"{num1} / 0 = {divide(num1, 0)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Square root of -1 = {square_root(-1)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Factorial of -5 = {factorial(-5)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Invalid expression \\"2 + * 3\\" = {calculate_expression(\'2 + * 3\')}")\n    except ValueError as e:\n        print(f"Error: {e}")\n', 'file_path': 'code_run/complex_math_program.py'}) 命令详情
+file_write tool_call
+Running tool  file_write
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: file_write, 任务: interrupt_test
+[writing_agent] 工具 'file_write' (level 0) 执行结果: success
+
+--- writing_agent 第 5/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_judge_agent', name='judge_agent', arguments={'task_input': '我已生成一个复杂的数学计算程序，包含多个函数，文件路径为：code_run/complex_math_program.py。请判断是否符合要求。', 'task_id': 'interrupt_test'})] llm_response.tool_calls
+[writing_agent] 正在调用工具: ['judge_agent']
+ToolCall(id='tool_0_judge_agent', name='judge_agent', arguments={'task_input': '我已生成一个复杂的数学计算程序，包含多个函数，文件路径为：code_run/complex_math_program.py。请判断是否符合要求。', 'task_id': 'interrupt_test'}) 命令详情
+judge_agent tool_call
+Running tool  judge_agent
+⚖️  启动judge_agent，审查任务: interrupt_test ⚖️
+📈 更新Agent进度 (waiting): writing_agent_017f23... -> 正在等待子Agent judge_agent 返回结果......
+ℹ️ Agent已存在: judge_agent (ID: judge_agent_0039b9d28761, Status: completed)
+🤖 启动 judge_agent，处理任务: interrupt_test 🤖
+📂 找到现有对话记录，从第 4 轮继续执行
+✅ 发现任务已完成，状态: ERROR
+直接返回之前的final_output结果，无需重新执行
+📈 更新Agent进度 (general): writing_agent_017f23... -> 子Agent judge_agent 已完成: 任务失败。`code_run/complex_mat...
+[writing_agent] 工具 'judge_agent' (level -1) 执行结果: error
+
+--- writing_agent 第 6/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+ llm_response.output
+[ToolCall(id='tool_0_file_write', name='file_write', arguments={'file_path': 'code_run/complex_math_program.py', 'content': 'import math\n\ndef add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n\ndef power(base, exponent):\n    return base ** exponent\n\ndef square_root(number):\n    if number < 0:\n        raise ValueError("Cannot calculate square root of a negative number")\n    return math.sqrt(number)\n\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError("Factorial is only defined for non-negative integers")\n    if n == 0:\n        return 1\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\ndef calculate_expression(expression):\n    try:\n        return eval(expression)\n    except Exception as e:\n        raise ValueError(f"Invalid expression: {e}")\n\nif __name__ == "__main__":\n    print("Complex Math Program")\n    print("--------------------")\n\n    num1 = 10\n    num2 = 5\n\n    print(f"{num1} + {num2} = {add(num1, num2)}")\n    print(f"{num1} - {num2} = {subtract(num1, num2)}")\n    print(f"{num1} * {num2} = {multiply(num1, num2)}")\n    print(f"{num1} / {num2} = {divide(num1, num2)}")\n    print(f"{num1} ^ {num2} = {power(num1, num2)}")\n    print(f"Square root of {num1} = {square_root(num1)}")\n    print(f"Factorial of {num2} = {factorial(num2)}")\n\n    expression = "2 * (3 + 4) - 10 / 2"\n    print(f"Expression \\"{expression}\\" = {calculate_expression(expression)}")\n\n    try:\n        print(f"{num1} / 0 = {divide(num1, 0)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Square root of -1 = {square_root(-1)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Factorial of -5 = {factorial(-5)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Invalid expression \\"2 + * 3\\" = {calculate_expression(\'2 + * 3\')}")\n    except ValueError as e:\n        print(f"Error: {e}")\n'})] llm_response.tool_calls
+[writing_agent] 正在调用工具: ['file_write']
+ToolCall(id='tool_0_file_write', name='file_write', arguments={'file_path': 'code_run/complex_math_program.py', 'content': 'import math\n\ndef add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n\ndef multiply(a, b):\n    return a * b\n\ndef divide(a, b):\n    if b == 0:\n        raise ValueError("Cannot divide by zero")\n    return a / b\n\ndef power(base, exponent):\n    return base ** exponent\n\ndef square_root(number):\n    if number < 0:\n        raise ValueError("Cannot calculate square root of a negative number")\n    return math.sqrt(number)\n\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError("Factorial is only defined for non-negative integers")\n    if n == 0:\n        return 1\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n\ndef calculate_expression(expression):\n    try:\n        return eval(expression)\n    except Exception as e:\n        raise ValueError(f"Invalid expression: {e}")\n\nif __name__ == "__main__":\n    print("Complex Math Program")\n    print("--------------------")\n\n    num1 = 10\n    num2 = 5\n\n    print(f"{num1} + {num2} = {add(num1, num2)}")\n    print(f"{num1} - {num2} = {subtract(num1, num2)}")\n    print(f"{num1} * {num2} = {multiply(num1, num2)}")\n    print(f"{num1} / {num2} = {divide(num1, num2)}")\n    print(f"{num1} ^ {num2} = {power(num1, num2)}")\n    print(f"Square root of {num1} = {square_root(num1)}")\n    print(f"Factorial of {num2} = {factorial(num2)}")\n\n    expression = "2 * (3 + 4) - 10 / 2"\n    print(f"Expression \\"{expression}\\" = {calculate_expression(expression)}")\n\n    try:\n        print(f"{num1} / 0 = {divide(num1, 0)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Square root of -1 = {square_root(-1)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Factorial of -5 = {factorial(-5)}")\n    except ValueError as e:\n        print(f"Error: {e}")\n\n    try:\n        print(f"Invalid expression \\"2 + * 3\\" = {calculate_expression(\'2 + * 3\')}")\n    except ValueError as e:\n        print(f"Error: {e}")\n'}) 命令详情
+file_write tool_call
+Running tool  file_write
+🔧 调用工具服务器: http://127.0.0.1:8001/api/tool/execute
+🔧 工具: file_write, 任务: interrupt_test
+[writing_agent] 工具 'file_write' (level 0) 执行结果: success
+
+--- writing_agent 第 7/100 轮执行 ---
+⚠️ claude-3-7-sonnet-20250219模型未配置API密钥，寻找可用模型...
+⚠️ claude-3-7-sonnet-20250219模型未配置，默认使用当前 available 模型：google/gemini-2.5-flash
+🔧 使用工具: ['material_to_paper_agent', 'paper_material_collect', 'get_idea_and_experiment_plan', 'experment_material_data_agent', 'experment_material_to_figures_agent', 'judge_agent', 'final_output', 'file_read', 'file_write', 'dir_list', 'dir_create']
+🎯 工具选择策略: required
+🤖 调用模型: google/gemini-2.5-flash
+
+⏸️ 任务暂停时间: 2025-08-31 16:06:52
+📋 任务ID: interrupt_test
+🔄 暂停方式: 删除运行标记，触发中断
+================================================================================
+
+
+⏸️ 任务被暂停: 任务 interrupt_test 被暂停

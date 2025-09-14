@@ -1,0 +1,9 @@
+{
+  "task_id": "tt",
+  "agent_system_name": "test_system",
+  "user_instructions": [
+    "请描述根目录有什么文件夹"
+  ],
+  "created_time": "2025-08-31T17:57:16.238909",
+  "log_file": "/app/logs/api_state/tt_console.log"
+}

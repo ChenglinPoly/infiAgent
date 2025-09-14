@@ -1,0 +1,32 @@
+# 基于 LiteLLM 的简化 LLM 配置文件
+# 大幅简化配置，只需要必要的参数
+
+# 默认配置
+default:
+  temperature: 0
+  max_tokens: 0  # 0 表示不限制，让模型自然停止
+
+# 环境变量配置（可选，也可以直接设置系统环境变量）
+environment_variables:
+  # Gemini API 密钥
+  GEMINI_API_KEY: "AIzaSyAYxQHwuyuH6wDql2hRh-3nxZofsvdLi5o"
+  
+  # 其他提供商的 API 密钥（如果有的话）
+  # OPENAI_API_KEY: "sk-your-openai-key"
+  # ANTHROPIC_API_KEY: "sk-ant-your-claude-key"
+  # DEEPSEEK_API_KEY: "your-deepseek-key"
+
+# 简化的提供商配置（主要用于向后兼容）
+gemini:
+  official:
+    api_key: "AIzaSyAYxQHwuyuH6wDql2hRh-3nxZofsvdLi5o"
+
+# 注意：使用 LiteLLM 后，不再需要复杂的 base_url、api_version 等配置
+# LiteLLM 会自动处理不同提供商的 API 差异
+
+# 支持的模型示例（LiteLLM 格式）:
+# OpenAI: "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"
+# Claude: "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"
+# Gemini: "gemini/gemini-2.5-flash", "gemini/gemini-2.5-pro"
+# DeepSeek: "deepseek/deepseek-r1", "deepseek/deepseek-v3"
+# Qwen: "qwen/qwen-max-latest", "qwen/qwen-plus-latest" 

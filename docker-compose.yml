@@ -1,0 +1,55 @@
+version: '3.8'
+
+# API导入 - Docker Compose配置
+
+services:
+  multi-level-agent-api:
+    build: .
+    container_name: multi-level-agent-api
+    ports:
+      - "5002:5002"
+    environment:
+      # LLM API Keys (可选，也可以通过.env文件设置)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - CUSTOM_API_KEY=${CUSTOM_API_KEY:-}
+      - CUSTOM_BASE_URL=${CUSTOM_BASE_URL:-https://openrouter.ai/api/v1}
+      
+      # 其他环境变量
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    
+    volumes:
+      # 配置文件挂载（支持外部传入）
+      - ./config/run_env_config:/app/config/run_env_config
+      - ./config/agent_library:/app/config/agent_library
+      
+      # 日志和数据持久化
+      - ./logs:/app/logs
+      - ./conversations:/app/conversations
+      
+      # 可选：挂载自定义配置目录
+      # - ./custom_configs:/app/config/run_env_config
+      # - ./custom_agents:/app/config/agent_library
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # 可选：工具服务器（如果需要独立运行）
+  # tool-server:
+  #   image: your-tool-server:latest
+  #   container_name: multi-level-agent-tools
+  #   ports:
+  #     - "8001:8001"
+  #   restart: unless-stopped
+
+networks:
+  default:
+    name: multi-level-agent-network 
