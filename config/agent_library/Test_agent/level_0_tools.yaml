@@ -232,38 +232,6 @@ tools:
           description: "保存文件的相对路径，例如 'upload/file.pdf'。"
       required: ["url", "save_path"]
 
-  vision_tool:
-    level: 0
-    type: tool_call_agent
-    name: "vision_tool"
-    description: "编码图片为base64格式，供后续LLM分析使用。"
-    parameters:
-      type: "object"
-      properties:
-        image_path:
-          type: "string"
-          description: "图片文件的相对路径（相对于任务目录）。"
-        question:
-          type: "string"
-          description: "要问的问题，用于描述图片。"
-      required: ["image_path"]
-
-  audio_tool:
-    level: 0
-    type: tool_call_agent
-    name: "audio_tool"
-    description: "转录音频为文本，供后续LLM分析使用。"
-    parameters:
-      type: "object"
-      properties:
-        audio_path:
-          type: "string"
-          description: "音频文件的相对路径（相对于任务目录）。"
-        question:
-          type: "string"
-          description: "要问的问题，用于描述音频。"
-      required: ["audio_path"]
-
   # ==================== 文档处理工具 ====================
 
   parse_document:

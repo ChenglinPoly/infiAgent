@@ -12,7 +12,7 @@ except ImportError:
     pass
 
 import json
-from typing import Dict, List, Any, Union
+from typing import Dict, List
 from services.llm_client import SimpleLLMClient, ChatMessage
 from core.context_builder import ContextBuilder
 from core.tool_executor import ToolExecutor
@@ -68,9 +68,6 @@ class AgentExecutor:
         
         # 初始化工具执行器
         self.tool_executor = ToolExecutor(config_loader, hierarchy_manager)
-        
-        # 多模态内容记录（用于存储图片/音频的编码结果）
-        self.multimodal_records: List[Dict] = []
         
         # 初始化对话存储
         from utils.conversation_storage import ConversationStorage
@@ -163,15 +160,7 @@ class AgentExecutor:
                 )
                 
                 # 调用LLM（history永远只有一条）
-                # 🔍 检查是否有未处理的多模态内容
-                user_content: Any = "请输出下一个动作"
-                if self.multimodal_records:
-                    user_content = self._build_multimodal_content()
-                    print(f"   🎬 检测到多媒体内容: {len(self.multimodal_records)} 个")
-                    # 清空记录（避免重复处理）
-                    self.multimodal_records.clear()
-                
-                history = [ChatMessage(role="user", content=user_content)]
+                history = [ChatMessage(role="user", content="请输出下一个动作")]
                 
                 print(f"🤖 调用LLM: {self.model_type}")
                 print(f"   📝 System Prompt长度: {len(full_system_prompt)} 字符")
@@ -283,13 +272,6 @@ class AgentExecutor:
                         "arguments": tool_call.arguments,
                         "result": tool_result
                     }
-                    
-                    # 🔍 检查是否是多媒体工具，如果是则保存到 multimodal_records
-                    # 只保存图片（音频已转录为文本，会在action_history中自然传递）
-                    if tool_call.name == "vision_tool" and tool_result.get("status") == "success":
-                        multimedia_content = tool_result.get("multimedia_content")
-                        if multimedia_content:
-                            self.multimodal_records.append(multimedia_content)
                     
                     # 添加到完整轨迹（永不压缩）
                     self.action_history_fact.append(action_record)
@@ -506,43 +488,6 @@ class AgentExecutor:
             tool_call_counter=self.tool_call_counter,
             system_prompt=full_system_prompt
         )
-    
-    def _build_multimodal_content(self) -> Any:
-        """
-        根据 multimodal_records 构建多媒体内容（仅图片）
-        
-        Returns:
-            str 或 List[Dict] - 根据是否有媒体内容返回不同格式
-        """
-        if not self.multimodal_records:
-            return "请输出下一个动作"
-        
-        # 构建多媒体消息（仅处理图片）
-        content_items = []
-        
-        # 添加文本提示
-        image_count = len(self.multimodal_records)
-        prompt_text = f"输入了 {image_count} 张图片，请输出下一个动作"
-        content_items.append({
-            "type": "text",
-            "text": prompt_text
-        })
-        
-        # 添加图片内容
-        for media in self.multimodal_records:
-            media_type = media.get("type")
-            media_data = media.get("data")
-            
-            if media_type == "image":
-                mime_type = media.get("mime_type", "image/jpeg")
-                content_items.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{media_data}"
-                    }
-                })
-        
-        return content_items
 
 
 if __name__ == "__main__":
