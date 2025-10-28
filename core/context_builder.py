@@ -182,14 +182,14 @@ class ContextBuilder:
     
     def _compress_user_agent_history_with_llm(self, history: List[Dict], task_id: str) -> str:
         """
-        使用LLM压缩历史交互（必须使用LLM，输出JSON格式）
+        使用LLM压缩历史交互（直接返回LLM输出，不解析）
         
         Args:
             history: 历史任务列表
             task_id: 任务ID
             
         Returns:
-            压缩后的文本（3000字以内，已包含XML标签）
+            压缩后的文本（LLM原始输出）
         """
         full_history_data = []
         
@@ -231,15 +231,15 @@ class ContextBuilder:
 历史任务数据：
 {json.dumps(full_history_data, ensure_ascii=False, indent=2)}
 
-请输出JSON格式，包含以下字段：
-1. file_space_summary: 文件空间总结（描述当前工作空间文件结构，结果文件对应的task，和简要介绍，同时列出一些重点的中间材料和文件。基于历史的final_output和thinking来推断）
-2. history_overview: 历史交互概览（数组，每个元素包含user_input和completion的简要描述）
+请总结以下内容：
+1. 文件空间总结：描述当前工作空间文件结构，结果文件对应的task，和简要介绍，同时列出一些重点的中间材料和文件。基于历史的final_output和thinking来推断
+2. 历史交互概览：简要描述每次任务的用户输入和完成情况
 
 要求：
 - 每个描述要简洁明了
 - 总字符数控制在3000字以内
 - 使用中文输出
-- 必须输出有效的JSON格式"""
+- 直接输出总结内容文本，不需要任何标记，不要使用markdown格式"""
 
         from services.llm_client import ChatMessage
         
@@ -248,7 +248,7 @@ class ContextBuilder:
         response = self.llm_client.chat(
             history=history_messages,
             model=self.llm_client.models[0],
-            system_prompt="你是一个专业的内容总结助手。必须输出有效的JSON格式，包含file_space_summary和history_overview字段。",
+            system_prompt="你是一个专业的内容总结助手。请简洁明了地总结历史交互信息。",
             tool_list=[],
             tool_choice="auto"
         )
@@ -258,50 +258,9 @@ class ContextBuilder:
 
         output_text = response.output
         
-        # 尝试提取JSON部分（去掉可能的markdown代码块）
-        if "```json" in output_text:
-            json_start = output_text.find("```json") + 7
-            json_end = output_text.find("```", json_start)
-            json_text = output_text[json_start:json_end].strip()
-        elif "```" in output_text:
-            json_start = output_text.find("```") + 3
-            json_end = output_text.find("```", json_start)
-            json_text = output_text[json_start:json_end].strip()
-        else:
-            json_text = output_text
-
-        summary_data = json.loads(json_text)
+        print(f"✅ 历史交互压缩成功，长度: {len(output_text)} 字符")
         
-        file_space_summary = summary_data.get("file_space_summary", "")
-        history_overview = summary_data.get("history_overview", [])
-
-        if isinstance(file_space_summary, dict):
-            file_space_summary = json.dumps(file_space_summary, ensure_ascii=False)
-        else:
-            file_space_summary = str(file_space_summary)
-
-        result = []
-        result.append("当前的文件空间总结：")
-        result.append(file_space_summary)
-        result.append("\n历史交互概览：")
-        
-        for item in history_overview:
-            if isinstance(item, dict):
-                user_input = item.get('user_input', '')
-                completion = item.get('completion', '')
-            else:
-                user_input = str(item)
-                completion = ""
-            
-            result.append(f"用户输入：{user_input}")
-            result.append(f"完成情况：{completion}")
-            result.append("")
-        
-        compressed_text = "\n".join(result)
-        
-        print(f"✅ 历史交互压缩成功，长度: {len(compressed_text)} 字符")
-        
-        return compressed_text
+        return output_text
     
     def _build_structured_call_info(self, current: Dict, current_agent_id: str) -> str:
         """构建结构化调用信息（JSON格式，更清晰）"""
