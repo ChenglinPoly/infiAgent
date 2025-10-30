@@ -418,19 +418,53 @@ def server_status():
 
 
 def server_stop():
-    """停止服务器"""
-    pid = get_server_pid()
-    
-    if not pid:
-        print("ℹ️  服务器未运行")
-        return
-    
+    """停止服务器（杀掉所有匹配进程）"""
     import signal
     import os
     
     try:
-        os.kill(pid, signal.SIGTERM)
-        print(f"✅ Tool Server 已停止 (PID: {pid})")
+        import psutil
+        # 使用 psutil 找到所有 tool_server 进程
+        killed_pids = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline')
+                if not cmdline or len(cmdline) < 2:
+                    continue
+                
+                if 'python' not in proc.info.get('name', '').lower():
+                    continue
+                
+                script_path = cmdline[1] if len(cmdline) > 1 else ''
+                if 'tool_server_lite' in script_path and 'server.py' in script_path:
+                    # 排除管理命令
+                    if any(cmd in cmdline for cmd in ['status', 'start', 'stop', 'restart']):
+                        continue
+                    
+                    pid = proc.info['pid']
+                    os.kill(pid, signal.SIGTERM)
+                    killed_pids.append(pid)
+                    print(f"✅ 已停止进程: {pid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                continue
+        
+        if killed_pids:
+            print(f"✅ Tool Server 已停止（共 {len(killed_pids)} 个进程）")
+        else:
+            print("ℹ️  服务器未运行")
+    
+    except ImportError:
+        # psutil 未安装，使用简单方法
+        pid = get_server_pid()
+        if not pid:
+            print("ℹ️  服务器未运行")
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"✅ Tool Server 已停止 (PID: {pid})")
+        except Exception as e:
+            print(f"❌ 停止失败: {e}")
+    
     except Exception as e:
         print(f"❌ 停止失败: {e}")
 
