@@ -70,9 +70,11 @@ MLA handles the entire research workflow - from literature search and experiment
 
 ```bash
 #ensure your python or python3 version >3.10
+cd install_path
 python -m venv venv
 source venv/bin/activate
-cd /path/to/MLA_V3
+git clone https://github.com/ChenglinPoly/Multi-Level-Agent.git
+cd Multi-Level-Agent
 pip install -e .
 ```
 
