@@ -821,7 +821,7 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) for details.
+ see [LICENSE](LICENSE) for details.
 
 ---
 
