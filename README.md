@@ -8,7 +8,7 @@
 
 ## 🌟 Introduction
 
-**MLA (Multi-Level Agent)** is an agent framework designed for **unlimited runtime** without tool calling chaos or system crashes caused by cumulative task resources and conversation history. With MLA, you can build powerful general-purpose and semi-specialized agents simply by writing configuration files.
+**infiAgent Also called MLA (Multi-Level Agent)** is an agent framework designed for **unlimited runtime** without tool calling chaos or system crashes caused by cumulative task resources and conversation history. With MLA, you can build powerful general-purpose and semi-specialized agents simply by writing configuration files.
 
 ### Key Features
 
