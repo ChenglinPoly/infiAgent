@@ -29,9 +29,9 @@ The default configuration in this repository is a **research-oriented semi-speci
 
 ---
 
-## 🎬 See It In Action
+## 🎬 Outputs
 
-Watch MLA generate complete academic papers end-to-end:
+MLA generate complete academic papers end-to-end:
 
 **Demo 1:**
 
