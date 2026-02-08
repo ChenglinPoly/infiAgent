@@ -43,8 +43,6 @@ class HierarchyManager:
         
         # 初始化文件
         self._initialize_files()
-        # 修复潜在的不一致状态（例如：stack 为空但 current 里仍有 running agent）
-        self._repair_inconsistent_state()
     
     def _initialize_files(self):
         """初始化栈文件和共享上下文文件"""
@@ -132,9 +130,6 @@ class HierarchyManager:
         Returns:
             指令ID
         """
-        # 若上一轮进程异常退出，可能出现 stack 为空但 current 仍挂着 running agent 的情况
-        # 在新指令开始前先做一次修复，避免 current 永远无法归档到 history
-        self._repair_inconsistent_state()
         with self.lock:
             import hashlib
             context = self._load_context()
@@ -282,7 +277,7 @@ class HierarchyManager:
             
             self._save_context(context)
             
-            # 检查是否所有Agent都完成，如果是则移动current到history
+            # 检查是否当前栈已清空（无可 resume 的运行中 agent），若是则归档 current 到 history
             self._check_and_complete_if_all_done()
             
             safe_print(f"📚 Agent出栈: {agent_id}")
@@ -320,99 +315,56 @@ class HierarchyManager:
         return self._load_context()
     
     def _check_and_complete_if_all_done(self):
-        """检查是否所有Agent都完成，如果是则移动current到history"""
+        """
+        检查是否应将 current 归档到 history。
+        
+        关键逻辑：**以 stack 是否为空为准**（而不是 agents_status 是否都为 completed / 终态）。
+        
+        原因：
+        - 用户可能会人为中断/暂停任务（例如 Ctrl+C、需求变更），导致某些 agent 状态仍停留在 running，
+          但 stack 已被清空（不可 resume / 实际已无运行中的 agent）。
+        - 如果仍按 agents_status 判断，会出现 current 永远无法归档到 history 的问题。
+        """
         context = self._load_context()
         current_agents = context.get("current", {}).get("agents_status", {})
         
-        if not current_agents:
+        # 栈非空：说明仍存在运行链路，不能归档
+        stack = self._load_stack()
+        if stack:
             return
         
-        # 检查是否所有Agent都处于“终态”（允许 completed/error/interrupted/cancelled）
-        terminal_statuses = {"completed", "error", "interrupted", "cancelled"}
-        all_done = all(
-            (agent_info.get("status") in terminal_statuses)
-            for agent_info in current_agents.values()
-        )
+        # 栈为空：仅当 current 有实际内容时才归档（避免空归档）
+        current_instructions = context.get("current", {}).get("instructions", [])
+        if not current_agents and not current_instructions:
+            return
         
-        if all_done:
-            safe_print("🎉 所有Agent已完成，移动current到history")
-            
-            # 移动到history
-            history_entry = {
-                "instructions": context["current"]["instructions"].copy(),
-                "hierarchy": context["current"]["hierarchy"].copy(),
-                "agents_status": context["current"]["agents_status"].copy(),
-                "start_time": context["current"]["start_time"],
-                "completion_time": datetime.now().isoformat()
-            }
-            
-            context["history"].append(history_entry)
-            
-            # 清空current
-            context["current"] = {
-                "instructions": [],
-                "hierarchy": {},
-                "agents_status": {},
-                "start_time": datetime.now().isoformat(),
-                "last_updated": datetime.now().isoformat()
-            }
-            
-            # 清空栈
-            self._save_stack([])
-            
-            self._save_context(context)
-            safe_print("✅ 任务已归档到history")
-
-    def _repair_inconsistent_state(self):
-        """
-        修复不一致的共享上下文状态：
-        - 如果 stack 已为空（不可 resume），但 current.agents_status 仍存在 status=running 的 agent，
-          说明进程曾异常退出/强制中断且未正确 pop_agent。
-        - 此时将这些 running agent 标记为 interrupted，并在可归档时将 current 移入 history。
-        """
-        try:
-            with self.lock:
-                stack = self._load_stack()
-                if stack:
-                    # 栈非空：说明可能仍可 resume，不做自动修复
-                    return
-                
-                context = self._load_context()
-                current_agents = context.get("current", {}).get("agents_status", {})
-                if not current_agents:
-                    return
-                
-                running_ids = [
-                    agent_id for agent_id, info in current_agents.items()
-                    if info.get("status") == "running"
-                ]
-                if not running_ids:
-                    return
-                
-                now = datetime.now().isoformat()
-                safe_print(f"⚠️ 检测到不一致状态：stack 为空但仍有 {len(running_ids)} 个 running agent，自动标记为 interrupted")
-                
-                for agent_id in running_ids:
-                    info = current_agents.get(agent_id, {})
-                    info["status"] = "interrupted"
-                    info["end_time"] = now
-                    # 若没有 final_output，写入可解释信息，便于前端展示
-                    if not info.get("final_output"):
-                        info["final_output"] = (
-                            "⚠️ 该任务在上次运行中被中断或进程异常退出，且 stack 为空无法恢复。系统已自动将其归档为 interrupted。"
-                        )
-                    
-                    # 同步时间历史
-                    if agent_id in context.get("agent_time_history", {}):
-                        context["agent_time_history"][agent_id]["end_time"] = now
-                
-                self._save_context(context)
-                
-                # 重新检查是否可归档（现在 running 已转为 interrupted）
-                self._check_and_complete_if_all_done()
+        safe_print("🎉 当前栈已清空，移动current到history")
         
-        except Exception as e:
-            safe_print(f"⚠️ 修复不一致状态失败: {e}")
+        # 移动到history
+        history_entry = {
+            "instructions": context["current"]["instructions"].copy(),
+            "hierarchy": context["current"]["hierarchy"].copy(),
+            "agents_status": context["current"]["agents_status"].copy(),
+            "start_time": context["current"].get("start_time"),
+            "completion_time": datetime.now().isoformat()
+        }
+        
+        context["history"].append(history_entry)
+        
+        # 清空current
+        context["current"] = {
+            "instructions": [],
+            "hierarchy": {},
+            "agents_status": {},
+            "start_time": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        # 清空栈（保持幂等）
+        self._save_stack([])
+        
+        self._save_context(context)
+        safe_print("✅ 任务已归档到history")
     
     def get_current_agent_id(self) -> Optional[str]:
         """获取当前栈顶的Agent ID"""
