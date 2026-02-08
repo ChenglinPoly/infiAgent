@@ -1,64 +1,7 @@
 tools:
-  browser_execute_agent:
-    level: 1
-    type: llm_call_agent
-    available_tools:
-      - browser_navigate
-      - browser_snapshot
-      # - browser_execute_js
-      - browser_new_page
-      - browser_switch_page
-      - browser_close_page
-      - browser_list_pages
-      - browser_click
-      - browser_type
-      - browser_wait
-      - browser_scroll
-      # - browser_mouse_move
-      # - browser_mouse_click_coords
-      # - browser_drag_and_drop
-      # - browser_hover
-      - file_read
-      - file_move
-      - dir_list
-      - dir_create
-      - file_write
-      - reference_list
-      - reference_add
-      - reference_delete
-      - final_output
-      - human_in_loop
-      - image_read
-    max_turns: 100
-    model_type: claude-3-7-sonnet-20250219
-    prompts:    
-      agent_responsibility: |
-        你的职责是根据任务要求操作浏览器，实现任务目的。
-      agent_workflow: |
-        **你的流程:**
-        1. 先使用browser_snapshot，确保网页是已经开启状态（如果能执行成功证明已经打开了浏览器）。
-          如果不知道browser_id参数，则就是 temp/browser 文件夹下的对应文件名，使用 dir 或查看固话信息可以查到。或者思考区域会帮你记住。
-        2. 不要重复导航已经打开的网页。
-        在 temp/browser id下存放着浏览器当前活动页面的可交互元素列表文件，html源码，文本内容文件，和截图。
-        对于交互（每次交互前！！）：
-        每次交互前优先查看page_source.html查看可交互元素
-        对于内容获取：优先查看文本内容文件。content.md
-        当时上述信息都不足时，最后查看截图。你无法阅读截图，但是你可以使用image_read给予你提示。
-        你应该基于这些文件，结合任务要求，操作浏览器，实现任务目的。
-        如果还带有截图需求，需要将 current.png 移动或复制到一个文件夹中，防止覆盖。
-        人机验证可以交给人类完成。
-    name: "browser_execute_agent"
-    description: "你的职责是操作浏览器完成任务"
-    parameters:
-      type: "object"
-      properties:
-        task_id:
-          type: "string"
-          description: "任务的唯一ID。"
-        task_input:
-          type: "string"
-          description: "具体的任务要求,browser_id（必须！）"
-      required: ["task_id", "task_input"]
+  # browser_execute_agent:
+  #   NOTE: 桌面端默认不打包 Playwright/Chromium（体积大且需额外安装浏览器）。
+  #   若需要浏览器自动化，请在源码环境手动安装并在 agent 配置中启用 browser_* 工具。
 
   answer_from_papers:
     level: 1
