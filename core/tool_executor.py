@@ -224,6 +224,10 @@ class ToolExecutor:
             }
         
         except Exception as e:
+            try:
+                safe_print(f"❌ 直接调用工具异常: {tool_name}: {str(e)[:300]}")
+            except Exception:
+                pass
             return {
                 "status": "error",
                 "output": "",
