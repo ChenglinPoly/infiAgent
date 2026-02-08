@@ -9,6 +9,7 @@ import sys
 import argparse
 from pathlib import Path
 import os
+from datetime import datetime
 
 # Windows控制台UTF-8编码支持（解决emoji显示问题）
 if sys.platform == 'win32':
@@ -233,11 +234,29 @@ def main():
         # 启动前清理状态
         if not args.jsonl:
             print("\n🧹 检查并清理状态...")
-        
-        # 如果指定 --force-new，清空所有状态
-        
-        
-        # 注册用户指令
+
+        # 重要：必须先清理，再注册本次用户指令
+        # 否则 clean_before_start() 会把“刚写入的本次指令”误判为 last_input，导致 is_same_task 恒为 True，
+        # 进而不会按“新任务”清空栈，留下上一轮中断的栈条目，造成任务结束后 stack 仍不为空。
+        if args.force_new:
+            if not args.jsonl:
+                print("🗑️  --force-new: 清空所有状态，开始新任务")
+            context = hierarchy_manager._load_context()
+            context["current"] = {
+                "instructions": [],
+                "hierarchy": {},
+                "agents_status": {},
+                "start_time": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat()
+            }
+            # 保留全局 history/agent_time_history 等其他字段不动
+            hierarchy_manager._save_context(context)
+            hierarchy_manager._save_stack([])
+        else:
+            from core.state_cleaner import clean_before_start
+            clean_before_start(args.task_id, args.user_input)
+
+        # 注册用户指令（清理后写入）
         if not args.jsonl:
             print(f"\n📝 注册用户指令...")
         instruction_id = hierarchy_manager.start_new_instruction(args.user_input)
@@ -277,21 +296,6 @@ def main():
             hierarchy_manager=hierarchy_manager,
             direct_tools=getattr(args, 'direct_tools', False)
         )
-
-        if args.force_new:
-            if not args.jsonl:
-                print("🗑️  --force-new: 清空所有状态，开始新任务")
-            context = hierarchy_manager._load_context()
-            context["current"] = {
-                "instructions": [],
-                "hierarchy": {},
-                "agents_status": {}
-            }
-            hierarchy_manager._save_context(context)
-            hierarchy_manager._save_stack([])
-        else:
-            from core.state_cleaner import clean_before_start
-            clean_before_start(args.task_id, args.user_input)
         
         # 设置工具执行权限模式
         if args.auto_mode is not None:
