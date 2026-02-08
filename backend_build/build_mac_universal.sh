@@ -46,12 +46,64 @@ build_arch() {
     "${SPEC_FILE}"
 }
 
+normalize_info_plists() {
+  # @electron/universal parses every Info.plist as XML (utf8). Some embedded Python frameworks
+  # ship binary plists which break parsing. Convert all Info.plist under the built bundle to XML.
+  local root_dir="$1"
+  if [ ! -d "${root_dir}" ]; then
+    return 0
+  fi
+  if [ ! -x "/usr/bin/plutil" ]; then
+    return 0
+  fi
+  python3 - <<'PY' "${root_dir}"
+import os, sys, subprocess
+root = sys.argv[1]
+paths = []
+for base, _dirs, files in os.walk(root):
+    for f in files:
+        if f == "Info.plist":
+            paths.append(os.path.join(base, f))
+for p in paths:
+    try:
+        subprocess.run(["/usr/bin/plutil", "-convert", "xml1", p], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+print(f"[backend_build] normalized Info.plist -> {len(paths)} file(s)")
+PY
+}
+
+ensure_litellm_tokenizers_init() {
+  # LiteLLM uses importlib.resources on `litellm.litellm_core_utils.tokenizers` which is
+  # an implicit namespace package (no __init__.py). In PyInstaller, namespace package
+  # resource discovery can fail on mac x64. Create an explicit package marker.
+  local bundle_root="$1"
+  if [ ! -d "${bundle_root}" ]; then
+    return 0
+  fi
+  python3 - <<'PY' "${bundle_root}"
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+target = root / "_internal" / "litellm" / "litellm_core_utils" / "tokenizers" / "__init__.py"
+try:
+    if target.parent.exists():
+        target.write_text("# added for PyInstaller namespace package compatibility\n", encoding="utf-8")
+        print(f"[backend_build] wrote {target}")
+except Exception:
+    pass
+PY
+}
+
 HOST_ARCH="$(uname -m || true)"
 echo "[backend_build] host_arch: ${HOST_ARCH}"
 
 echo "[backend_build] === arm64 backend ==="
 ensure_venv "${PYTHON_ARM64}" "${VENV_ARM64}"
 build_arch "darwin-arm64" "${VENV_ARM64}"
+normalize_info_plists "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
+ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 
 if [ "${HOST_ARCH}" = "arm64" ]; then
   echo "[backend_build] === x64 backend (Rosetta) ==="
@@ -93,6 +145,8 @@ if [ "${HOST_ARCH}" = "arm64" ]; then
     --distpath "${OUTPUT_ROOT}/darwin-x64" \
     --workpath "${WORK_ROOT}/darwin-x64" \
     "${SPEC_FILE}"
+  normalize_info_plists "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
+  ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
 else
   echo "[backend_build] host is not arm64; skipping darwin-x64 build."
 fi
