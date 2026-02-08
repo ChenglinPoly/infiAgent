@@ -34,6 +34,18 @@ try:
 except Exception:
     pass
 
+# tiktoken uses external registry data via `tiktoken_ext` to resolve encodings like cl100k_base.
+# In frozen builds, missing `tiktoken_ext` causes: "Unknown encoding cl100k_base. Plugins found: []"
+try:
+    hiddenimports += collect_submodules("tiktoken_ext")
+except Exception:
+    hiddenimports += ["tiktoken_ext.openai_public"]
+
+try:
+    datas += collect_data_files("tiktoken_ext")
+except Exception:
+    pass
+
 a = Analysis(
     [str(repo_root / "start.py")],
     pathex=[str(repo_root)],

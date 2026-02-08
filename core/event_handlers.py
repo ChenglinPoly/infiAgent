@@ -148,11 +148,27 @@ class JsonlStreamHandler:
         })
 
     def _stream_run_tool_end(self, event: ToolCallEndEvent):
+        # 兼容不同工具返回格式：
+        # - ToolExecutor 包装层错误：error_information
+        # - 工具本身错误：error
+        # - 工具输出：output
+        err = ""
+        try:
+            err = str(event.result.get("error_information") or event.result.get("error") or "")
+        except Exception:
+            err = ""
+        out = ""
+        try:
+            out = str(event.result.get("output", "") or "")
+        except Exception:
+            out = ""
+        preview = out[:200] if out else (err[:200] if err else "")
         self.jsonl_emitter.emit({
             "type": "tool_result",
             "name": event.tool_name,
             "status": event.status,
-            "output_preview": str(event.result.get('output', ''))[:200]
+            "output_preview": preview,
+            "error": err[:1000] if err else ""
         })
 
     def _stream_run_thinking_end(self, event: ThinkingEndEvent):

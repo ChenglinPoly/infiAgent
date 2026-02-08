@@ -252,6 +252,7 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
   });
 
   let buffer = '';
+  let errBuffer = '';
 
   pythonProcess.stdout.on('data', (data) => {
     buffer += data.toString();
@@ -271,7 +272,13 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
   });
 
   pythonProcess.stderr.on('data', (data) => {
-    mainWindow.webContents.send('agent-log', data.toString());
+    errBuffer += data.toString();
+    const lines = errBuffer.split('\n');
+    errBuffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      mainWindow.webContents.send('agent-log', line);
+    }
   });
 
   pythonProcess.on('close', (code) => {
@@ -369,6 +376,7 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
     });
 
     let buffer = '';
+    let errBuffer = '';
 
     pythonProcess.stdout.on('data', (data) => {
       buffer += data.toString();
@@ -387,7 +395,13 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      mainWindow.webContents.send('agent-log', data.toString());
+      errBuffer += data.toString();
+      const lines = errBuffer.split('\n');
+      errBuffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        mainWindow.webContents.send('agent-log', line);
+      }
     });
 
     pythonProcess.on('close', (code) => {
