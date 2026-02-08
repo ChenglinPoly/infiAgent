@@ -5,6 +5,7 @@ Vision分析工具 - 图片内容分析 & 图片读取（多模态支持）
 """
 
 import base64
+import os
 from pathlib import Path
 from typing import Dict, Any
 
