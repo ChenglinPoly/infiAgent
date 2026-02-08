@@ -10,14 +10,11 @@ from typing import Dict, Any
 
 from .file_tools import BaseTool, get_abs_path
 
-# 导入llm_client_lite
-import sys
-import os
-# 添加父目录到路径
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
-from llm_client_lite import get_llm_client
+# NOTE:
+# 以前这里用 `sys.path` hack + `from llm_client_lite import ...`，
+# 在 direct-tools / PyInstaller 环境下会因为模块名不在顶层而失败。
+# 统一使用包内绝对导入，保证 dev/packaged 都一致可用。
+from tool_server_lite.llm_client_lite import get_llm_client
 
 
 class ImageReadTool(BaseTool):
