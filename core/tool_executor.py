@@ -12,6 +12,8 @@ import yaml
 import json
 import time
 import uuid
+import asyncio
+import threading
 from typing import Dict, Any
 from pathlib import Path
 
@@ -184,7 +186,35 @@ class ToolExecutor:
             safe_print(f"   🔧 直接调用工具: {tool_name}")
             
             # 调用工具（与 ToolServer 的调用方式一致）
-            tool_result = tool.execute(task_id, arguments)
+            #
+            # 注意：部分工具（如 human_in_loop）只实现 execute_async（用于非阻塞等待），
+            # 在 direct_mode 下也必须支持，否则会触发 NotImplementedError。
+            if hasattr(tool, "execute_async") and callable(getattr(tool, "execute_async")):
+                # 在子线程里创建 event loop 执行，避免未来在已有 event loop 场景下崩溃
+                result_holder: Dict[str, Any] = {}
+                err_holder: Dict[str, Any] = {}
+
+                def _runner():
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            coro = tool.execute_async(task_id, arguments)
+                            result_holder["tool_result"] = loop.run_until_complete(coro)
+                        finally:
+                            loop.close()
+                    except Exception as e:
+                        err_holder["error"] = e
+
+                t = threading.Thread(target=_runner, daemon=True)
+                t.start()
+                t.join()
+
+                if err_holder.get("error") is not None:
+                    raise err_holder["error"]
+                tool_result = result_holder.get("tool_result")
+            else:
+                tool_result = tool.execute(task_id, arguments)
             
             # 包装返回值（与 _call_toolserver 格式一致：data 被 json.dumps 到 output 字符串）
             return {

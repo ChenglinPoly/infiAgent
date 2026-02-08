@@ -10,6 +10,8 @@ import argparse
 from pathlib import Path
 import os
 from datetime import datetime
+import json
+import threading
 
 # Windows控制台UTF-8编码支持（解决emoji显示问题）
 if sys.platform == 'win32':
@@ -176,6 +178,51 @@ def main():
         sys.stderr_orig = sys.stderr
         # 所有 print 输出到 stderr
         sys.stdout = sys.stderr
+
+    # 桌面端（JSONL）无感 HIL 交互：从 stdin 接收前端回复并写回 HIL 任务
+    #
+    # 约定：Electron 主进程通过 stdin 写入一行 JSON：
+    #   {"type":"hil_response","hil_id":"...","response":"..."}
+    # 本进程在 direct-tools 模式下会在同一进程内维护 HIL_TASKS，收到回复后直接 respond_hil_task 即可让 human_in_loop 工具继续执行。
+    def _start_stdin_control_thread():
+        try:
+            from tool_server_lite.tools.human_tools import respond_hil_task
+        except Exception:
+            respond_hil_task = None
+        
+        def _worker():
+            if respond_hil_task is None:
+                return
+            try:
+                for line in sys.stdin:
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(msg, dict):
+                        continue
+                    if msg.get("type") != "hil_response":
+                        continue
+                    hil_id = (msg.get("hil_id") or "").strip()
+                    response = msg.get("response")
+                    if not hil_id or response is None:
+                        continue
+                    try:
+                        respond_hil_task(hil_id, str(response))
+                    except Exception:
+                        continue
+            except Exception:
+                # 控制通道异常不应影响主流程
+                return
+        
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    if args.jsonl:
+        _start_stdin_control_thread()
     
     # 如果没有提供参数或指定了--test，使用默认测试
     if args.test or (not args.task_id and not args.user_input):

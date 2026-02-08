@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   // Agent
   startTask: (params) => ipcRenderer.invoke('start-task', params),
   stopTask: () => ipcRenderer.invoke('stop-task'),
+  hilRespond: (params) => ipcRenderer.invoke('hil-respond', params),
   
   // Events from main process
   onAgentEvent: (callback) => ipcRenderer.on('agent-event', (_, event) => callback(event)),

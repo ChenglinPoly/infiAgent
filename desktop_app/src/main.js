@@ -238,6 +238,22 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
   return { success: true };
 });
 
+// Human-in-loop respond (no-HTTP, via stdin JSONL to Python)
+ipcMain.handle('hil-respond', async (event, { hil_id, response }) => {
+  try {
+    if (!pythonProcess || !pythonProcess.stdin) {
+      return { error: 'No running task process' };
+    }
+    const hid = (hil_id || '').toString().trim();
+    if (!hid) return { error: 'Missing hil_id' };
+    const payload = { type: 'hil_response', hil_id: hid, response: (response ?? '').toString() };
+    pythonProcess.stdin.write(JSON.stringify(payload) + '\n');
+    return { success: true };
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+});
+
 // Check if there is an interrupted task that can be resumed (CLI-compatible: check stack file)
 ipcMain.handle('check-resume', async (event, taskId) => {
   try {

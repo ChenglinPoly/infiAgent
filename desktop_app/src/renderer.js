@@ -364,6 +364,26 @@ function addToolMessage(toolName, status, args) {
       </details>
     `;
   }
+
+  // Human-in-loop: inline response UI (seamless)
+  let hilHtml = '';
+  if (toolName === 'human_in_loop' && args && typeof args === 'object') {
+    const hilId = args.hil_id || '';
+    const instruction = args.instruction || '';
+    if (hilId && instruction) {
+      hilHtml = `
+        <div class="hil-card">
+          <div class="hil-title">Human-in-loop</div>
+          <div class="hil-instruction">${escapeHtml(String(instruction))}</div>
+          <div class="hil-actions">
+            <textarea class="hil-input" rows="3" placeholder="在这里输入你的回复，然后发送…"></textarea>
+            <button class="btn hil-send">Send</button>
+          </div>
+          <div class="hil-meta">hil_id: <code>${escapeHtml(String(hilId))}</code></div>
+        </div>
+      `;
+    }
+  }
   
   div.innerHTML = `
     <div class="tool-card tool-${status}">
@@ -373,11 +393,38 @@ function addToolMessage(toolName, status, args) {
         <span class="tool-status-label">${status === 'running' ? 'running...' : status}</span>
       </div>
       ${argsHtml}
+      ${hilHtml}
       <div class="tool-result-area" style="display:none;"></div>
     </div>
   `;
   div.dataset.toolMessage = 'true';
   messagesContainer.appendChild(div);
+
+  // Bind HIL send button if present
+  if (toolName === 'human_in_loop' && args && typeof args === 'object') {
+    const hilId = args.hil_id;
+    const sendBtn = div.querySelector('.hil-send');
+    const input = div.querySelector('.hil-input');
+    if (sendBtn && input && hilId) {
+      sendBtn.addEventListener('click', async () => {
+        const text = (input.value || '').trim();
+        if (!text) return;
+        sendBtn.disabled = true;
+        input.disabled = true;
+        sendBtn.textContent = 'Sent';
+        const r = await window.api.hilRespond({ hil_id: hilId, response: text });
+        if (r && r.error) {
+          sendBtn.disabled = false;
+          input.disabled = false;
+          sendBtn.textContent = 'Send';
+          addErrorMessage(`HIL respond failed: ${r.error}`);
+        } else {
+          // show as a user message in chat for traceability
+          addUserMessage(text);
+        }
+      });
+    }
+  }
   scrollToBottom();
 }
 
