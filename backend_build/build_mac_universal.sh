@@ -61,13 +61,25 @@ if [ "${HOST_ARCH}" = "arm64" ]; then
     exit 2
   fi
 
-  PYTHON_X64="arch -x86_64 python3"
+  # IMPORTANT:
+  # - Do NOT rely on `python3` in PATH; on Apple Silicon it may be arm64-only (e.g. conda).
+  # - Prefer the system /usr/bin/python3 under Rosetta for bootstrapping.
+  PYTHON_X64="arch -x86_64 /usr/bin/python3"
   VENV_X64="${SCRIPT_DIR}/.venv_x64"
-  # Create x64 venv under Rosetta (best effort; requires a universal python3)
+
+  # Recreate venv if it exists but isn't runnable under x86_64
+  if [ -d "${VENV_X64}" ]; then
+    if ! arch -x86_64 "${VENV_X64}/bin/python" -c "import platform; print(platform.machine())" >/dev/null 2>&1; then
+      echo "[backend_build] existing venv_x64 is not usable under x86_64; recreating..."
+      rm -rf "${VENV_X64}"
+    fi
+  fi
+
   if [ ! -d "${VENV_X64}" ]; then
     echo "[backend_build] create x64 venv: ${VENV_X64}"
     ${PYTHON_X64} -m venv "${VENV_X64}"
   fi
+
   arch -x86_64 "${VENV_X64}/bin/python" -m pip install --upgrade pip wheel setuptools >/dev/null
   arch -x86_64 "${VENV_X64}/bin/python" -m pip install -r "${REPO_ROOT}/requirements.txt" >/dev/null
   arch -x86_64 "${VENV_X64}/bin/python" -m pip install pyinstaller >/dev/null
