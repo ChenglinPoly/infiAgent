@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>infiAgent</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Titlebar drag region (macOS hidden titlebar) -->
+  <div class="titlebar"></div>
+
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="app-title">infiAgent</h1>
+        <button id="new-chat-btn" class="new-chat-btn" title="New Chat">+</button>
+      </div>
+
+      <!-- Workspace selector -->
+      <div class="workspace-section">
+        <button id="select-folder-btn" class="workspace-btn">
+          <span class="icon">📁</span>
+          <span id="workspace-label">Open new workspace…</span>
+        </button>
+        <div id="workspace-current" class="workspace-current">No workspace selected</div>
+      </div>
+
+      <!-- Agent system selector -->
+      <div class="sidebar-section">
+        <label class="section-label">Agent System</label>
+        <select id="agent-system-select" class="sidebar-select">
+          <option value="OpenCowork">OpenCowork</option>
+          <option value="Default">Default (Research)</option>
+        </select>
+      </div>
+
+      <!-- Conversations list -->
+      <div class="sidebar-section conversations-list">
+        <div class="section-label-row">
+          <label class="section-label">History</label>
+          <button id="refresh-conversations-btn" class="sidebar-icon-btn" title="Refresh">↻</button>
+        </div>
+        <div id="conversations" class="conversations-scroll">
+          <div class="empty-state">Loading conversations...</div>
+        </div>
+      </div>
+
+      <!-- Sidebar footer -->
+      <div class="sidebar-footer">
+        <button id="skills-btn" class="sidebar-btn-text" title="Import / Manage Skills">Import skills</button>
+        <button id="settings-btn" class="sidebar-btn-icon" title="Settings">⚙️</button>
+      </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main class="chat-area">
+      <!-- Messages -->
+      <div id="messages" class="messages-container">
+        <div class="welcome-message">
+          <h2>Welcome to infiAgent</h2>
+          <p>Select a workspace folder to begin. Your agent will work within that directory.</p>
+          <div class="feature-cards">
+            <div class="feature-card">
+              <span class="feature-icon">🔄</span>
+              <span class="feature-text">Days-long tasks with resume</span>
+            </div>
+            <div class="feature-card">
+              <span class="feature-icon">🧠</span>
+              <span class="feature-text">Persistent memory per workspace</span>
+            </div>
+            <div class="feature-card">
+              <span class="feature-icon">⚡</span>
+              <span class="feature-text">Agent Skills support</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input area -->
+      <div class="input-area">
+        <div class="input-wrapper">
+          <textarea id="user-input" placeholder="Message infiAgent..." rows="1" disabled></textarea>
+          <button id="send-btn" class="send-btn" disabled>
+            <span class="send-icon">↑</span>
+          </button>
+          <button id="stop-btn" class="stop-btn" style="display:none;">
+            <span class="stop-icon">■</span>
+          </button>
+        </div>
+        <div class="input-footer">
+          <span id="status-text" class="status-text">Select a workspace to start</span>
+          <button id="resume-btn" class="resume-btn" style="display:none;" title="Resume interrupted task">Resume</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ==================== Settings Modal ==================== -->
+  <div id="settings-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h2 class="modal-title">Settings</h2>
+        <button id="settings-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      
+      <!-- Tabs -->
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-tab="api">API Configuration</button>
+        <button class="modal-tab" data-tab="model">Model Settings</button>
+        <button class="modal-tab" data-tab="agent">Agent System</button>
+        <button class="modal-tab" data-tab="yaml">Raw YAML</button>
+      </div>
+      
+      <div class="modal-body">
+        <!-- API Tab -->
+        <div id="tab-api" class="tab-content active">
+          <div class="form-group">
+            <label class="form-label">API Base URL</label>
+            <input type="text" id="setting-base-url" class="form-input" placeholder="https://api.openai.com/v1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">API Key</label>
+            <div class="password-wrapper">
+              <input type="password" id="setting-api-key" class="form-input" placeholder="sk-...">
+              <button id="toggle-api-key" class="toggle-password-btn">👁</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Timeout (seconds)</label>
+            <input type="number" id="setting-timeout" class="form-input" placeholder="600">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Stream Timeout (seconds)</label>
+            <input type="number" id="setting-stream-timeout" class="form-input" placeholder="30">
+          </div>
+          <div class="form-group">
+            <label class="form-label">First Chunk Timeout (seconds)</label>
+            <input type="number" id="setting-first-chunk-timeout" class="form-input" placeholder="30">
+            <p class="form-hint-block">应用层强制：连接建立 + 首包接收的最大时间（防止连接池/网络卡死）。</p>
+          </div>
+        </div>
+        
+        <!-- Model Tab -->
+        <div id="tab-model" class="tab-content">
+          <div class="form-group">
+            <label class="form-label">Main Models <span class="form-hint">(one per line)</span></label>
+            <textarea id="setting-models" class="form-textarea" rows="3" placeholder="openai/gpt-4o"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Figure Models</label>
+            <textarea id="setting-figure-models" class="form-textarea" rows="2" placeholder="openai/gpt-4o"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Compressor Models</label>
+            <textarea id="setting-compressor-models" class="form-textarea" rows="2" placeholder="openai/gpt-4o-mini"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Read Figure Models</label>
+            <textarea id="setting-read-figure-models" class="form-textarea" rows="2" placeholder="openai/gpt-4o"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Thinking Models</label>
+            <textarea id="setting-thinking-models" class="form-textarea" rows="2" placeholder="openai/google/gemini-3-flash-preview"></textarea>
+            <p class="form-hint-block">注意：若需要为单个模型配置不同供应商 key/base_url，请用 Raw YAML（对象格式）。</p>
+          </div>
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label class="form-label">Temperature</label>
+              <input type="number" id="setting-temperature" class="form-input" step="0.1" min="0" max="2" placeholder="0">
+            </div>
+            <div class="form-group form-half">
+              <label class="form-label">Max Tokens</label>
+              <input type="number" id="setting-max-tokens" class="form-input" placeholder="0 = auto">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label class="form-label">Max Context Window</label>
+              <input type="number" id="setting-max-context" class="form-input" placeholder="500000">
+            </div>
+            <div class="form-group form-half">
+              <label class="form-label">
+                <input type="checkbox" id="setting-multimodal"> Multimodal
+              </label>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label class="form-label">
+                <input type="checkbox" id="setting-compressor-multimodal"> Compressor Multimodal
+              </label>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Agent System Tab -->
+        <div id="tab-agent" class="tab-content">
+          <div class="form-group">
+            <label class="form-label">Active Agent System</label>
+            <select id="setting-agent-system" class="form-input">
+              <!-- Populated dynamically -->
+            </select>
+            <div class="form-row" style="margin-top:10px; gap:10px;">
+              <button id="import-agent-system-btn" class="btn-secondary" type="button">Import Agent System Folder…</button>
+            </div>
+            <p class="form-hint-block">
+              Agent System defines the available tools, agents and prompts.
+              Bundled systems live in <code>config/agent_library/</code>.
+              Imported systems will be copied to <code>~/mla_v3/agent_library/</code>.
+            </p>
+          </div>
+          
+          <div class="form-divider"></div>
+          
+          <div class="form-group">
+            <label class="form-label">Config File Location</label>
+            <p id="config-path-display" class="config-path">—</p>
+          </div>
+        </div>
+
+        <!-- Raw YAML Tab -->
+        <div id="tab-yaml" class="tab-content">
+          <div class="form-group">
+            <label class="form-label">llm_config.yaml (raw)</label>
+            <textarea id="setting-raw-yaml" class="form-textarea" rows="14" placeholder="Paste full llm_config.yaml here"></textarea>
+            <p class="form-hint-block">
+              该模式会<strong>原样保存</strong> YAML，不会丢字段；支持标准示例里的对象格式（每模型独立 api_key/base_url）。
+              保存后下次启动任务会自动生效。
+            </p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="modal-footer">
+        <span id="settings-status" class="settings-status"></span>
+        <button id="settings-save-btn" class="btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Skills Modal ==================== -->
+  <div id="skills-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h2 class="modal-title">Skills Library</h2>
+        <button id="skills-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      
+      <div class="modal-body">
+        <p class="modal-description">Import skill folders into <code>~/mla_v3/skills_library/</code>. Each skill folder should contain a <code>SKILL.md</code> file with frontmatter.</p>
+        
+        <div class="skills-toolbar">
+          <button id="import-skill-btn" class="btn-primary">
+            <span>📂</span> Import Skill Folder
+          </button>
+          <button id="refresh-skills-btn" class="sidebar-icon-btn" title="Refresh">↻</button>
+        </div>
+        
+        <div id="skills-list" class="skills-list">
+          <div class="empty-state">No skills imported yet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Markdown renderer (safe) -->
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+  <script src="../node_modules/dompurify/dist/purify.min.js"></script>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

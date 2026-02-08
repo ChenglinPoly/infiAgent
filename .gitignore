@@ -58,3 +58,9 @@ test_doc/
 # workspace
 workspace
 workspace/*
+
+# Desktop app
+desktop_app/node_modules/
+desktop_app/dist/
+desktop_app/out/
+desktop_app/build/

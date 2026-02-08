@@ -1,0 +1,93 @@
+{
+  "name": "infiagent-desktop",
+  "version": "1.0.0",
+  "description": "infiAgent Desktop - AI Agent for long-running complex tasks",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "cross-env ELECTRON_RUN_AS_NODE= electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.infiagent.desktop",
+    "productName": "infiAgent",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "../assets/logo.png",
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "title": "infiAgent",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "../assets/logo.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "../assets/logo.png"
+    },
+    "files": [
+      "src/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../",
+        "to": "python-backend",
+        "filter": [
+          "start.py",
+          "core/**/*",
+          "services/**/*",
+          "utils/**/*",
+          "config/**/*",
+          "tool_server_lite/**/*",
+          "requirements.txt",
+          "setup.py"
+        ]
+      }
+    ],
+    "asar": false
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^40.2.1",
+    "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "dompurify": "^3.3.1",
+    "marked": "^17.0.1"
+  }
+}

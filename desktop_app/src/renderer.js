@@ -1,0 +1,1037 @@
+// ==================== DOM Elements ====================
+const selectFolderBtn = document.getElementById('select-folder-btn');
+const workspaceLabel = document.getElementById('workspace-label');
+const agentSystemSelect = document.getElementById('agent-system-select');
+const messagesContainer = document.getElementById('messages');
+const userInput = document.getElementById('user-input');
+const sendBtn = document.getElementById('send-btn');
+const stopBtn = document.getElementById('stop-btn');
+const statusText = document.getElementById('status-text');
+const newChatBtn = document.getElementById('new-chat-btn');
+const workspaceCurrent = document.getElementById('workspace-current');
+const resumeBtn = document.getElementById('resume-btn');
+
+// ==================== State ====================
+let workspacePath = null;
+let isRunning = false;
+
+// Streaming state
+let currentAgentBubble = null;
+let currentAgentContentDiv = null;
+let currentStreamText = '';
+
+// ==================== Markdown Render ====================
+
+function renderMarkdownSafe(mdText) {
+  try {
+    const text = String(mdText ?? '');
+
+    // marked + DOMPurify loaded via script tags in index.html
+    if (window.marked && window.DOMPurify) {
+      const html = window.marked.parse(text, {
+        gfm: true,
+        breaks: true
+      });
+      return window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+    }
+
+    // Fallback: preserve newlines safely
+    return escapeHtml(text).replace(/\n/g, '<br>');
+  } catch (e) {
+    return escapeHtml(String(mdText ?? ''));
+  }
+}
+
+function setMarkdown(el, mdText) {
+  if (!el) return;
+  el.classList.add('markdown');
+  el.innerHTML = renderMarkdownSafe(mdText);
+}
+
+
+// ==================== Workspace Selection ====================
+selectFolderBtn.addEventListener('click', async () => {
+  const folder = await window.api.selectFolder();
+  if (folder) {
+    workspacePath = folder;
+    const folderName = folder.split('/').pop() || folder.split('\\').pop();
+    // Keep button label stable, show current workspace separately
+    if (workspaceCurrent) {
+      workspaceCurrent.textContent = folder;
+      workspaceCurrent.title = folder;
+    }
+    
+    userInput.disabled = false;
+    sendBtn.disabled = false;
+    statusText.textContent = `Workspace: ${folderName}`;
+    
+    const welcome = messagesContainer.querySelector('.welcome-message');
+    if (welcome) welcome.remove();
+
+    await refreshResumeButton();
+  }
+});
+
+// ==================== New Chat ====================
+newChatBtn.addEventListener('click', () => {
+  if (isRunning) return;
+  // Clear messages
+  messagesContainer.innerHTML = `
+    <div class="welcome-message">
+      <h2>Welcome to infiAgent</h2>
+      <p>Select a workspace folder to begin. Your agent will work within that directory.</p>
+      <div class="feature-cards">
+        <div class="feature-card">
+          <span class="feature-icon">🔄</span>
+          <span class="feature-text">Days-long tasks with resume</span>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🧠</span>
+          <span class="feature-text">Persistent memory per workspace</span>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">⚡</span>
+          <span class="feature-text">Agent Skills support</span>
+        </div>
+      </div>
+    </div>
+  `;
+  finalizeCurrentStream();
+  statusText.textContent = workspacePath 
+    ? `Workspace: ${workspacePath.split('/').pop()}`
+    : 'Select a workspace to start';
+  statusText.style.color = '';
+  refreshResumeButton();
+});
+
+// ==================== Resume (CLI-compatible) ====================
+
+async function refreshResumeButton() {
+  if (!resumeBtn) return;
+  if (!workspacePath) {
+    resumeBtn.style.display = 'none';
+    return;
+  }
+
+  // If running, keep it visible but disabled
+  if (isRunning) {
+    resumeBtn.style.display = 'inline-flex';
+    resumeBtn.disabled = true;
+    resumeBtn.textContent = 'Resume';
+    resumeBtn.title = 'Task is running. Resume is disabled.';
+    return;
+  }
+
+  const info = await window.api.checkResume(workspacePath);
+  if (!info || !info.found) {
+    resumeBtn.style.display = 'none';
+    return;
+  }
+
+  resumeBtn.style.display = 'inline-flex';
+  resumeBtn.disabled = false;
+  resumeBtn.textContent = 'Resume';
+  resumeBtn.title = `Resume interrupted task (stack depth: ${info.stack_depth || '?'})`;
+}
+
+if (resumeBtn) {
+  resumeBtn.addEventListener('click', async () => {
+    if (!workspacePath || isRunning) return;
+    const info = await window.api.checkResume(workspacePath);
+    if (!info?.found) {
+      addErrorMessage('No resumable task found for this workspace.');
+      await refreshResumeButton();
+      return;
+    }
+
+    isRunning = true;
+    sendBtn.style.display = 'none';
+    stopBtn.style.display = 'flex';
+    userInput.disabled = true;
+    statusText.textContent = 'Resuming...';
+    await refreshResumeButton();
+
+    showTypingIndicator();
+    const result = await window.api.resumeTask({
+      workspacePath,
+      agentSystem: agentSystemSelect.value
+    });
+    if (result?.error) {
+      removeTypingIndicator();
+      addErrorMessage(result.error);
+      resetState();
+      await refreshResumeButton();
+    }
+  });
+}
+
+// ==================== Send Message ====================
+sendBtn.addEventListener('click', sendMessage);
+userInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+userInput.addEventListener('input', () => {
+  userInput.style.height = 'auto';
+  userInput.style.height = Math.min(userInput.scrollHeight, 200) + 'px';
+});
+
+async function sendMessage() {
+  const text = userInput.value.trim();
+  if (!text || !workspacePath || isRunning) return;
+  
+  addUserMessage(text);
+  userInput.value = '';
+  userInput.style.height = 'auto';
+  
+  isRunning = true;
+  sendBtn.style.display = 'none';
+  stopBtn.style.display = 'flex';
+  userInput.disabled = true;
+  statusText.textContent = 'Running...';
+  
+  showTypingIndicator();
+  
+  const result = await window.api.startTask({
+    workspacePath,
+    userInput: text,
+    agentName: 'alpha_agent',
+    agentSystem: agentSystemSelect.value
+  });
+  
+  if (result.error) {
+    removeTypingIndicator();
+    addErrorMessage(result.error);
+    resetState();
+    await refreshResumeButton();
+  }
+}
+
+// ==================== Stop Task ====================
+stopBtn.addEventListener('click', async () => {
+  await window.api.stopTask();
+  statusText.textContent = 'Stopping...';
+});
+
+// ==================== Agent Events ====================
+window.api.onAgentEvent((event) => {
+  const type = event.type;
+  
+  switch (type) {
+    case 'token':
+      removeTypingIndicator();
+      finalizeReasoningStream();
+      streamToken(event.text || '');
+      break;
+      
+    case 'reasoning_token':
+      removeTypingIndicator();
+      finalizeCurrentStream();
+      streamReasoningToken(event.text || '');
+      break;
+      
+    case 'thinking_token':
+      removeTypingIndicator();
+      finalizeCurrentStream();
+      streamThinkingAgentToken(event.text || '');
+      break;
+      
+    case 'tool_call':
+      finalizeCurrentStream();
+      removeTypingIndicator();
+      addToolMessage(event.tool || event.name || 'unknown', 'running', event.arguments);
+      showTypingIndicator();
+      break;
+      
+    case 'tool_result':
+      removeTypingIndicator();
+      updateLastToolStatus(
+        event.status === 'error' ? 'error' : 'success',
+        event.output_preview
+      );
+      break;
+      
+    case 'agent_start':
+      finalizeCurrentStream();
+      removeTypingIndicator();
+      addSystemMessage(`${event.agent || 'Agent'} started`);
+      showTypingIndicator();
+      break;
+      
+    case 'agent_end':
+      finalizeCurrentStream();
+      removeTypingIndicator();
+      break;
+      
+    case 'thinking_start':
+      finalizeCurrentStream();
+      removeTypingIndicator();
+      startThinkingAgentStream();
+      break;
+      
+    case 'thinking_end':
+      removeTypingIndicator();
+      finalizeThinkingAgentStream();
+      break;
+      
+    case 'error':
+      finalizeCurrentStream();
+      removeTypingIndicator();
+      addErrorMessage(event.message || event.error || 'Unknown error');
+      break;
+      
+    case 'result':
+      finalizeCurrentStream();
+      removeTypingIndicator();
+      if (event.summary) {
+        streamToken(event.summary);
+        finalizeCurrentStream();
+      }
+      break;
+      
+    default:
+      if (event.text) {
+        removeTypingIndicator();
+        streamToken(event.text);
+      }
+  }
+  
+  scrollToBottom();
+});
+
+window.api.onAgentLog((log) => {
+  console.log('[Agent Log]', log);
+});
+
+window.api.onAgentDone((result) => {
+  finalizeCurrentStream();
+  removeTypingIndicator();
+  
+  if (result.code !== 0 && result.code !== null) {
+    statusText.textContent = `Ended with code ${result.code}`;
+    statusText.style.color = '#c75450';
+  } else {
+    statusText.textContent = 'Task completed';
+    statusText.style.color = '#5a9a6a';
+  }
+  
+  resetState();
+  scrollToBottom();
+  
+  // Refresh conversation list after task ends
+  loadConversations();
+  refreshResumeButton();
+});
+
+// ==================== Message Builders ====================
+
+function addUserMessage(text) {
+  const div = document.createElement('div');
+  div.className = 'message-user';
+  div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+  messagesContainer.appendChild(div);
+  scrollToBottom();
+}
+
+function addSystemMessage(text) {
+  const div = document.createElement('div');
+  div.className = 'message-system';
+  div.textContent = `— ${text} —`;
+  messagesContainer.appendChild(div);
+}
+
+function addErrorMessage(text) {
+  const div = document.createElement('div');
+  div.className = 'message-error';
+  div.innerHTML = `<div class="error-card">${escapeHtml(text)}</div>`;
+  messagesContainer.appendChild(div);
+}
+
+function addToolMessage(toolName, status, args) {
+  const div = document.createElement('div');
+  div.className = 'message-tool';
+  
+  let argsHtml = '';
+  if (args && typeof args === 'object' && Object.keys(args).length > 0) {
+    const argsStr = JSON.stringify(args, null, 2);
+    argsHtml = `
+      <details class="tool-details">
+        <summary class="tool-params-toggle">Parameters</summary>
+        <pre class="tool-params-content">${escapeHtml(argsStr)}</pre>
+      </details>
+    `;
+  }
+  
+  div.innerHTML = `
+    <div class="tool-card tool-${status}">
+      <div class="tool-header">
+        <span class="tool-dot tool-dot-${status}"></span>
+        <span class="tool-name">${escapeHtml(toolName)}</span>
+        <span class="tool-status-label">${status === 'running' ? 'running...' : status}</span>
+      </div>
+      ${argsHtml}
+      <div class="tool-result-area" style="display:none;"></div>
+    </div>
+  `;
+  div.dataset.toolMessage = 'true';
+  messagesContainer.appendChild(div);
+  scrollToBottom();
+}
+
+function updateLastToolStatus(status, outputPreview) {
+  const tools = messagesContainer.querySelectorAll('[data-tool-message]');
+  if (tools.length > 0) {
+    const last = tools[tools.length - 1];
+    const card = last.querySelector('.tool-card');
+    const dot = last.querySelector('.tool-dot');
+    const label = last.querySelector('.tool-status-label');
+    if (card) card.className = `tool-card tool-${status}`;
+    if (dot) dot.className = `tool-dot tool-dot-${status}`;
+    if (label) label.textContent = status === 'success' ? 'done' : status;
+    
+    if (outputPreview) {
+      const resultArea = last.querySelector('.tool-result-area');
+      if (resultArea) {
+        resultArea.style.display = 'block';
+        resultArea.innerHTML = `
+          <details class="tool-details">
+            <summary class="tool-params-toggle">Result</summary>
+            <pre class="tool-params-content">${escapeHtml(outputPreview)}</pre>
+          </details>
+        `;
+      }
+    }
+  }
+}
+
+// ==================== Streaming ====================
+
+function streamToken(text) {
+  if (!currentAgentBubble) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message-agent';
+    
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    
+    const label = document.createElement('div');
+    label.className = 'agent-label';
+    label.textContent = 'Agent';
+    
+    const content = document.createElement('div');
+    content.className = 'agent-content';
+    
+    bubble.appendChild(label);
+    bubble.appendChild(content);
+    wrapper.appendChild(bubble);
+    messagesContainer.appendChild(wrapper);
+    
+    currentAgentBubble = wrapper;
+    currentAgentContentDiv = content;
+    currentStreamText = '';
+  }
+  
+  currentStreamText += text;
+  currentAgentContentDiv.innerText = currentStreamText;
+  scrollToBottom();
+}
+
+function finalizeCurrentStream() {
+  // Convert the just-streamed text to Markdown on finalize
+  if (currentAgentContentDiv && currentStreamText) {
+    setMarkdown(currentAgentContentDiv, currentStreamText);
+  }
+  currentAgentBubble = null;
+  currentAgentContentDiv = null;
+  currentStreamText = '';
+}
+
+// ==================== Reasoning Stream ====================
+
+let reasoningBubble = null;
+let reasoningContentDiv = null;
+let reasoningStreamText = '';
+
+function streamReasoningToken(text) {
+  if (!reasoningBubble) {
+    const div = document.createElement('div');
+    div.className = 'message-thinking';
+    div.innerHTML = `
+      <div class="thinking-card">
+        <details open>
+          <summary>Model Reasoning</summary>
+          <div class="thinking-content"></div>
+        </details>
+      </div>
+    `;
+    messagesContainer.appendChild(div);
+    reasoningBubble = div;
+    reasoningContentDiv = div.querySelector('.thinking-content');
+    reasoningStreamText = '';
+  }
+  
+  reasoningStreamText += text;
+  reasoningContentDiv.innerText = reasoningStreamText;
+  scrollToBottom();
+}
+
+function finalizeReasoningStream() {
+  if (reasoningBubble) {
+    const details = reasoningBubble.querySelector('details');
+    if (details) {
+      details.open = false;
+      const summary = details.querySelector('summary');
+      if (summary) summary.textContent = 'Model Reasoning (click to expand)';
+    }
+  }
+  // Convert reasoning to Markdown before finalize
+  if (reasoningContentDiv && reasoningStreamText) {
+    setMarkdown(reasoningContentDiv, reasoningStreamText);
+  }
+  reasoningBubble = null;
+  reasoningContentDiv = null;
+  reasoningStreamText = '';
+}
+
+// ==================== Thinking Agent Stream ====================
+
+let thinkingAgentBubble = null;
+let thinkingAgentContentDiv = null;
+let thinkingAgentText = '';
+
+function startThinkingAgentStream() {
+  const div = document.createElement('div');
+  div.className = 'message-thinking';
+  div.innerHTML = `
+    <div class="thinking-card">
+      <details open>
+        <summary>Thinking...</summary>
+        <div class="thinking-content"></div>
+      </details>
+    </div>
+  `;
+  messagesContainer.appendChild(div);
+  thinkingAgentBubble = div;
+  thinkingAgentContentDiv = div.querySelector('.thinking-content');
+  thinkingAgentText = '';
+  scrollToBottom();
+}
+
+function streamThinkingAgentToken(text) {
+  if (!thinkingAgentBubble) startThinkingAgentStream();
+  thinkingAgentText += text;
+  thinkingAgentContentDiv.innerText = thinkingAgentText;
+  scrollToBottom();
+}
+
+function finalizeThinkingAgentStream() {
+  if (thinkingAgentBubble) {
+    const details = thinkingAgentBubble.querySelector('details');
+    if (details) {
+      details.open = false;
+      const summary = details.querySelector('summary');
+      if (summary) summary.textContent = 'Thinking (click to expand)';
+    }
+  }
+  // Convert thinking to Markdown before finalize
+  if (thinkingAgentContentDiv && thinkingAgentText) {
+    setMarkdown(thinkingAgentContentDiv, thinkingAgentText);
+  }
+  thinkingAgentBubble = null;
+  thinkingAgentContentDiv = null;
+  thinkingAgentText = '';
+}
+
+// ==================== UI Helpers ====================
+
+function showTypingIndicator() {
+  if (messagesContainer.querySelector('.typing-indicator')) return;
+  const div = document.createElement('div');
+  div.className = 'typing-indicator';
+  div.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+  messagesContainer.appendChild(div);
+  scrollToBottom();
+}
+
+function removeTypingIndicator() {
+  const indicator = messagesContainer.querySelector('.typing-indicator');
+  if (indicator) indicator.remove();
+}
+
+function resetState() {
+  isRunning = false;
+  sendBtn.style.display = 'flex';
+  stopBtn.style.display = 'none';
+  userInput.disabled = false;
+  userInput.focus();
+  refreshResumeButton();
+}
+
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  });
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ==================== Settings Modal ====================
+
+const settingsModal = document.getElementById('settings-modal');
+const settingsBtn = document.getElementById('settings-btn');
+const settingsCloseBtn = document.getElementById('settings-close-btn');
+const settingsSaveBtn = document.getElementById('settings-save-btn');
+const settingsStatus = document.getElementById('settings-status');
+const toggleApiKeyBtn = document.getElementById('toggle-api-key');
+const importAgentSystemBtn = document.getElementById('import-agent-system-btn');
+const rawYamlTextarea = document.getElementById('setting-raw-yaml');
+
+// Open settings
+settingsBtn.addEventListener('click', async () => {
+  settingsModal.style.display = 'flex';
+  await loadSettings();
+});
+
+// Close settings
+settingsCloseBtn.addEventListener('click', () => {
+  settingsModal.style.display = 'none';
+});
+
+settingsModal.addEventListener('click', (e) => {
+  if (e.target === settingsModal) settingsModal.style.display = 'none';
+});
+
+// Tab switching
+document.querySelectorAll('.modal-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+  });
+});
+
+// Toggle API key visibility
+toggleApiKeyBtn.addEventListener('click', () => {
+  const input = document.getElementById('setting-api-key');
+  input.type = input.type === 'password' ? 'text' : 'password';
+});
+
+// Load settings from backend
+async function loadSettings() {
+  const result = await window.api.getSettings();
+  if (result.error) {
+    settingsStatus.textContent = `Error: ${result.error}`;
+    settingsStatus.style.color = '#c75450';
+    return;
+  }
+  
+  const c = result.config;
+  document.getElementById('setting-base-url').value = c.base_url || '';
+  document.getElementById('setting-api-key').value = c.api_key || '';
+  document.getElementById('setting-timeout').value = c.timeout || 600;
+  document.getElementById('setting-stream-timeout').value = c.stream_timeout || 30;
+  document.getElementById('setting-first-chunk-timeout').value = c.first_chunk_timeout || 30;
+  document.getElementById('setting-temperature').value = c.temperature ?? 0;
+  document.getElementById('setting-max-tokens').value = c.max_tokens ?? 0;
+  document.getElementById('setting-max-context').value = c.max_context_window || 500000;
+  document.getElementById('setting-multimodal').checked = c.multimodal !== false;
+  document.getElementById('setting-compressor-multimodal').checked = c.compressor_multimodal !== false;
+  
+  // Models (array → newline-separated)
+  document.getElementById('setting-models').value = (c.models || []).join('\n');
+  document.getElementById('setting-figure-models').value = (c.figure_models || []).join('\n');
+  document.getElementById('setting-compressor-models').value = (c.compressor_models || []).join('\n');
+  document.getElementById('setting-read-figure-models').value = (c.read_figure_models || []).join('\n');
+  document.getElementById('setting-thinking-models').value = (c.thinking_models || []).join('\n');
+
+  // Raw yaml
+  if (rawYamlTextarea) rawYamlTextarea.value = result.raw_yaml || '';
+  
+  // Config path display
+  document.getElementById('config-path-display').textContent = result.path || '—';
+  
+  // Load agent systems
+  const systemsResult = await window.api.getAgentSystems();
+  if (systemsResult.success) {
+    const select = document.getElementById('setting-agent-system');
+    select.innerHTML = '';
+    for (const sys of systemsResult.systems) {
+      const opt = document.createElement('option');
+      opt.value = sys;
+      opt.textContent = sys;
+      select.appendChild(opt);
+    }
+    // Set current value from sidebar
+    select.value = agentSystemSelect.value;
+  }
+  
+  settingsStatus.textContent = '';
+}
+
+// Import agent system folder
+if (importAgentSystemBtn) {
+  importAgentSystemBtn.addEventListener('click', async () => {
+    const result = await window.api.importAgentSystemFolder();
+    if (result?.canceled) return;
+    if (result?.error) {
+      settingsStatus.textContent = `Error: ${result.error}`;
+      settingsStatus.style.color = '#c75450';
+      return;
+    }
+    settingsStatus.textContent = `Imported Agent System: ${result.name}`;
+    settingsStatus.style.color = '#5a9a6a';
+
+    // Reload agent systems in both settings select and sidebar select
+    const systemsResult = await window.api.getAgentSystems();
+    if (systemsResult.success) {
+      const select = document.getElementById('setting-agent-system');
+      select.innerHTML = '';
+      for (const sys of systemsResult.systems) {
+        const opt = document.createElement('option');
+        opt.value = sys;
+        opt.textContent = sys;
+        select.appendChild(opt);
+      }
+      if (result?.name) select.value = result.name;
+
+      // Sidebar select
+      agentSystemSelect.innerHTML = '';
+      for (const sys of systemsResult.systems) {
+        const opt = document.createElement('option');
+        opt.value = sys;
+        opt.textContent = sys;
+        agentSystemSelect.appendChild(opt);
+      }
+      if (result?.name) agentSystemSelect.value = result.name;
+    }
+
+    setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+  });
+}
+
+// Save settings
+settingsSaveBtn.addEventListener('click', async () => {
+  // If Raw YAML tab is active, save raw YAML as-is
+  const activeTab = document.querySelector('.modal-tab.active')?.dataset?.tab;
+  if (activeTab === 'yaml') {
+    const yamlText = (rawYamlTextarea?.value || '').trimEnd() + '\n';
+    const result = await window.api.saveSettings(yamlText);
+    if (result.success) {
+      settingsStatus.textContent = 'YAML saved successfully';
+      settingsStatus.style.color = '#5a9a6a';
+    } else {
+      settingsStatus.textContent = `Error: ${result.error}`;
+      settingsStatus.style.color = '#c75450';
+    }
+    setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+    return;
+  }
+
+  const modelsText = document.getElementById('setting-models').value.trim();
+  const figureModelsText = document.getElementById('setting-figure-models').value.trim();
+  const compressorModelsText = document.getElementById('setting-compressor-models').value.trim();
+  const readFigureModelsText = document.getElementById('setting-read-figure-models').value.trim();
+  const thinkingModelsText = document.getElementById('setting-thinking-models').value.trim();
+  
+  const config = {
+    temperature: Number(document.getElementById('setting-temperature').value) || 0,
+    max_tokens: Number(document.getElementById('setting-max-tokens').value) || 0,
+    max_context_window: Number(document.getElementById('setting-max-context').value) || 500000,
+    base_url: document.getElementById('setting-base-url').value.trim(),
+    api_key: document.getElementById('setting-api-key').value.trim(),
+    timeout: Number(document.getElementById('setting-timeout').value) || 600,
+    stream_timeout: Number(document.getElementById('setting-stream-timeout').value) || 30,
+    first_chunk_timeout: Number(document.getElementById('setting-first-chunk-timeout').value) || 30,
+    models: modelsText ? modelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
+    figure_models: figureModelsText ? figureModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
+    compressor_models: compressorModelsText ? compressorModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
+    read_figure_models: readFigureModelsText ? readFigureModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
+    thinking_models: thinkingModelsText ? thinkingModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
+    multimodal: document.getElementById('setting-multimodal').checked,
+    compressor_multimodal: document.getElementById('setting-compressor-multimodal').checked
+  };
+  
+  const result = await window.api.saveSettings(config);
+  if (result.success) {
+    settingsStatus.textContent = 'Settings saved successfully';
+    settingsStatus.style.color = '#5a9a6a';
+    
+    // Sync agent system select in sidebar
+    const agentSys = document.getElementById('setting-agent-system').value;
+    if (agentSys) {
+      // Update sidebar select if the option exists
+      const opt = agentSystemSelect.querySelector(`option[value="${agentSys}"]`);
+      if (opt) agentSystemSelect.value = agentSys;
+    }
+  } else {
+    settingsStatus.textContent = `Error: ${result.error}`;
+    settingsStatus.style.color = '#c75450';
+  }
+  
+  setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+});
+
+// ==================== Skills Modal ====================
+
+const skillsModal = document.getElementById('skills-modal');
+const skillsBtn = document.getElementById('skills-btn');
+const skillsCloseBtn = document.getElementById('skills-close-btn');
+const importSkillBtn = document.getElementById('import-skill-btn');
+const refreshSkillsBtn = document.getElementById('refresh-skills-btn');
+const skillsList = document.getElementById('skills-list');
+
+// Open skills modal
+skillsBtn.addEventListener('click', async () => {
+  skillsModal.style.display = 'flex';
+  await loadSkills();
+});
+
+// Close skills modal
+skillsCloseBtn.addEventListener('click', () => {
+  skillsModal.style.display = 'none';
+});
+
+skillsModal.addEventListener('click', (e) => {
+  if (e.target === skillsModal) skillsModal.style.display = 'none';
+});
+
+// Import skill folder
+importSkillBtn.addEventListener('click', async () => {
+  const result = await window.api.importSkillFolder();
+  if (result.canceled) return;
+  if (result.error) {
+    alert(`Import failed: ${result.error}`);
+    return;
+  }
+  await loadSkills();
+});
+
+// Refresh skills
+refreshSkillsBtn.addEventListener('click', loadSkills);
+
+async function loadSkills() {
+  const result = await window.api.getSkills();
+  if (result.error) {
+    skillsList.innerHTML = `<div class="empty-state">Error: ${escapeHtml(result.error)}</div>`;
+    return;
+  }
+  
+  if (result.skills.length === 0) {
+    skillsList.innerHTML = '<div class="empty-state">No skills imported yet. Click "Import Skill Folder" to add one.</div>';
+    return;
+  }
+  
+  skillsList.innerHTML = result.skills.map(skill => `
+    <div class="skill-item">
+      <div class="skill-info">
+        <div class="skill-name">${escapeHtml(skill.name)}</div>
+        <div class="skill-desc">${escapeHtml(skill.description || 'No description')}</div>
+        ${skill.hasSkillMd ? '<span class="skill-badge">SKILL.md ✓</span>' : '<span class="skill-badge warn">No SKILL.md</span>'}
+      </div>
+      <button class="skill-delete-btn" data-skill="${escapeHtml(skill.name)}" title="Delete">✕</button>
+    </div>
+  `).join('');
+  
+  // Attach delete handlers
+  skillsList.querySelectorAll('.skill-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.skill;
+      if (confirm(`Delete skill "${name}"?`)) {
+        await window.api.deleteSkill(name);
+        await loadSkills();
+      }
+    });
+  });
+}
+
+// ==================== Conversation History ====================
+
+const conversationsContainer = document.getElementById('conversations');
+const refreshConversationsBtn = document.getElementById('refresh-conversations-btn');
+
+refreshConversationsBtn.addEventListener('click', loadConversations);
+
+async function loadConversations() {
+  const result = await window.api.getConversations();
+  if (result.error) {
+    conversationsContainer.innerHTML = `<div class="empty-state">Error loading</div>`;
+    return;
+  }
+  
+  if (result.conversations.length === 0) {
+    conversationsContainer.innerHTML = '<div class="empty-state">No conversations yet</div>';
+    return;
+  }
+  
+  conversationsContainer.innerHTML = result.conversations.map(conv => {
+    const date = new Date(conv.lastUpdated);
+    const timeStr = formatRelativeTime(date);
+    
+    return `
+      <div class="conversation-item" data-task-id="${escapeHtml(conv.taskId)}" data-file="${escapeHtml(conv.file)}" title="${escapeHtml(conv.taskId)}">
+        <div class="conv-main">
+          <div class="conv-workspace">${escapeHtml(conv.workspaceName)}</div>
+          <div class="conv-preview">${escapeHtml(conv.preview)}</div>
+        </div>
+        <div class="conv-meta">
+          <span class="conv-time">${timeStr}</span>
+          <span class="conv-turns">${conv.turns || 0} turns</span>
+        </div>
+        <button class="conv-delete-btn" data-file="${escapeHtml(conv.file)}" title="Delete">✕</button>
+      </div>
+    `;
+  }).join('');
+  
+  // Click to load workspace
+  conversationsContainer.querySelectorAll('.conversation-item').forEach(item => {
+    item.addEventListener('click', async (e) => {
+      // Don't trigger on delete button
+      if (e.target.closest('.conv-delete-btn')) return;
+      
+      const taskId = item.dataset.taskId;
+      const file = item.dataset.file;
+      if (taskId && !isRunning) {
+        workspacePath = taskId;
+        const folderName = taskId.split('/').pop() || taskId.split('\\').pop();
+        if (workspaceCurrent) {
+          workspaceCurrent.textContent = taskId;
+          workspaceCurrent.title = taskId;
+        }
+        userInput.disabled = false;
+        sendBtn.disabled = false;
+        statusText.textContent = `Workspace: ${folderName}`;
+        
+        const welcome = messagesContainer.querySelector('.welcome-message');
+        if (welcome) welcome.remove();
+
+        if (file) {
+          await loadConversationDetail(file);
+        }
+        
+        // Highlight selected
+        conversationsContainer.querySelectorAll('.conversation-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+      }
+    });
+  });
+  
+  // Delete handlers
+  conversationsContainer.querySelectorAll('.conv-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const fileName = btn.dataset.file;
+      if (confirm('Delete this conversation history?')) {
+        await window.api.deleteConversation(fileName);
+        await loadConversations();
+      }
+    });
+  });
+}
+
+function formatRelativeTime(date) {
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+async function loadConversationDetail(fileName) {
+  const res = await window.api.getConversationDetail(fileName);
+  if (res?.error) {
+    addErrorMessage(`Failed to load conversation: ${res.error}`);
+    return;
+  }
+  const data = res?.data;
+  if (!data) return;
+
+  // Clear chat area and render share_context content
+  messagesContainer.innerHTML = '';
+  finalizeCurrentStream();
+  finalizeReasoningStream();
+  finalizeThinkingAgentStream();
+
+  renderShareContext(data);
+  scrollToBottom();
+}
+
+function renderShareContext(data) {
+  const turns = Array.isArray(data.history) ? data.history : [];
+  for (const turn of turns) {
+    const instructions = Array.isArray(turn?.instructions) ? turn.instructions : [];
+    for (const inst of instructions) {
+      if (inst?.instruction) addUserMessage(String(inst.instruction));
+    }
+
+    const agentsStatus = turn?.agents_status && typeof turn.agents_status === 'object' ? Object.values(turn.agents_status) : [];
+    const topLevel = agentsStatus.filter(a => a && a.final_output && (a.parent_id === null || a.parent_id === undefined) && (a.level === 0 || a.level === undefined));
+    const picked = topLevel.length > 0 ? topLevel : agentsStatus.filter(a => a && a.final_output);
+
+    for (const a of picked) {
+      addAgentMessage(String(a.agent_name || 'Agent'), String(a.final_output || ''));
+    }
+  }
+}
+
+function addAgentMessage(label, text) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'message-agent';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+
+  const l = document.createElement('div');
+  l.className = 'agent-label';
+  l.textContent = label;
+
+  const content = document.createElement('div');
+  content.className = 'agent-content markdown';
+  setMarkdown(content, text);
+
+  bubble.appendChild(l);
+  bubble.appendChild(content);
+  wrapper.appendChild(bubble);
+  messagesContainer.appendChild(wrapper);
+}
+
+// ==================== Keyboard Shortcuts ====================
+
+document.addEventListener('keydown', (e) => {
+  // Escape to close modals
+  if (e.key === 'Escape') {
+    settingsModal.style.display = 'none';
+    skillsModal.style.display = 'none';
+  }
+  
+  // Cmd+, to open settings
+  if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+    e.preventDefault();
+    settingsBtn.click();
+  }
+  
+  // Cmd+N for new chat
+  if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+    e.preventDefault();
+    newChatBtn.click();
+  }
+});
+
+// ==================== Init ====================
+
+// Load conversations on startup
+loadConversations();
