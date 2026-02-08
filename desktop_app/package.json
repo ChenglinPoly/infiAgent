@@ -75,7 +75,11 @@
       },
       {
         "from": "../config/run_env_config",
-        "to": "python-backend/config/run_env_config"
+        "to": "python-backend/config/run_env_config",
+        "filter": [
+          "**/*",
+          "!llm_config.yaml"
+        ]
       }
     ],
     "asar": false

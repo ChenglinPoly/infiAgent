@@ -90,17 +90,33 @@ function getLlmConfigPath() {
   return path.join(getUserConfigDir(), 'llm_config.yaml');
 }
 
+function stripApiKeysFromYaml(yamlText) {
+  // Best-effort sanitizer: blank any `api_key:` values (including nested model entries).
+  // Keep file otherwise unchanged to preserve advanced YAML structures.
+  if (typeof yamlText !== 'string') return '';
+  return yamlText.replace(/^(\s*api_key\s*:\s*).*/gm, '$1""');
+}
+
+function ensureUserDataRootScaffold() {
+  // Create user-writable dirs under ~/mla_v3 (do not overwrite user files).
+  fs.mkdirSync(getUserDataRoot(), { recursive: true });
+  fs.mkdirSync(getUserConfigDir(), { recursive: true });
+  fs.mkdirSync(getSkillsLibraryPath(), { recursive: true });
+  fs.mkdirSync(getUserAgentLibraryPath(), { recursive: true });
+  fs.mkdirSync(getConversationsPath(), { recursive: true });
+}
+
 function ensureUserLlmConfigExists() {
-  const userConfigDir = getUserConfigDir();
-  fs.mkdirSync(userConfigDir, { recursive: true });
+  ensureUserDataRootScaffold();
   const userConfigPath = getLlmConfigPath();
   if (fs.existsSync(userConfigPath)) return userConfigPath;
 
-  // Bootstrap from bundled default (read-only is fine)
+  // Bootstrap from bundled example (always no key, safe to copy)
   const backendPath = getPythonBackendPath();
-  const bundled = path.join(backendPath, 'config', 'run_env_config', 'llm_config.yaml');
+  const bundled = path.join(backendPath, 'config', 'run_env_config', 'llm_config.example.yaml');
   if (fs.existsSync(bundled)) {
-    fs.copyFileSync(bundled, userConfigPath);
+    const example = fs.readFileSync(bundled, 'utf-8');
+    fs.writeFileSync(userConfigPath, stripApiKeysFromYaml(example), 'utf-8');
     return userConfigPath;
   }
 

@@ -96,6 +96,49 @@ except Exception:
 PY
 }
 
+sanitize_bundled_llm_config() {
+  # Ensure the backend bundle does NOT ship any real API key.
+  # We overwrite _internal/config/run_env_config/llm_config.yaml with a sanitized copy
+  # of llm_config.example.yaml (blank all api_key fields).
+  local bundle_root="$1"
+  if [ ! -d "${bundle_root}" ]; then
+    return 0
+  fi
+  python3 - <<'PY' "${bundle_root}"
+from pathlib import Path
+import re, sys
+root = Path(sys.argv[1])
+cfg_dir = root / "_internal" / "config" / "run_env_config"
+example = cfg_dir / "llm_config.example.yaml"
+target = cfg_dir / "llm_config.yaml"
+try:
+    if not cfg_dir.exists():
+        print("[backend_build] sanitize llm_config: config dir missing, skip")
+        raise SystemExit(0)
+    if example.exists():
+        txt = example.read_text(encoding="utf-8", errors="ignore")
+    else:
+        # fallback: minimal safe template
+        txt = "\\n".join([
+            "temperature: 0",
+            "max_tokens: 0",
+            "max_context_window: 200000",
+            "base_url: \"\"",
+            "api_key: \"\"",
+            "models:",
+            "- openai/google/gemini-3-flash-preview",
+            "multimodal: false",
+            "compressor_multimodal: false",
+            "",
+        ])
+    txt = re.sub(r'^(\\s*api_key\\s*:\\s*).*$' , r'\\1\"\"', txt, flags=re.M)
+    target.write_text(txt, encoding="utf-8")
+    print(f"[backend_build] sanitized {target}")
+except Exception as e:
+    print(f"[backend_build] sanitize llm_config failed: {e}")
+PY
+}
+
 HOST_ARCH="$(uname -m || true)"
 echo "[backend_build] host_arch: ${HOST_ARCH}"
 
@@ -104,6 +147,7 @@ ensure_venv "${PYTHON_ARM64}" "${VENV_ARM64}"
 build_arch "darwin-arm64" "${VENV_ARM64}"
 normalize_info_plists "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
+sanitize_bundled_llm_config "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 
 if [ "${HOST_ARCH}" = "arm64" ]; then
   echo "[backend_build] === x64 backend (Rosetta) ==="
@@ -147,6 +191,7 @@ if [ "${HOST_ARCH}" = "arm64" ]; then
     "${SPEC_FILE}"
   normalize_info_plists "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
   ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
+  sanitize_bundled_llm_config "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
 else
   echo "[backend_build] host is not arm64; skipping darwin-x64 build."
 fi
