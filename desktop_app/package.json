@@ -17,6 +17,7 @@
     },
     "mac": {
       "category": "public.app-category.productivity",
+      "x64ArchFiles": "Contents/Resources/python-backend/**",
       "target": [
         {
           "target": "dmg",
@@ -28,7 +29,6 @@
       "icon": "../assets/logo.png",
       "darkModeSupport": true
     },
-    "afterPack": "scripts/afterPack.js",
     "dmg": {
       "title": "infiAgent",
       "contents": [
