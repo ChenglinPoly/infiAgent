@@ -17,7 +17,7 @@
     },
     "mac": {
       "category": "public.app-category.productivity",
-      "x64ArchFiles": "Contents/Resources/python-backend/**",
+      "x64ArchFiles": "Contents/Resources/python-backend/**/{*,.*}/**",
       "target": [
         {
           "target": "dmg",
