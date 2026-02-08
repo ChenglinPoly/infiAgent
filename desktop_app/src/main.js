@@ -104,6 +104,23 @@ function ensureUserDataRootScaffold() {
   fs.mkdirSync(getSkillsLibraryPath(), { recursive: true });
   fs.mkdirSync(getUserAgentLibraryPath(), { recursive: true });
   fs.mkdirSync(getConversationsPath(), { recursive: true });
+
+  // Seed default bundled skills (best-effort; never overwrite existing ones)
+  try {
+    const bundledSkillsDir = path.join(getPythonBackendPath(), 'skills_libraru');
+    if (fs.existsSync(bundledSkillsDir)) {
+      const entries = fs.readdirSync(bundledSkillsDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith('.')) continue;
+        const src = path.join(bundledSkillsDir, e.name);
+        const dst = path.join(getSkillsLibraryPath(), e.name);
+        if (fs.existsSync(dst)) continue; // do not overwrite user skill
+        copyDirSync(src, dst);
+      }
+    }
+  } catch (_) {
+    // Seeding skills should never block app startup
+  }
 }
 
 function ensureUserLlmConfigExists() {

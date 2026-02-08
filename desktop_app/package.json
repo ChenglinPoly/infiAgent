@@ -70,6 +70,10 @@
         "to": "python-backend"
       },
       {
+        "from": "../skills_libraru",
+        "to": "python-backend/skills_libraru"
+      },
+      {
         "from": "../config/agent_library",
         "to": "python-backend/config/agent_library"
       },
