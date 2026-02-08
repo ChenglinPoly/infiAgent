@@ -22,7 +22,7 @@ datas = [
 ]
 
 a = Analysis(
-    ["start.py"],
+    [str(repo_root / "start.py")],
     pathex=[str(repo_root)],
     binaries=[],
     datas=datas,
