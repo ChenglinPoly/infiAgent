@@ -8,6 +8,7 @@
 
 from pathlib import Path
 import os
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
 
@@ -21,12 +22,24 @@ datas = [
     (str(repo_root / "config"), "config"),
 ]
 
+# LiteLLM uses dynamic imports and importlib.resources; ensure submodules/data are bundled.
+hiddenimports = []
+try:
+    hiddenimports += collect_submodules("litellm")
+except Exception:
+    hiddenimports += ["litellm.litellm_core_utils.tokenizers"]
+
+try:
+    datas += collect_data_files("litellm")
+except Exception:
+    pass
+
 a = Analysis(
     [str(repo_root / "start.py")],
     pathex=[str(repo_root)],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
