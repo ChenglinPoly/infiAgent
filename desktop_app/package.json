@@ -5,7 +5,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "cross-env ELECTRON_RUN_AS_NODE= electron .",
-    "build:mac": "electron-builder --mac",
+    "build:mac": "bash ../backend_build/build_mac_universal.sh && electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
   },
@@ -65,18 +65,16 @@
     ],
     "extraResources": [
       {
-        "from": "../",
-        "to": "python-backend",
-        "filter": [
-          "start.py",
-          "core/**/*",
-          "services/**/*",
-          "utils/**/*",
-          "config/**/*",
-          "tool_server_lite/**/*",
-          "requirements.txt",
-          "setup.py"
-        ]
+        "from": "backend_dist",
+        "to": "python-backend"
+      },
+      {
+        "from": "../config/agent_library",
+        "to": "python-backend/config/agent_library"
+      },
+      {
+        "from": "../config/run_env_config",
+        "to": "python-backend/config/run_env_config"
       }
     ],
     "asar": false

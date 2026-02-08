@@ -18,6 +18,63 @@ function getPythonBackendPath() {
   return path.join(__dirname, '..', '..');
 }
 
+function getPackagedBackendArchDir() {
+  // For universal app, we ship two PyInstaller backends and select at runtime.
+  // Layout inside resources:
+  //   resources/python-backend/darwin-arm64/mlav3-backend/mlav3-backend
+  //   resources/python-backend/darwin-x64/mlav3-backend/mlav3-backend
+  // Later we can extend for win32/linux similarly.
+  if (process.platform === 'darwin') {
+    if (process.arch === 'arm64') return 'darwin-arm64';
+    if (process.arch === 'x64') return 'darwin-x64';
+  }
+  // Fallback: use platform-arch
+  return `${process.platform}-${process.arch}`;
+}
+
+function getPackagedBackendExecutablePath() {
+  const backendRoot = getPythonBackendPath();
+  const archDir = getPackagedBackendArchDir();
+  const exeName = process.platform === 'win32' ? 'mlav3-backend.exe' : 'mlav3-backend';
+  // PyInstaller --onedir default: <dist>/<name>/<name>
+  return path.join(backendRoot, archDir, 'mlav3-backend', exeName);
+}
+
+function getBackendLaunchSpecDev(userInput, workspacePath, agentName, agentSystem, appendTimestamp) {
+  const backendPath = getPythonBackendPath();
+  const startScript = path.join(backendPath, 'start.py');
+  const now = new Date();
+  const timestamp = now.toISOString().slice(0, 19).replace('T', ' ');
+  const ui = appendTimestamp ? `${userInput} [时间: ${timestamp}]` : userInput;
+  const args = [
+    startScript,
+    '--task_id', workspacePath,
+    '--agent_name', agentName || 'alpha_agent',
+    '--user_input', ui,
+    '--agent_system', agentSystem || 'OpenCowork',
+    '--jsonl',
+    '--direct-tools'
+  ];
+  return { command: 'python3', args, cwd: backendPath };
+}
+
+function getBackendLaunchSpecPackaged(userInput, workspacePath, agentName, agentSystem, appendTimestamp) {
+  const backendPath = getPythonBackendPath();
+  const backendExe = getPackagedBackendExecutablePath();
+  const now = new Date();
+  const timestamp = now.toISOString().slice(0, 19).replace('T', ' ');
+  const ui = appendTimestamp ? `${userInput} [时间: ${timestamp}]` : userInput;
+  const args = [
+    '--task_id', workspacePath,
+    '--agent_name', agentName || 'alpha_agent',
+    '--user_input', ui,
+    '--agent_system', agentSystem || 'OpenCowork',
+    '--jsonl',
+    '--direct-tools'
+  ];
+  return { command: backendExe, args, cwd: backendPath };
+}
+
 // User data root: ~/mla_v3/
 function getUserDataRoot() {
   return path.join(os.homedir(), 'mla_v3');
@@ -177,27 +234,14 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
     return { error: 'A task is already running' };
   }
 
-  const backendPath = getPythonBackendPath();
-  const startScript = path.join(backendPath, 'start.py');
   const llmConfigPath = ensureUserLlmConfigExists();
   
-  // Add timestamp to user input (consistent with CLI)
-  const now = new Date();
-  const timestamp = now.toISOString().slice(0, 19).replace('T', ' ');
-  const userInputWithTimestamp = `${userInput} [时间: ${timestamp}]`;
+  const spec = app.isPackaged
+    ? getBackendLaunchSpecPackaged(userInput, workspacePath, agentName, agentSystem, true)
+    : getBackendLaunchSpecDev(userInput, workspacePath, agentName, agentSystem, true);
 
-  const args = [
-    startScript,
-    '--task_id', workspacePath,
-    '--agent_name', agentName || 'alpha_agent',
-    '--user_input', userInputWithTimestamp,
-    '--agent_system', agentSystem || 'OpenCowork',
-    '--jsonl',
-    '--direct-tools'
-  ];
-
-  pythonProcess = spawn('python3', args, {
-    cwd: backendPath,
+  pythonProcess = spawn(spec.command, spec.args, {
+    cwd: spec.cwd,
     env: {
       ...process.env,
       PYTHONUNBUFFERED: '1',
@@ -309,22 +353,13 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
     const userInput = bottom.user_input || bottom.userInput || bottom.input || '';
     if (!userInput) return { error: 'No interrupted task input found' };
 
-    const backendPath = getPythonBackendPath();
-    const startScript = path.join(backendPath, 'start.py');
     const llmConfigPath = ensureUserLlmConfigExists();
+    const spec = app.isPackaged
+      ? getBackendLaunchSpecPackaged(String(userInput), workspacePath, String(agentName), agentSystem, false)
+      : getBackendLaunchSpecDev(String(userInput), workspacePath, String(agentName), agentSystem, false);
 
-    const args = [
-      startScript,
-      '--task_id', workspacePath,
-      '--agent_name', String(agentName),
-      '--user_input', String(userInput),
-      '--agent_system', agentSystem || 'OpenCowork',
-      '--jsonl',
-      '--direct-tools'
-    ];
-
-    pythonProcess = spawn('python3', args, {
-      cwd: backendPath,
+    pythonProcess = spawn(spec.command, spec.args, {
+      cwd: spec.cwd,
       env: {
         ...process.env,
         PYTHONUNBUFFERED: '1',
