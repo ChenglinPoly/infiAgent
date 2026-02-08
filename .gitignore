@@ -46,6 +46,16 @@ Thumbs.db
 config/run_env_config/llm_config.yaml
 .env
 
+# Desktop app
+desktop_app/node_modules/
+desktop_app/dist/
+desktop_app/out/
+
+# Local test/debug artifacts
+model_tool_calling_test_results.json
+tests/debug_messages.json
+tests/*.png
+
 # Docker related (not needed in repo - use remote image)
 Dockerfile
 docker-compose.yml
@@ -58,9 +68,3 @@ test_doc/
 # workspace
 workspace
 workspace/*
-
-# Desktop app
-desktop_app/node_modules/
-desktop_app/dist/
-desktop_app/out/
-desktop_app/build/

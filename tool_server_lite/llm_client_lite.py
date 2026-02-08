@@ -39,14 +39,19 @@ class LLMClientLite:
         """
         # 加载LLM配置
         if llm_config_path is None:
-            # 从tool_server_lite目录找到config
-            current_dir = Path(__file__).parent
-            config_path = current_dir.parent / "config" / "run_env_config" / "llm_config.yaml"
-            
-            if not config_path.exists():
-                raise FileNotFoundError(f"LLM配置文件不存在: {config_path}")
-            
-            llm_config_path = str(config_path)
+            # 优先使用环境变量（桌面端/容器外部覆盖）
+            env_path = os.environ.get("MLA_LLM_CONFIG_PATH", "").strip()
+            if env_path:
+                llm_config_path = env_path
+            else:
+                # 从tool_server_lite目录找到config
+                current_dir = Path(__file__).parent
+                config_path = current_dir.parent / "config" / "run_env_config" / "llm_config.yaml"
+                
+                if not config_path.exists():
+                    raise FileNotFoundError(f"LLM配置文件不存在: {config_path}")
+                
+                llm_config_path = str(config_path)
         
         if not os.path.exists(llm_config_path):
             raise FileNotFoundError(f"LLM配置文件不存在: {llm_config_path}")

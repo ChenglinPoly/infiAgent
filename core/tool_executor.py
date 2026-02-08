@@ -2,8 +2,9 @@
 from utils.windows_compat import safe_print
 # -*- coding: utf-8 -*-
 """
-工具执行器 - 通过HTTP调用toolServer
-参考原项目tool_utils.py的逻辑
+工具执行器 - 支持两种模式：
+1. HTTP 模式（默认）：通过 HTTP 调用独立的 ToolServer 进程
+2. Direct 模式：进程内直接调用工具类，无需 ToolServer（桌面应用使用）
 """
 
 import requests
@@ -16,7 +17,7 @@ from pathlib import Path
 
 
 class ToolExecutor:
-    """工具执行器 - 通过HTTP调用toolServer"""
+    """工具执行器 - 支持 HTTP 模式和进程内直接调用模式"""
     
     # 危险工具列表（需要用户确认）
     DANGEROUS_TOOLS = [
@@ -25,20 +26,29 @@ class ToolExecutor:
         "execute_code",    # 执行代码
     ]
     
-    def __init__(self, config_loader, hierarchy_manager):
+    def __init__(self, config_loader, hierarchy_manager, direct_mode=False):
         """
         初始化工具执行器
         
         Args:
             config_loader: 配置加载器
             hierarchy_manager: 层级管理器
+            direct_mode: 是否使用进程内直接调用模式（不依赖 ToolServer HTTP 服务）
         """
         self.config_loader = config_loader
         self.hierarchy_manager = hierarchy_manager
         self.task_cache = {}  # 缓存已创建的任务
+        self.direct_mode = direct_mode
         
-        # 从tool_config.yaml读取toolServer URL
-        self.tools_server_url = self._load_tools_server_url()
+        if direct_mode:
+            # 进程内模式：直接初始化工具注册表
+            self._tools_registry = None  # 懒加载
+            self.tools_server_url = None
+            safe_print("🔧 工具执行器: 进程内直接调用模式（无需 ToolServer）")
+        else:
+            # HTTP 模式：从 tool_config.yaml 读取 ToolServer URL
+            self._tools_registry = None
+            self.tools_server_url = self._load_tools_server_url()
         
         # 权限管理：task_id → auto_mode 映射
         self.task_permissions = {}  # {task_id: {"auto_mode": True/False}}
@@ -57,6 +67,138 @@ class ToolExecutor:
         except Exception as e:
             safe_print(f"⚠️ 加载工具服务器配置失败: {e}，使用默认值")
             return "http://127.0.0.1:8001"
+    
+    def _init_tools_registry(self):
+        """
+        懒加载：初始化进程内工具注册表（与 server.py 的 TOOLS 字典一致）
+        仅在 direct_mode=True 时使用
+        """
+        if self._tools_registry is not None:
+            return
+        
+        safe_print("🔧 初始化进程内工具注册表...")
+        
+        from tool_server_lite.tools import (
+            FileReadTool, FileWriteTool, DirListTool, DirCreateTool,
+            FileMoveTool, FileDeleteTool,
+            WebSearchTool, GoogleScholarSearchTool, ArxivSearchTool,
+            CrawlPageTool, FileDownloadTool,
+            ParseDocumentTool,
+            VisionTool, ImageReadTool, CreateImageTool,
+            AudioTool, PaperAnalyzeTool,
+            MarkdownToPdfTool, MarkdownToDocxTool,
+            HumanInLoopTool,
+            ExecuteCodeTool, PipInstallTool, ExecuteCommandTool,
+            GrepTool, CodeProcessManagerTool,
+            ReferenceListTool, ReferenceAddTool, ReferenceDeleteTool,
+            ImagesToPptTool, LoadSkillTool,
+        )
+        
+        self._tools_registry = {
+            "file_read": FileReadTool(),
+            "file_write": FileWriteTool(),
+            "dir_list": DirListTool(),
+            "dir_create": DirCreateTool(),
+            "file_move": FileMoveTool(),
+            "file_delete": FileDeleteTool(),
+            "web_search": WebSearchTool(),
+            "google_scholar_search": GoogleScholarSearchTool(),
+            "arxiv_search": ArxivSearchTool(),
+            "crawl_page": CrawlPageTool(),
+            "file_download": FileDownloadTool(),
+            "parse_document": ParseDocumentTool(),
+            "vision_tool": VisionTool(),
+            "image_read": ImageReadTool(),
+            "create_image": CreateImageTool(),
+            "audio_tool": AudioTool(),
+            "paper_analyze_tool": PaperAnalyzeTool(),
+            "md_to_pdf": MarkdownToPdfTool(),
+            "md_to_docx": MarkdownToDocxTool(),
+            "human_in_loop": HumanInLoopTool(),
+            "execute_code": ExecuteCodeTool(),
+            "pip_install": PipInstallTool(),
+            "execute_command": ExecuteCommandTool(),
+            "grep": GrepTool(),
+            "manage_code_process": CodeProcessManagerTool(),
+            "reference_list": ReferenceListTool(),
+            "reference_add": ReferenceAddTool(),
+            "reference_delete": ReferenceDeleteTool(),
+            "images_to_ppt": ImagesToPptTool(),
+            "load_skill": LoadSkillTool(),
+        }
+        
+        # 尝试加载浏览器工具（可能不可用）
+        try:
+            from tool_server_lite.tools import (
+                BrowserLaunchTool, BrowserCloseTool, BrowserNavigateTool,
+                BrowserSnapshotTool, BrowserExecuteJsTool,
+                BrowserNewPageTool, BrowserSwitchPageTool,
+                BrowserClosePageTool, BrowserListPagesTool,
+                BrowserClickTool, BrowserTypeTool, BrowserWaitTool,
+                BrowserMouseMoveTool, BrowserMouseClickCoordsTool,
+                BrowserDragAndDropTool, BrowserHoverTool, BrowserScrollTool,
+            )
+            self._tools_registry.update({
+                "browser_launch": BrowserLaunchTool(),
+                "browser_close": BrowserCloseTool(),
+                "browser_navigate": BrowserNavigateTool(),
+                "browser_snapshot": BrowserSnapshotTool(),
+                "browser_execute_js": BrowserExecuteJsTool(),
+                "browser_new_page": BrowserNewPageTool(),
+                "browser_switch_page": BrowserSwitchPageTool(),
+                "browser_close_page": BrowserClosePageTool(),
+                "browser_list_pages": BrowserListPagesTool(),
+                "browser_click": BrowserClickTool(),
+                "browser_type": BrowserTypeTool(),
+                "browser_wait": BrowserWaitTool(),
+                "browser_mouse_move": BrowserMouseMoveTool(),
+                "browser_mouse_click_coords": BrowserMouseClickCoordsTool(),
+                "browser_drag_and_drop": BrowserDragAndDropTool(),
+                "browser_hover": BrowserHoverTool(),
+                "browser_scroll": BrowserScrollTool(),
+            })
+        except ImportError:
+            safe_print("⚠️ 浏览器工具不可用（缺少 playwright），跳过")
+        
+        safe_print(f"✅ 工具注册表初始化完成，共 {len(self._tools_registry)} 个工具")
+    
+    def _call_direct(self, tool_name: str, arguments: Dict, task_id: str) -> Dict:
+        """
+        进程内直接调用工具（不经过 HTTP）
+        
+        返回格式与 _call_toolserver 完全一致（保持 json.dumps 包装），
+        确保 agent_executor 中的后续处理逻辑（如 image_read base64 提取）兼容。
+        """
+        try:
+            # 懒加载工具注册表
+            self._init_tools_registry()
+            
+            tool = self._tools_registry.get(tool_name)
+            if not tool:
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error_information": f"工具不存在: {tool_name}"
+                }
+            
+            safe_print(f"   🔧 直接调用工具: {tool_name}")
+            
+            # 调用工具（与 ToolServer 的调用方式一致）
+            tool_result = tool.execute(task_id, arguments)
+            
+            # 包装返回值（与 _call_toolserver 格式一致：data 被 json.dumps 到 output 字符串）
+            return {
+                "status": "success",
+                "output": json.dumps(tool_result, indent=2, ensure_ascii=False),
+                "error_information": ""
+            }
+        
+        except Exception as e:
+            return {
+                "status": "error",
+                "output": "",
+                "error_information": f"直接调用工具失败: {str(e)}"
+            }
     
     def set_task_permission(self, task_id: str, auto_mode: bool):
         """设置任务的权限模式"""
@@ -201,8 +343,11 @@ class ToolExecutor:
                             "error_information": f"工具执行被用户拒绝: {tool_name}"
                         }
                 
-                # 普通工具 - 通过HTTP调用toolServer
-                return self._call_toolserver(tool_name, arguments, task_id)
+                # 普通工具 - 根据模式选择调用方式
+                if self.direct_mode:
+                    return self._call_direct(tool_name, arguments, task_id)
+                else:
+                    return self._call_toolserver(tool_name, arguments, task_id)
             
             elif tool_type == "llm_call_agent":
                 # 子Agent - 递归调用
@@ -293,12 +438,13 @@ class ToolExecutor:
             # 获取任务输入
             task_input = arguments.get("task_input", "")
             
-            # 创建子Agent执行器
+            # 创建子Agent执行器（传递 direct_mode 保持一致）
             sub_agent = AgentExecutor(
                 agent_name=agent_name,
                 agent_config=agent_config,
                 config_loader=self.config_loader,
-                hierarchy_manager=self.hierarchy_manager
+                hierarchy_manager=self.hierarchy_manager,
+                direct_tools=self.direct_mode
             )
             
             # 执行子Agent

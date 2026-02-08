@@ -22,11 +22,11 @@ class ConfigLoader:
         """
         self.agent_system_name = agent_system_name
         
-        # 查找配置目录（支持MLA_V3和原Multi-Level-Agent）
+        # 查找配置目录（支持：项目内 config + 用户导入目录）
+        # - 项目内: <project_root>/config/agent_library/<system>
+        # - 用户导入: $MLA_AGENT_LIBRARY_DIR/agent_library/<system>
         self.config_root = self._find_config_root()
-        self.agent_config_dir = os.path.join(
-            self.config_root, "agent_library", agent_system_name
-        )
+        self.agent_config_dir = self._find_agent_system_dir(agent_system_name)
         
         if not os.path.exists(self.agent_config_dir):
             raise FileNotFoundError(f"Agent配置目录不存在: {self.agent_config_dir}")
@@ -45,6 +45,26 @@ class ConfigLoader:
             raise FileNotFoundError(f"配置目录不存在: {mla_v3_config}")
         
         return str(mla_v3_config)
+
+    def _find_agent_system_dir(self, agent_system_name: str) -> str:
+        """按优先级查找 agent_system 配置目录"""
+        candidates = []
+
+        # 1) 用户导入目录（用于桌面端打包后的可扩展配置）
+        # 约定：MLA_AGENT_LIBRARY_DIR 指向包含 agent_library/ 的根目录（例如 ~/mla_v3）
+        user_root = os.environ.get("MLA_AGENT_LIBRARY_DIR", "").strip()
+        if user_root:
+            candidates.append(Path(user_root) / "agent_library" / agent_system_name)
+
+        # 2) 项目内 config
+        candidates.append(Path(self.config_root) / "agent_library" / agent_system_name)
+
+        for p in candidates:
+            if p.exists():
+                return str(p)
+
+        # 默认回退到项目路径（抛错由上层处理）
+        return str(candidates[-1])
     
     def _load_general_prompts(self) -> Dict:
         """

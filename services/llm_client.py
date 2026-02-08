@@ -59,8 +59,13 @@ class SimpleLLMClient:
         """
         # 加载LLM配置
         if llm_config_path is None:
-            project_root = Path(__file__).parent.parent
-            llm_config_path = project_root / "config" / "run_env_config" / "llm_config.yaml"
+            # 优先使用环境变量（桌面端打包后配置在用户目录）
+            env_path = os.environ.get("MLA_LLM_CONFIG_PATH", "").strip()
+            if env_path:
+                llm_config_path = Path(env_path)
+            else:
+                project_root = Path(__file__).parent.parent
+                llm_config_path = project_root / "config" / "run_env_config" / "llm_config.yaml"
         
         if not os.path.exists(llm_config_path):
             raise FileNotFoundError(f"LLM配置文件不存在: {llm_config_path}")
@@ -166,7 +171,8 @@ class SimpleLLMClient:
         tool_choice: str = "required",
         temperature: float = None,
         max_tokens: int = None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        emit_tokens: str = None
     ) -> LLMResponse:
         """
         调用LLM进行对话 (增强版：支持流式监控、自动重试、参数修复)
@@ -212,7 +218,7 @@ class SimpleLLMClient:
             # 调用内部实现
             response = self._chat_internal(
                 history, model, fixed_system_prompt, tool_list, 
-                tool_choice, temperature, max_tokens
+                tool_choice, temperature, max_tokens, emit_tokens
             )
             
             # 如果成功，直接返回
@@ -236,7 +242,7 @@ class SimpleLLMClient:
                     # 立即重试，不计入retry_count
                     response = self._chat_internal(
                         history, model, fixed_system_prompt, tool_list, 
-                        tool_choice, temperature, max_tokens
+                        tool_choice, temperature, max_tokens, emit_tokens
                     )
                     
                     if response.status == "success":
@@ -273,14 +279,17 @@ class SimpleLLMClient:
         tool_list: List[str],
         tool_choice: str,
         temperature: float,
-        max_tokens: int
+        max_tokens: int,
+        emit_tokens: str = None
     ) -> LLMResponse:
         """
         LLM调用的内部实现（使用 LiteLLM 原生超时机制）
         
-        history 支持两种格式：
-        1. List[ChatMessage] - 传统格式（向后兼容）
-        2. List[Dict] - OpenAI原生dict格式，支持 tool/assistant/multimodal 消息
+        Args:
+            emit_tokens: 控制是否向 JSONL 事件流发送流式 token。
+                None - 不发送（默认，用于 compressor 等辅助调用）
+                "token" - 发送 content delta 为 token 事件（主 Agent 调用）
+                "thinking" - 发送 content delta 为 thinking_token 事件（Thinking Agent 调用）
         """
         try:
             # 构建工具定义（OpenAI格式）
@@ -429,10 +438,32 @@ class SimpleLLMClient:
                             delta = first_chunk.choices[0].delta
                             if hasattr(delta, 'content') and delta.content:
                                 accumulated_content += delta.content
+                                # 关键修复：首包的 delta.content 不能只累积不发送，否则前端会丢失首 token
+                                try:
+                                    safe_print(delta.content, end="", flush=True)
+                                    if emit_tokens:
+                                        from utils.event_emitter import get_event_emitter as _get_ee_first
+                                        _ee_first = _get_ee_first()
+                                        if _ee_first.enabled:
+                                            if emit_tokens == "thinking":
+                                                _ee_first.emit({"type": "thinking_token", "text": delta.content})
+                                            else:
+                                                _ee_first.token(delta.content)
+                                except Exception:
+                                    pass
                             
                             # 累积 reasoning_content（thinking/reasoning 模型）
                             if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                                 accumulated_reasoning_content += delta.reasoning_content
+                                # 关键修复：首包的 reasoning_content 同样需要发出（否则 reasoning/thinking 首段缺失）
+                                try:
+                                    if emit_tokens:
+                                        from utils.event_emitter import get_event_emitter as _get_ee_reason_first
+                                        _ee_reason_first = _get_ee_reason_first()
+                                        if _ee_reason_first.enabled:
+                                            _ee_reason_first.emit({"type": "reasoning_token", "text": delta.reasoning_content})
+                                except Exception:
+                                    pass
                             
                             if hasattr(delta, 'tool_calls') and delta.tool_calls:
                                 for tc in delta.tool_calls:
@@ -491,15 +522,31 @@ class SimpleLLMClient:
                 # A. 累积文本内容
                 if hasattr(delta, 'content') and delta.content:
                     accumulated_content += delta.content
-                    # 直接流式打印模型文本片段，便于无 CLI 时观察进度
                     try:
                         safe_print(delta.content, end="", flush=True)
+                        # 根据 emit_tokens 参数决定是否发送 JSONL 事件
+                        if emit_tokens:
+                            from utils.event_emitter import get_event_emitter as _get_ee
+                            _ee = _get_ee()
+                            if _ee.enabled:
+                                if emit_tokens == "thinking":
+                                    _ee.emit({"type": "thinking_token", "text": delta.content})
+                                else:
+                                    _ee.token(delta.content)
                     except Exception:
                         pass
                 
                 # A2. 累积 reasoning_content（thinking/reasoning 模型）
                 if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     accumulated_reasoning_content += delta.reasoning_content
+                    try:
+                        if emit_tokens:
+                            from utils.event_emitter import get_event_emitter as _get_ee2
+                            _ee2 = _get_ee2()
+                            if _ee2.enabled:
+                                _ee2.emit({"type": "reasoning_token", "text": delta.reasoning_content})
+                    except Exception:
+                        pass
                 
                 # B. 累积工具调用
                 if hasattr(delta, 'tool_calls') and delta.tool_calls:

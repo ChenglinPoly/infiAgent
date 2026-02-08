@@ -38,7 +38,11 @@ class ImageReadTool(BaseTool):
         """从 llm_config.yaml 读取 multimodal 配置（每次读取，不缓存，确保配置修改后即时生效）"""
         try:
             import yaml
-            config_path = Path(__file__).parent.parent.parent / "config" / "run_env_config" / "llm_config.yaml"
+            env_path = os.environ.get("MLA_LLM_CONFIG_PATH", "").strip()
+            if env_path:
+                config_path = Path(env_path)
+            else:
+                config_path = Path(__file__).parent.parent.parent / "config" / "run_env_config" / "llm_config.yaml"
             if config_path.exists():
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = yaml.safe_load(f)

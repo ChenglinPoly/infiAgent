@@ -118,19 +118,51 @@ class JsonlStreamHandler:
         """默认不处理任何事件"""
         pass
 
+    def _stream_agent_start(self, event: AgentStartEvent):
+        self.jsonl_emitter.emit({
+            "type": "agent_start",
+            "agent": event.agent_name,
+            "task": event.task_input[:200]
+        })
+    
+    def _stream_agent_end(self, event: AgentEndEvent):
+        self.jsonl_emitter.emit({
+            "type": "agent_end",
+            "status": event.status
+        })
+    
+    def _stream_run_thinking_start(self, event: ThinkingStartEvent):
+        self.jsonl_emitter.emit({
+            "type": "thinking_start",
+            "agent": event.agent_name,
+            "is_initial": event.is_initial,
+            "is_forced": event.is_forced
+        })
+    
     def _stream_run_tool_start(self, event: ToolCallStartEvent):
-        params_str = json.dumps(event.arguments, ensure_ascii=False, indent=2)
-        self.jsonl_emitter.token(f"调用工具: {event.tool_name}\n参数: {params_str}")
+        # 使用 tool_call 事件类型（而非 token），让渲染器展示为工具卡片
+        self.jsonl_emitter.emit({
+            "type": "tool_call",
+            "name": event.tool_name,
+            "arguments": event.arguments
+        })
 
     def _stream_run_tool_end(self, event: ToolCallEndEvent):
-        output_preview = str(event.result.get('output', ''))[:100]
-        self.jsonl_emitter.token(f"工具 {event.tool_name} 完成: {event.status} - {output_preview}...")
+        self.jsonl_emitter.emit({
+            "type": "tool_result",
+            "name": event.tool_name,
+            "status": event.status,
+            "output_preview": str(event.result.get('output', ''))[:200]
+        })
 
     def _stream_run_thinking_end(self, event: ThinkingEndEvent):
-        if event.is_initial:
-            self.jsonl_emitter.token(f"[{event.agent_name}] 初始规划: {event.result}")
-        else:
-            self.jsonl_emitter.token(f"[{event.agent_name}] 进度分析: {event.result}")
+        # 发送完整 thinking 内容（thinking agent 独立 LLM 调用，token 不经过主 agent 事件流）
+        self.jsonl_emitter.emit({
+            "type": "thinking_end",
+            "agent": event.agent_name,
+            "is_initial": event.is_initial,
+            "result": event.result
+        })
     
     def _stream_run_thinking_fail(self, event: ThinkingFailEvent):
         self.jsonl_emitter.warn(event.error_message)

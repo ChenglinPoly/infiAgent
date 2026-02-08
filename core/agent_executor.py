@@ -37,13 +37,15 @@ class AgentExecutor:
         agent_name: str,
         agent_config: Dict,
         config_loader,
-        hierarchy_manager
+        hierarchy_manager,
+        direct_tools: bool = False
     ):
         """初始化Agent执行器"""
         self.agent_name = agent_name
         self.agent_config = agent_config
         self.config_loader = config_loader
         self.hierarchy_manager = hierarchy_manager
+        self.direct_tools = direct_tools
         
         self._setup_event_emitter()
 
@@ -82,7 +84,7 @@ class AgentExecutor:
         )
         
         # 初始化工具执行器
-        self.tool_executor = ToolExecutor(config_loader, hierarchy_manager)
+        self.tool_executor = ToolExecutor(config_loader, hierarchy_manager, direct_mode=direct_tools)
         
         # 初始化对话存储
         self.conversation_storage = ConversationStorage()
@@ -473,7 +475,8 @@ class AgentExecutor:
             model=self.model_type,
             system_prompt=system_prompt,
             tool_list=self.available_tools,
-            tool_choice="required"  # 强制工具调用
+            tool_choice="required",  # 强制工具调用
+            emit_tokens="token"  # 主 Agent 调用：流式发送 content token
         )
         
         self.event_emitter.dispatch(LlmCallEndEvent(

@@ -157,7 +157,8 @@ agent可以调用的所有工具和参数信息
                 model=self.llm_client.thinking_models[0],
                 system_prompt=self.system_prompt,
                 tool_list=[],
-                tool_choice="none"
+                tool_choice="none",
+                emit_tokens="thinking"  # Thinking Agent：流式发送为 thinking_token
             )
             
             if response.status == "success":
@@ -279,8 +280,9 @@ Agent的完整上下文（包含系统角色、历史动作等）：
                 history=history,
                 model=self.llm_client.thinking_models[0],
                 system_prompt=self.system_prompt,
-                tool_list=[],  # 空列表表示不使用工具
-                tool_choice="none"  # 明确表示不调用工具
+                tool_list=[],
+                tool_choice="none",
+                emit_tokens="thinking"  # Thinking Agent：流式发送为 thinking_token
             )
             
             if response.status == "success":

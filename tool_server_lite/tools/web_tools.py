@@ -146,8 +146,33 @@ class GoogleScholarSearchTool(BaseTool):
                     "error": "query is required"
                 }
             
-            # 爬取学术搜索结果
-            all_content = await self._crawl_scholar(query, year_low, year_high, pages)
+            # 爬取学术搜索结果（Google Scholar 在很多网络环境下会被封/重定向/403）
+            # 如果失败，则回退到 DuckDuckGo 的 site:scholar.google.com 搜索（无需代理也更稳）
+            try:
+                all_content = await self._crawl_scholar(query, year_low, year_high, pages)
+            except Exception as crawl_err:
+                if DDGS_AVAILABLE:
+                    ddg_query = f"site:scholar.google.com {query}"
+                    results = DDGS().text(ddg_query, max_results=min(10, pages * 10))
+                    lines = [
+                        "# Google Scholar (fallback via DuckDuckGo)",
+                        "",
+                        f"- query: `{query}`",
+                        f"- note: direct crawling failed: `{str(crawl_err)[:200]}`",
+                        "",
+                    ]
+                    for i, r in enumerate(results or [], 1):
+                        title = (r.get("title") or "").strip()
+                        href = (r.get("href") or r.get("link") or "").strip()
+                        body = (r.get("body") or "").strip()
+                        if href:
+                            lines.append(f"{i}. **{title or 'Untitled'}**")
+                            lines.append(f"   - {href}")
+                            if body:
+                                lines.append(f"   - {body}")
+                    all_content = "\n".join(lines) + "\n"
+                else:
+                    raise
             
             # 保存到文件
             if save_path:

@@ -96,6 +96,7 @@ def main():
     parser.add_argument('--config-file', type=str, help='使用自定义配置文件路径')
     parser.add_argument('--force-new', action='store_true', help='强制清空所有状态，开始新任务')
     parser.add_argument('--auto-mode', type=str, choices=['true', 'false'], help='工具执行模式：true=自动执行，false=需要确认')
+    parser.add_argument('--direct-tools', action='store_true', help='使用进程内直接调用工具（不依赖 ToolServer HTTP 服务）')
     
     args = parser.parse_args()
     
@@ -273,7 +274,8 @@ def main():
             agent_name=args.agent_name,
             agent_config=agent_config,
             config_loader=config_loader,
-            hierarchy_manager=hierarchy_manager
+            hierarchy_manager=hierarchy_manager,
+            direct_tools=getattr(args, 'direct_tools', False)
         )
 
         if args.force_new:
