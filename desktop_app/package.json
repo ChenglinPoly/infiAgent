@@ -17,9 +17,6 @@
     },
     "mac": {
       "category": "public.app-category.productivity",
-      "x64ArchFiles": [
-        "Contents/Resources/python-backend/darwin-x64/**"
-      ],
       "target": [
         {
           "target": "dmg",
