@@ -7,10 +7,14 @@
 # We intentionally keep console=True because the desktop app consumes JSONL from stdout.
 
 from pathlib import Path
+import os
 
 block_cipher = None
 
-repo_root = Path(__file__).resolve().parents[1]
+# NOTE: In PyInstaller, spec files are executed via exec() and may not have __file__.
+# Use SPECPATH (provided by PyInstaller) as the spec directory.
+spec_dir = Path(globals().get("SPECPATH", os.getcwd())).resolve()
+repo_root = spec_dir.parent
 
 # Data files needed at runtime (YAML configs, agent systems, etc.)
 datas = [
