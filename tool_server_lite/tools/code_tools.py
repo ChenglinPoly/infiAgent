@@ -306,7 +306,7 @@ class ExecuteCodeTool(BaseTool):
         output += f"   PID: {process.pid}\n"
         output += f"   输出文件: {output_file}\n"
         output += f"   提示: 使用 file_read 读取 {output_file} 查看执行结果\n"
-        output += f"   管理: 使用 manage_code_process 查看或终止进程"
+        output += f"   管理: 使用 execute_command 运行 `ps`/`kill` 或停止任务以终止进程"
         
         return output
     
@@ -570,17 +570,29 @@ class ExecuteCommandTool(BaseTool):
             command (str): 要执行的命令（仅限白名单中的安全命令）
             working_dir (str, optional): 工作目录相对路径，默认为workspace根目录
             timeout (int, optional): 超时时间（秒），默认30
+            background (bool, optional): 是否后台执行（不阻塞），默认False。后台执行时必须指定 output_file。
+            output_file (str, optional): 输出重定向到文件（相对路径）。后台执行时必需；非后台执行时可选。
         """
         try:
             command = parameters.get("command")
             working_dir = parameters.get("working_dir", ".")
             timeout = parameters.get("timeout", 30)
+            background = parameters.get("background", False)
+            output_file = parameters.get("output_file")
             
             if not command:
                 return {
                     "status": "error",
                     "output": "",
                     "error": "command parameter is required"
+                }
+
+            # 后台执行时必须指定输出文件
+            if background and not output_file:
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error": "output_file is required when background=True"
                 }
             
             # 安全检查
@@ -612,27 +624,109 @@ class ExecuteCommandTool(BaseTool):
                     "error": f"Working directory not found: {working_dir}"
                 }
             
-            # 执行命令
+            workspace = Path(task_id)
+
+            # 输出重定向到文件
+            if output_file:
+                output_path = get_abs_path(str(workspace), output_file)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                if background:
+                    # 后台执行：Popen + 输出到文件
+                    out_f = open(output_path, "w", encoding="utf-8")
+
+                    if sys.platform == "win32":
+                        CREATE_NO_WINDOW = 0x08000000
+                        DETACHED_PROCESS = 0x00000008
+                        process = subprocess.Popen(
+                            command,
+                            shell=True,
+                            stdout=out_f,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            cwd=str(abs_working_dir),
+                            stdin=subprocess.DEVNULL,
+                            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+                            close_fds=False,
+                        )
+                    else:
+                        process = subprocess.Popen(
+                            command,
+                            shell=True,
+                            stdout=out_f,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            cwd=str(abs_working_dir),
+                            stdin=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+
+                    process_id = f"bg_cmd_{int(time.time())}_{process.pid}"
+                    BACKGROUND_PROCESSES[process_id] = {
+                        "task_id": str(workspace),
+                        "pid": process.pid,
+                        "command": command,
+                        "output_file": output_file,
+                        "start_time": datetime.now().isoformat(),
+                        "process_obj": process,
+                    }
+
+                    return {
+                        "status": "success",
+                        "output": (
+                            "✅ 命令已在后台启动\n"
+                            f"   Process ID: {process_id}\n"
+                            f"   PID: {process.pid}\n"
+                            f"   输出文件: {output_file}\n"
+                            f"   提示: 使用 file_read 读取 {output_file} 查看执行结果\n"
+                            "   终止: 使用 execute_command 运行 `ps`/`kill` 或在桌面端停止任务"
+                        ),
+                        "error": "",
+                    }
+                else:
+                    # 非后台：run + 输出到文件
+                    with open(output_path, "w", encoding="utf-8") as out_f:
+                        result = subprocess.run(
+                            command,
+                            shell=True,
+                            stdout=out_f,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            timeout=timeout,
+                            cwd=str(abs_working_dir),
+                            stdin=subprocess.DEVNULL,
+                        )
+
+                    output = f"命令执行完成，输出已保存到: {output_file}\nExit code: {result.returncode}"
+                    # 读取部分预览
+                    try:
+                        with open(output_path, "r", encoding="utf-8") as f:
+                            content = f.read(1000)
+                        if content:
+                            output += "\n\n输出预览（前1000字符）:\n" + content + ("\n..." if len(content) == 1000 else "")
+                    except Exception:
+                        pass
+
+                    return {"status": "success", "output": output, "error": ""}
+
+            # 不重定向：直接捕获输出
             result = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(abs_working_dir)
+                cwd=str(abs_working_dir),
+                stdin=subprocess.DEVNULL,
             )
-            
-            output = result.stdout
+
+            output = result.stdout or ""
             if result.stderr:
                 output += f"\nSTDERR:\n{result.stderr}"
             if result.returncode != 0:
                 output += f"\nExit code: {result.returncode}"
-            
-            return {
-                "status": "success",
-                "output": output,
-                "error": ""
-            }
+
+            return {"status": "success", "output": output, "error": ""}
             
         except subprocess.TimeoutExpired:
             return {

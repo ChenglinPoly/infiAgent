@@ -16,7 +16,7 @@ class LoadSkillTool(BaseTool):
     Skill 部署工具 - 将指定 skill 从 ~/.mla_v3/skills_library/ 复制到 workspace/.skills/
     
     部署后 Agent 可以通过 file_read 读取 .skills/{skill_name}/SKILL.md 获取详细指令，
-    并通过 execute_code/execute_command 运行 .skills/{skill_name}/scripts/ 中的脚本。
+    并通过 execute_command 运行 .skills/{skill_name}/scripts/ 中的脚本。
     """
     
     def __init__(self):

@@ -302,7 +302,7 @@ if __name__ == "__main__":
     result = thinking_agent.analyze_first_thinking(
         task_description="生成斐波那契数列文件",
         agent_system_prompt="你是一个编程助手",
-        available_tools=["file_write", "execute_code"]
+        available_tools=["file_write", "execute_command"]
     )
     
     safe_print("="*80)

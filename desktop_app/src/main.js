@@ -2,8 +2,10 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const childProcess = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
+const AdmZip = require('adm-zip');
 
 let mainWindow;
 let pythonProcess = null;
@@ -84,10 +86,65 @@ function getUserConfigDir() {
   return path.join(getUserDataRoot(), 'config');
 }
 
+function getAppConfigPath() {
+  return path.join(getUserConfigDir(), 'app_config.json');
+}
+
 // LLM config file path
 function getLlmConfigPath() {
   // Always store user-editable config under ~/mla_v3/config/
   return path.join(getUserConfigDir(), 'llm_config.yaml');
+}
+
+function defaultAppConfig() {
+  return {
+    env: {
+      // system: use /usr/libexec/path_helper + common paths
+      // zsh_login_interactive: use zsh -lic to get PATH (more terminal-like, may have side effects)
+      shell_mode: 'system',
+      extra_path: [],
+      // additional env vars to inject into backend + execute_command
+      extra_env: {}
+    },
+    market: {
+      // Default marketplace (user can change in Settings → Environment)
+      base_url: 'http://101.200.231.88'
+    }
+  };
+}
+
+function safeReadJsonFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(content);
+  } catch (_) {
+    return null;
+  }
+}
+
+function ensureUserAppConfigExists() {
+  ensureUserDataRootScaffold();
+  const p = getAppConfigPath();
+  if (fs.existsSync(p)) return p;
+  fs.writeFileSync(p, JSON.stringify(defaultAppConfig(), null, 2) + '\n', 'utf-8');
+  return p;
+}
+
+function readAppConfig() {
+  ensureUserAppConfigExists();
+  const raw = safeReadJsonFile(getAppConfigPath());
+  if (!raw || typeof raw !== 'object') return defaultAppConfig();
+  const base = defaultAppConfig();
+  // shallow merge
+  const out = { ...base, ...raw };
+  out.env = { ...base.env, ...(raw.env || {}) };
+  out.market = { ...base.market, ...(raw.market || {}) };
+  // normalize types
+  if (!Array.isArray(out.env.extra_path)) out.env.extra_path = [];
+  if (!out.env.extra_env || typeof out.env.extra_env !== 'object') out.env.extra_env = {};
+  if (typeof out.market.base_url !== 'string') out.market.base_url = '';
+  return out;
 }
 
 function stripApiKeysFromYaml(yamlText) {
@@ -95,6 +152,96 @@ function stripApiKeysFromYaml(yamlText) {
   // Keep file otherwise unchanged to preserve advanced YAML structures.
   if (typeof yamlText !== 'string') return '';
   return yamlText.replace(/^(\s*api_key\s*:\s*).*/gm, '$1""');
+}
+
+function _parsePathFromPathHelperOutput(text) {
+  // path_helper -s output example:
+  //   PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; export PATH;
+  if (!text) return null;
+  const m = String(text).match(/PATH="([^"]*)"/);
+  if (!m) return null;
+  return m[1];
+}
+
+function getSystemPathFromPathHelper() {
+  try {
+    const out = childProcess.execFileSync('/usr/libexec/path_helper', ['-s'], {
+      encoding: 'utf-8',
+      timeout: 1500
+    });
+    return _parsePathFromPathHelperOutput(out);
+  } catch (_) {
+    return null;
+  }
+}
+
+function getZshLoginInteractivePath() {
+  try {
+    // zsh -lic: reads login + interactive configs (closest to user's terminal env)
+    const out = childProcess.execFileSync('/bin/zsh', ['-lic', 'echo -n "$PATH"'], {
+      encoding: 'utf-8',
+      timeout: 4000
+    });
+    const p = String(out || '').trim();
+    return p || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function computeEffectivePath(appCfg) {
+  const mode = appCfg?.env?.shell_mode || 'system';
+
+  let basePath = null;
+  if (mode === 'zsh_login_interactive') {
+    basePath = getZshLoginInteractivePath();
+  }
+  if (!basePath) {
+    basePath = getSystemPathFromPathHelper() || process.env.PATH || '';
+  }
+
+  const baseParts = basePath.split(':').filter(Boolean);
+  const extraParts = Array.isArray(appCfg?.env?.extra_path) ? appCfg.env.extra_path : [];
+
+  // Common user tool locations (best-effort; harmless if missing)
+  const common = [
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/opt/anaconda3/bin',
+    '/opt/anaconda3/condabin'
+  ];
+
+  const all = [...common, ...baseParts, ...extraParts].map(s => String(s || '').trim()).filter(Boolean);
+  const seen = new Set();
+  const dedup = [];
+  for (const p of all) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    dedup.push(p);
+  }
+  return dedup.join(':');
+}
+
+function buildRuntimeEnv() {
+  const appCfg = readAppConfig();
+  const env = { ...process.env };
+  env.PATH = computeEffectivePath(appCfg);
+
+  // Encourage consistent unicode behavior
+  env.LANG = env.LANG || 'en_US.UTF-8';
+  env.LC_ALL = env.LC_ALL || 'en_US.UTF-8';
+
+  // Inject extra env
+  const extraEnv = appCfg?.env?.extra_env || {};
+  for (const [k, v] of Object.entries(extraEnv)) {
+    const key = String(k || '').trim();
+    if (!key) continue;
+    env[key] = String(v ?? '');
+  }
+
+  return env;
 }
 
 function ensureUserDataRootScaffold() {
@@ -107,7 +254,7 @@ function ensureUserDataRootScaffold() {
 
   // Seed default bundled skills (best-effort; never overwrite existing ones)
   try {
-    const bundledSkillsDir = path.join(getPythonBackendPath(), 'skills_libraru');
+    const bundledSkillsDir = path.join(getPythonBackendPath(), 'skills');
     if (fs.existsSync(bundledSkillsDir)) {
       const entries = fs.readdirSync(bundledSkillsDir, { withFileTypes: true });
       for (const e of entries) {
@@ -120,6 +267,26 @@ function ensureUserDataRootScaffold() {
     }
   } catch (_) {
     // Seeding skills should never block app startup
+  }
+
+  // Seed bundled agent systems into ~/mla_v3/agent_library (best-effort; never overwrite existing ones)
+  try {
+    const backendPath = getPythonBackendPath();
+    const bundledAgentLibDir = path.join(backendPath, 'config', 'agent_library');
+    if (fs.existsSync(bundledAgentLibDir)) {
+      const destRoot = getUserAgentLibraryPath();
+      fs.mkdirSync(destRoot, { recursive: true });
+      const entries = fs.readdirSync(bundledAgentLibDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith('.')) continue;
+        const src = path.join(bundledAgentLibDir, e.name);
+        const dst = path.join(destRoot, e.name);
+        if (fs.existsSync(dst)) continue; // do not overwrite user system
+        copyDirSync(src, dst);
+      }
+    }
+  } catch (_) {
+    // Seeding agent systems should never block app startup
   }
 }
 
@@ -276,11 +443,15 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
   pythonProcess = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
     env: {
-      ...process.env,
+      ...buildRuntimeEnv(),
       PYTHONUNBUFFERED: '1',
       MLA_LLM_CONFIG_PATH: llmConfigPath,
       // Allow importing agent systems under ~/mla_v3/agent_library/
-      MLA_AGENT_LIBRARY_DIR: getUserDataRoot()
+      MLA_AGENT_LIBRARY_DIR: getUserDataRoot(),
+      // Packaged app: force Playwright to use bundled browsers under
+      //   <bundle>/_internal/playwright/driver/package/.local-browsers
+      // (installed at build time via PLAYWRIGHT_BROWSERS_PATH=0).
+      ...(app.isPackaged ? { PLAYWRIGHT_BROWSERS_PATH: '0' } : {})
     }
   });
 
@@ -401,10 +572,11 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
     pythonProcess = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env: {
-        ...process.env,
+        ...buildRuntimeEnv(),
         PYTHONUNBUFFERED: '1',
         MLA_LLM_CONFIG_PATH: llmConfigPath,
-        MLA_AGENT_LIBRARY_DIR: getUserDataRoot()
+        MLA_AGENT_LIBRARY_DIR: getUserDataRoot(),
+        ...(app.isPackaged ? { PLAYWRIGHT_BROWSERS_PATH: '0' } : {})
       }
     });
 
@@ -601,6 +773,23 @@ ipcMain.handle('get-agent-systems', async () => {
   }
 });
 
+// Delete an imported/seeded agent system under ~/mla_v3/agent_library/<System>/
+ipcMain.handle('delete-agent-system', async (event, systemName) => {
+  try {
+    const name = String(systemName || '').trim();
+    if (!name) return { error: 'Invalid system name' };
+    const userRoot = getUserAgentLibraryPath();
+    const target = path.join(userRoot, name);
+    if (!fs.existsSync(target)) {
+      return { success: true, deleted: false };
+    }
+    fs.rmSync(target, { recursive: true, force: true });
+    return { success: true, deleted: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 // Import Agent System folder into ~/mla_v3/agent_library/
 ipcMain.handle('import-agent-system-folder', async () => {
   try {
@@ -619,6 +808,148 @@ ipcMain.handle('import-agent-system-folder', async () => {
     return { success: true, name: systemName, path: destDir };
   } catch (e) {
     return { error: e.message };
+  }
+});
+
+// ==================== IPC: App Config (app_config.json) ====================
+
+ipcMain.handle('get-app-config', async () => {
+  try {
+    const cfg = readAppConfig();
+    return { success: true, config: cfg, path: getAppConfigPath() };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle('save-app-config', async (event, config) => {
+  try {
+    ensureUserAppConfigExists();
+    const base = defaultAppConfig();
+    const raw = (config && typeof config === 'object') ? config : {};
+    const out = { ...base, ...raw };
+    out.env = { ...base.env, ...(raw.env || {}) };
+    out.market = { ...base.market, ...(raw.market || {}) };
+    fs.writeFileSync(getAppConfigPath(), JSON.stringify(out, null, 2) + '\n', 'utf-8');
+    return { success: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// ==================== IPC: Marketplace ====================
+
+function normalizeMarketBaseUrl(url) {
+  const u = String(url || '').trim();
+  if (!u) return '';
+  return u.replace(/\/+$/, '');
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url, { method: 'GET' });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}: ${t.slice(0, 300)}`);
+  }
+  return await res.json();
+}
+
+async function fetchBuffer(url) {
+  const res = await fetch(url, { method: 'GET' });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}: ${t.slice(0, 300)}`);
+  }
+  const ab = await res.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+function resolveUniqueName(rootDir, baseName) {
+  let name = baseName;
+  if (!fs.existsSync(path.join(rootDir, name))) return name;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${baseName}__${i}`;
+    if (!fs.existsSync(path.join(rootDir, candidate))) return candidate;
+  }
+  // fallback
+  return `${baseName}__${Date.now()}`;
+}
+
+function extractSingleTopFolderFromZip(zipBuffer, tempDir) {
+  fs.mkdirSync(tempDir, { recursive: true });
+  const zip = new AdmZip(zipBuffer);
+  zip.extractAllTo(tempDir, true);
+  const entries = fs.readdirSync(tempDir, { withFileTypes: true }).filter(e => !e.name.startsWith('.'));
+  const dirs = entries.filter(e => e.isDirectory());
+  if (dirs.length === 1) {
+    return path.join(tempDir, dirs[0].name);
+  }
+  // If zip doesn't have a single top folder, treat tempDir as root
+  return tempDir;
+}
+
+ipcMain.handle('market-get-index', async () => {
+  try {
+    const appCfg = readAppConfig();
+    const base = normalizeMarketBaseUrl(appCfg?.market?.base_url);
+    if (!base) return { error: 'Market base_url is empty. Set it in Settings → Environment / Marketplace.' };
+    const index = await fetchJson(`${base}/api/v1/index`);
+    return { success: true, base_url: base, index };
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('market-install', async (event, { kind, name, strategy }) => {
+  try {
+    const k = String(kind || '').trim(); // 'skill' | 'agent_system'
+    const n = String(name || '').trim();
+    const s = String(strategy || '').trim(); // 'overwrite' | 'keep_both'
+    if (!n) return { error: 'Missing name' };
+    if (k !== 'skill' && k !== 'agent_system') return { error: 'Invalid kind' };
+
+    const appCfg = readAppConfig();
+    const base = normalizeMarketBaseUrl(appCfg?.market?.base_url);
+    if (!base) return { error: 'Market base_url is empty' };
+
+    const dlUrl = (k === 'skill')
+      ? `${base}/api/v1/skills/${encodeURIComponent(n)}/download`
+      : `${base}/api/v1/agent-systems/${encodeURIComponent(n)}/download`;
+
+    const buf = await fetchBuffer(dlUrl);
+    const tempRoot = path.join(getUserDataRoot(), 'tmp', 'market');
+    const tempDir = path.join(tempRoot, `${k}_${Date.now()}_${Math.random().toString(16).slice(2)}`);
+    const extractedRoot = extractSingleTopFolderFromZip(buf, tempDir);
+
+    const destRoot = (k === 'skill') ? getSkillsLibraryPath() : getUserAgentLibraryPath();
+    fs.mkdirSync(destRoot, { recursive: true });
+
+    // Determine installed folder name
+    let installName = path.basename(extractedRoot);
+    if (!installName || installName === '.' || installName === '..') installName = n;
+
+    let destDir = path.join(destRoot, installName);
+    if (fs.existsSync(destDir)) {
+      if (!s) {
+        return { success: false, conflict: true, existing: installName };
+      }
+      if (s === 'overwrite') {
+        fs.rmSync(destDir, { recursive: true, force: true });
+      } else if (s === 'keep_both') {
+        const uniq = resolveUniqueName(destRoot, installName);
+        installName = uniq;
+        destDir = path.join(destRoot, installName);
+      } else {
+        return { error: `Unknown strategy: ${s}` };
+      }
+    }
+
+    copyDirSync(extractedRoot, destDir);
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+
+    return { success: true, installed_name: installName, path: destDir };
+  } catch (e) {
+    return { error: e.message || String(e) };
   }
 });
 

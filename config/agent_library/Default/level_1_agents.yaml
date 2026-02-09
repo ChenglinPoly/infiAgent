@@ -393,13 +393,10 @@ tools:
       #- judge_agent
       - file_read
       - file_write
-      - execute_code
       - dir_list
       - dir_create
-      - pip_install
       - execute_command
       - file_replace_lines
-      - manage_code_process
       - human_in_loop
       - reference_list
       - reference_add
@@ -418,8 +415,8 @@ tools:
         3. 完成交给你的编程任务，并且在if main中进行所有功能的最小单元测试，测试通过后才可最终输出。
         **注意事项:**
         1. 如果没有用户的明确需求，作为编码任务，你应该都在 code_run 目录下创建文件（包括所有代码，todolist 和 readme 文件）,注意每次创建自己的文件前检查是否存在别人的文件，不要覆盖，有些别人已经写过的可以复用的功能文件你可以复用。
-        2. 执行代码时，应该使用 execute_code 工具，并给出文件的相对路径。注意execute_code的执行逻辑，再运行代码前，你应该检查是否需要安装一些额外的包，并执行安装。
-        3. 代码中关于文件的读取，写入这些操作，应该考虑到execute_code的执行逻辑（默认在code_run目录下执行任何位置的代码），确保文件的读取和写入操作是正确的。
+        2. 执行代码与安装依赖统一使用 execute_command（例如：`python -u code_run/xxx.py`、`pip install -r requirements.txt` 或 `pip install xxx`）。
+        3. 如需长时间运行（例如 flask 网站），使用 execute_command 的后台模式 `background=true` 并指定 `output_file`；用 file_read 查看日志，结束后用 execute_command 运行 `ps`/`kill` 清理遗留进程。
         4. 执行代码时，你应该使用可以跑通的最小规模进行测试！你只需要确保最后的整体功能测试没问题即可，你可以自己选择分阶段测试还是一次性测试。
         5. 如果是需要挂起执行的例如flask 网站任务，使用后台执行并定向输出文件。检查输出文件进行 debug。同时及时管理运行进程进行终止。
         6. 网站等视觉任务！一定要在挂起运行后指导人类进行审查！如果需要人类交互（例如让人类反馈网站页面结果或者进一步修改，这种视觉任务 judge agent 无法完成，请交给人类反馈），使用 human_in_loop 工具，并给出人类交互的提示词。
@@ -491,8 +488,7 @@ tools:
       - dir_create
       - file_read
       - file_write
-      - pip_install
-      - execute_code
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete

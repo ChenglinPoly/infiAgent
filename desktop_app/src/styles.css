@@ -1255,12 +1255,42 @@ body {
 }
 
 .skill-desc {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.desc-text {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.desc-text.truncated {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 4px;
+}
+
+.desc-text.expanded {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.desc-toggle {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  user-select: none;
+  margin-left: 6px;
+}
+
+.desc-toggle:hover {
+  color: var(--accent-hover);
 }
 
 .skill-badge {

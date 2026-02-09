@@ -50,6 +50,7 @@
       <!-- Sidebar footer -->
       <div class="sidebar-footer">
         <button id="skills-btn" class="sidebar-btn-text" title="Import / Manage Skills">Import skills</button>
+        <button id="market-btn" class="sidebar-btn-text" title="Marketplace">Marketplace</button>
         <button id="settings-btn" class="sidebar-btn-icon" title="Settings">⚙️</button>
       </div>
     </aside>
@@ -110,6 +111,7 @@
         <button class="modal-tab active" data-tab="api">API Configuration</button>
         <button class="modal-tab" data-tab="model">Model Settings</button>
         <button class="modal-tab" data-tab="agent">Agent System</button>
+        <button class="modal-tab" data-tab="env">Environment</button>
         <button class="modal-tab" data-tab="yaml">Raw YAML</button>
       </div>
       
@@ -204,6 +206,7 @@
             </select>
             <div class="form-row" style="margin-top:10px; gap:10px;">
               <button id="import-agent-system-btn" class="btn-secondary" type="button">Import Agent System Folder…</button>
+              <button id="delete-agent-system-btn" class="btn-secondary" type="button">Delete Selected (User)…</button>
             </div>
             <p class="form-hint-block">
               Agent System defines the available tools, agents and prompts.
@@ -217,6 +220,38 @@
           <div class="form-group">
             <label class="form-label">Config File Location</label>
             <p id="config-path-display" class="config-path">—</p>
+          </div>
+        </div>
+
+        <!-- Environment Tab -->
+        <div id="tab-env" class="tab-content">
+          <div class="form-group">
+            <label class="form-label">PATH Mode</label>
+            <select id="setting-path-mode" class="form-input">
+              <option value="system">System (path_helper + common paths)</option>
+              <option value="zsh_login_interactive">Zsh login+interactive (closest to Terminal, may be slow)</option>
+            </select>
+            <p class="form-hint-block">
+              桌面端从 Finder 启动时不会加载 <code>~/.zshrc</code>。此处用于让后端/execute_command 更接近你终端里的工具环境。
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Extra PATH entries <span class="form-hint">(one per line)</span></label>
+            <textarea id="setting-extra-path" class="form-textarea" rows="4" placeholder="/opt/anaconda3/bin&#10;/opt/homebrew/bin"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Extra environment variables <span class="form-hint">(KEY=VALUE per line)</span></label>
+            <textarea id="setting-extra-env" class="form-textarea" rows="4" placeholder="HTTP_PROXY=http://127.0.0.1:7890"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Marketplace Base URL</label>
+            <input type="text" id="setting-market-url" class="form-input" placeholder="http://101.200.231.88">
+            <p class="form-hint-block">
+              用于 Skills + Agent System 市场。你可以部署一个 FastAPI 市场服务，并在此配置地址，然后在侧边栏 Marketplace 一键安装。
+            </p>
           </div>
         </div>
 
@@ -261,6 +296,28 @@
         <div id="skills-list" class="skills-list">
           <div class="empty-state">No skills imported yet</div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Marketplace Modal ==================== -->
+  <div id="market-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h2 class="modal-title">Marketplace</h2>
+        <button id="market-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="skills-toolbar">
+          <input id="market-search" class="form-input" style="flex:1;" placeholder="Search skills / agent systems...">
+          <button id="market-refresh-btn" class="sidebar-icon-btn" title="Refresh">↻</button>
+        </div>
+        <div class="form-row" style="margin-top:10px; gap:10px;">
+          <button id="market-tab-skills" class="btn-secondary" type="button">Skills</button>
+          <button id="market-tab-systems" class="btn-secondary" type="button">Agent Systems</button>
+        </div>
+        <div id="market-status" class="settings-status" style="margin-top:10px;"></div>
+        <div id="market-list" class="skills-list" style="margin-top:10px;"></div>
       </div>
     </div>
   </div>

@@ -29,6 +29,112 @@ ensure_venv() {
   "${venv_dir}/bin/python" -m pip install pyinstaller >/dev/null
 }
 
+purge_playwright_local_browsers_in_venv() {
+  # If Playwright browsers were previously installed into the playwright package directory
+  # (PLAYWRIGHT_BROWSERS_PATH=0), PyInstaller will try to process/codesign those bundles and
+  # the build can fail. Always purge that directory before running PyInstaller.
+  local arch_label="$1"
+  local venv_dir="$2"
+  local py="${venv_dir}/bin/python"
+
+  echo "[backend_build] purge playwright .local-browsers in venv (${arch_label})"
+  if ! "${py}" -c "import playwright" >/dev/null 2>&1; then
+    echo "[backend_build] Playwright not installed; skip purge."
+    return 0
+  fi
+
+  "${py}" - <<'PY'
+import shutil
+from pathlib import Path
+import playwright
+
+pkg = Path(playwright.__file__).resolve().parent
+target = pkg / "driver" / "package" / ".local-browsers"
+try:
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+        print(f"[backend_build] purged: {target}")
+    else:
+        print(f"[backend_build] no local browsers dir: {target}")
+except Exception as e:
+    print(f"[backend_build] purge failed: {e}")
+PY
+}
+
+install_playwright_chromium() {
+  # Bundle Playwright browsers for offline packaged app.
+  #
+  # IMPORTANT:
+  # Do NOT download browsers into playwright's package directory (i.e. avoid
+  # PLAYWRIGHT_BROWSERS_PATH=0 during build), otherwise PyInstaller will pick up
+  # `.local-browsers` inside site-packages and try to ad-hoc codesign Chromium
+  # app bundles during COLLECT, which can fail (bundle format / nested frameworks).
+  #
+  # Instead, download browsers into a build-local directory, then copy them into
+  # the PyInstaller bundle AFTER PyInstaller completes.
+  local arch_label="$1"
+  local venv_dir="$2"
+
+  echo "[backend_build] install Playwright Chromium (${arch_label})"
+  # Best-effort: if Playwright isn't installed, skip (crawl4ai optional).
+  if ! "${venv_dir}/bin/python" -c "import playwright" >/dev/null 2>&1; then
+    echo "[backend_build] Playwright not installed in venv; skip browser download."
+    return 0
+  fi
+
+  # NOTE: this can be large and may take time; respects HTTP_PROXY/HTTPS_PROXY/ALL_PROXY from env.
+  local dl_dir="${WORK_ROOT}/playwright-browsers/${arch_label}"
+  mkdir -p "${dl_dir}"
+  PLAYWRIGHT_BROWSERS_PATH="${dl_dir}" "${venv_dir}/bin/python" -m playwright install chromium
+}
+
+ensure_packaged_playwright_browsers() {
+  # After PyInstaller, copy downloaded Playwright browsers into bundle.
+  # Source is build-local directory (see install_playwright_chromium()).
+  local arch_label="$1"
+  local venv_dir="$2"
+  local bundle_root="$3"
+  local src_dir="${WORK_ROOT}/playwright-browsers/${arch_label}"
+
+  python3 - <<'PY' "${arch_label}" "${src_dir}" "${bundle_root}"
+import shutil
+from pathlib import Path
+import sys
+from typing import Optional
+
+arch_label, src_dir, bundle_root = sys.argv[1], sys.argv[2], sys.argv[3]
+src_dir = Path(src_dir)
+bundle_root = Path(bundle_root)
+dst_root = bundle_root
+
+def is_nonempty_dir(p: Path) -> bool:
+    try:
+        return p.exists() and p.is_dir() and any(p.iterdir())
+    except Exception:
+        return False
+
+src = src_dir.resolve()
+if not is_nonempty_dir(src):
+    print(f"[backend_build] ({arch_label}) no downloaded playwright browsers at {src}; skip")
+    raise SystemExit(0)
+
+# Ensure target directory exists in bundle
+target = (dst_root / "_internal" / "playwright" / "driver" / "package" / ".local-browsers")
+target.parent.mkdir(parents=True, exist_ok=True)
+
+if target.exists():
+    # If empty, replace
+    try:
+        shutil.rmtree(target)
+    except Exception:
+        pass
+
+print(f"[backend_build] ({arch_label}) copying playwright browsers into bundle...")
+shutil.copytree(src, target)
+print(f"[backend_build] ({arch_label}) copied -> {target}")
+PY
+}
+
 build_arch() {
   local arch_label="$1"       # darwin-arm64 | darwin-x64
   local venv_dir="$2"
@@ -144,10 +250,13 @@ echo "[backend_build] host_arch: ${HOST_ARCH}"
 
 echo "[backend_build] === arm64 backend ==="
 ensure_venv "${PYTHON_ARM64}" "${VENV_ARM64}"
+purge_playwright_local_browsers_in_venv "darwin-arm64" "${VENV_ARM64}"
+install_playwright_chromium "darwin-arm64" "${VENV_ARM64}"
 build_arch "darwin-arm64" "${VENV_ARM64}"
 normalize_info_plists "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 sanitize_bundled_llm_config "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
+ensure_packaged_playwright_browsers "darwin-arm64" "${VENV_ARM64}" "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 
 if [ "${HOST_ARCH}" = "arm64" ]; then
   echo "[backend_build] === x64 backend (Rosetta) ==="
@@ -179,6 +288,34 @@ if [ "${HOST_ARCH}" = "arm64" ]; then
   arch -x86_64 "${VENV_X64}/bin/python" -m pip install --upgrade pip wheel setuptools >/dev/null
   arch -x86_64 "${VENV_X64}/bin/python" -m pip install -r "${REPO_ROOT}/requirements.txt" >/dev/null
   arch -x86_64 "${VENV_X64}/bin/python" -m pip install pyinstaller >/dev/null
+  # Download Playwright Chromium into driver-local .local-browsers for offline use.
+  if arch -x86_64 "${VENV_X64}/bin/python" -c "import playwright" >/dev/null 2>&1; then
+    # Purge any legacy `.local-browsers` inside site-packages first (avoid PyInstaller codesign failures).
+    echo "[backend_build] purge playwright .local-browsers in venv (darwin-x64)"
+    arch -x86_64 "${VENV_X64}/bin/python" - <<'PY'
+import shutil
+from pathlib import Path
+import playwright
+
+pkg = Path(playwright.__file__).resolve().parent
+target = pkg / "driver" / "package" / ".local-browsers"
+try:
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+        print(f"[backend_build] purged: {target}")
+    else:
+        print(f"[backend_build] no local browsers dir: {target}")
+except Exception as e:
+    print(f"[backend_build] purge failed: {e}")
+PY
+
+    echo "[backend_build] install Playwright Chromium (darwin-x64)"
+    DL_DIR="${WORK_ROOT}/playwright-browsers/darwin-x64"
+    mkdir -p "${DL_DIR}"
+    PLAYWRIGHT_BROWSERS_PATH="${DL_DIR}" arch -x86_64 "${VENV_X64}/bin/python" -m playwright install chromium
+  else
+    echo "[backend_build] Playwright not installed in venv_x64; skip browser download."
+  fi
 
   # Build x64 (force x86_64 python execution)
   mkdir -p "${OUTPUT_ROOT}/darwin-x64" "${WORK_ROOT}/darwin-x64"
@@ -192,6 +329,7 @@ if [ "${HOST_ARCH}" = "arm64" ]; then
   normalize_info_plists "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
   ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
   sanitize_bundled_llm_config "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
+  ensure_packaged_playwright_browsers "darwin-x64" "${VENV_X64}" "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
 else
   echo "[backend_build] host is not arm64; skipping darwin-x64 build."
 fi

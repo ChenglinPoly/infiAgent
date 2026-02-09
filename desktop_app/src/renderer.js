@@ -638,6 +638,7 @@ const settingsSaveBtn = document.getElementById('settings-save-btn');
 const settingsStatus = document.getElementById('settings-status');
 const toggleApiKeyBtn = document.getElementById('toggle-api-key');
 const importAgentSystemBtn = document.getElementById('import-agent-system-btn');
+const deleteAgentSystemBtn = document.getElementById('delete-agent-system-btn');
 const rawYamlTextarea = document.getElementById('setting-raw-yaml');
 
 // Open settings
@@ -719,6 +720,26 @@ async function loadSettings() {
     // Set current value from sidebar
     select.value = agentSystemSelect.value;
   }
+
+  // Load app config (env + market)
+  const appCfgRes = await window.api.getAppConfig();
+  if (appCfgRes?.success) {
+    const cfg = appCfgRes.config || {};
+    const env = cfg.env || {};
+    const market = cfg.market || {};
+    const pathModeEl = document.getElementById('setting-path-mode');
+    const extraPathEl = document.getElementById('setting-extra-path');
+    const extraEnvEl = document.getElementById('setting-extra-env');
+    const marketUrlEl = document.getElementById('setting-market-url');
+    if (pathModeEl) pathModeEl.value = env.shell_mode || 'system';
+    if (extraPathEl) extraPathEl.value = Array.isArray(env.extra_path) ? env.extra_path.join('\n') : '';
+    if (extraEnvEl) {
+      const extraEnv = env.extra_env || {};
+      const lines = Object.entries(extraEnv).map(([k, v]) => `${k}=${v ?? ''}`);
+      extraEnvEl.value = lines.join('\n');
+    }
+    if (marketUrlEl) marketUrlEl.value = market.base_url || '';
+  }
   
   settingsStatus.textContent = '';
 }
@@ -764,6 +785,45 @@ if (importAgentSystemBtn) {
   });
 }
 
+// Delete selected agent system (user library only)
+if (deleteAgentSystemBtn) {
+  deleteAgentSystemBtn.addEventListener('click', async () => {
+    const select = document.getElementById('setting-agent-system');
+    const sys = select?.value;
+    if (!sys) return;
+    if (!confirm(`Delete Agent System "${sys}" from ~/mla_v3/agent_library/? (Bundled copy inside app is untouched)`)) return;
+    const res = await window.api.deleteAgentSystem(sys);
+    if (res?.error) {
+      settingsStatus.textContent = `Error: ${res.error}`;
+      settingsStatus.style.color = '#c75450';
+      return;
+    }
+    settingsStatus.textContent = `Deleted Agent System: ${sys}`;
+    settingsStatus.style.color = '#5a9a6a';
+    // Refresh selects
+    const systemsResult = await window.api.getAgentSystems();
+    if (systemsResult.success) {
+      const select2 = document.getElementById('setting-agent-system');
+      select2.innerHTML = '';
+      for (const s of systemsResult.systems) {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        select2.appendChild(opt);
+      }
+      // Sidebar select
+      agentSystemSelect.innerHTML = '';
+      for (const s of systemsResult.systems) {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        agentSystemSelect.appendChild(opt);
+      }
+    }
+    setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+  });
+}
+
 // Save settings
 settingsSaveBtn.addEventListener('click', async () => {
   // If Raw YAML tab is active, save raw YAML as-is
@@ -776,6 +836,42 @@ settingsSaveBtn.addEventListener('click', async () => {
       settingsStatus.style.color = '#5a9a6a';
     } else {
       settingsStatus.textContent = `Error: ${result.error}`;
+      settingsStatus.style.color = '#c75450';
+    }
+    setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+    return;
+  }
+
+  // Environment tab saves app_config.json
+  if (activeTab === 'env') {
+    const mode = document.getElementById('setting-path-mode')?.value || 'system';
+    const extraPathText = document.getElementById('setting-extra-path')?.value || '';
+    const extraEnvText = document.getElementById('setting-extra-env')?.value || '';
+    const marketUrl = document.getElementById('setting-market-url')?.value || '';
+
+    const extra_path = extraPathText.split('\n').map(s => s.trim()).filter(Boolean);
+    const extra_env = {};
+    for (const line of extraEnvText.split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const idx = t.indexOf('=');
+      if (idx <= 0) continue;
+      const k = t.slice(0, idx).trim();
+      const v = t.slice(idx + 1).trim();
+      if (k) extra_env[k] = v;
+    }
+
+    const appCfg = {
+      env: { shell_mode: mode, extra_path, extra_env },
+      market: { base_url: String(marketUrl || '').trim() }
+    };
+
+    const res = await window.api.saveAppConfig(appCfg);
+    if (res?.success) {
+      settingsStatus.textContent = 'Environment settings saved';
+      settingsStatus.style.color = '#5a9a6a';
+    } else {
+      settingsStatus.textContent = `Error: ${res?.error || 'Failed to save'}`;
       settingsStatus.style.color = '#c75450';
     }
     setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
@@ -825,6 +921,176 @@ settingsSaveBtn.addEventListener('click', async () => {
   
   setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
 });
+
+// ==================== Marketplace Modal ====================
+
+const marketModal = document.getElementById('market-modal');
+const marketBtn = document.getElementById('market-btn');
+const marketCloseBtn = document.getElementById('market-close-btn');
+const marketRefreshBtn = document.getElementById('market-refresh-btn');
+const marketSearch = document.getElementById('market-search');
+const marketList = document.getElementById('market-list');
+const marketStatus = document.getElementById('market-status');
+const marketTabSkills = document.getElementById('market-tab-skills');
+const marketTabSystems = document.getElementById('market-tab-systems');
+
+let marketIndexCache = null;
+let marketActiveKind = 'skill'; // 'skill' | 'agent_system'
+
+function setMarketStatus(text, isError = false) {
+  if (!marketStatus) return;
+  marketStatus.textContent = text || '';
+  marketStatus.style.color = isError ? '#c75450' : '#5a9a6a';
+}
+
+function filterMarketItems(items, q) {
+  const query = String(q || '').trim().toLowerCase();
+  if (!query) return items;
+  return items.filter(it => {
+    const name = String(it?.name || '').toLowerCase();
+    const desc = String(it?.description || '').toLowerCase();
+    return name.includes(query) || desc.includes(query);
+  });
+}
+
+function renderMarketList() {
+  if (!marketList) return;
+  const q = marketSearch?.value || '';
+  const idx = marketIndexCache?.index || marketIndexCache;
+  if (!idx) {
+    marketList.innerHTML = '<div class="empty-state">No data. Click refresh.</div>';
+    return;
+  }
+  const items = (marketActiveKind === 'skill') ? (idx.skills || []) : (idx.agent_systems || []);
+  const filtered = filterMarketItems(items, q);
+  if (filtered.length === 0) {
+    marketList.innerHTML = '<div class="empty-state">No matches.</div>';
+    return;
+  }
+  marketList.innerHTML = filtered.map(it => `
+    <div class="skill-item">
+      <div class="skill-info">
+        <div class="skill-name">${escapeHtml(it.name || '')}</div>
+        ${(() => {
+          const d = String(it.description || '');
+          const truncated = d.length > 120;
+          const safe = escapeHtml(d);
+          return `
+            <div class="skill-desc">
+              <span class="desc-text ${truncated ? 'truncated' : ''}">${safe}</span>
+              ${truncated ? '<span class="desc-toggle" data-action="toggle">More</span>' : ''}
+            </div>
+          `;
+        })()}
+      </div>
+      <button class="btn-secondary market-install-btn" data-name="${escapeHtml(it.name || '')}">Install</button>
+    </div>
+  `).join('');
+
+  marketList.querySelectorAll('.market-install-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.name;
+      await installFromMarket(marketActiveKind, name);
+    });
+  });
+
+  // Expand / collapse descriptions (event delegation)
+  marketList.querySelectorAll('.desc-toggle').forEach(t => {
+    t.addEventListener('click', () => {
+      const row = t.closest('.skill-item');
+      const text = row?.querySelector('.desc-text');
+      if (!text) return;
+      const isExpanded = text.classList.toggle('expanded');
+      if (isExpanded) {
+        text.classList.remove('truncated');
+        t.textContent = 'Less';
+      } else {
+        text.classList.add('truncated');
+        t.textContent = 'More';
+      }
+    });
+  });
+}
+
+async function loadMarketIndex() {
+  setMarketStatus('Loading...', false);
+  const res = await window.api.marketGetIndex();
+  if (res?.error) {
+    marketIndexCache = null;
+    setMarketStatus(res.error, true);
+    renderMarketList();
+    return;
+  }
+  marketIndexCache = res;
+  setMarketStatus(`Loaded from ${res.base_url}`, false);
+  renderMarketList();
+}
+
+async function installFromMarket(kind, name) {
+  setMarketStatus(`Installing ${name}...`, false);
+  const res1 = await window.api.marketInstall({ kind: kind === 'skill' ? 'skill' : 'agent_system', name });
+  if (res1?.conflict) {
+    const overwrite = confirm(`"${name}" already exists. Click OK to overwrite, Cancel to keep both.`);
+    const strategy = overwrite ? 'overwrite' : 'keep_both';
+    const res2 = await window.api.marketInstall({ kind: kind === 'skill' ? 'skill' : 'agent_system', name, strategy });
+    if (res2?.success) {
+      setMarketStatus(`Installed: ${res2.installed_name}`, false);
+      // refresh agent systems if installed
+      if (kind !== 'skill') {
+        const systemsResult = await window.api.getAgentSystems();
+        if (systemsResult.success) {
+          agentSystemSelect.innerHTML = '';
+          for (const sys of systemsResult.systems) {
+            const opt = document.createElement('option');
+            opt.value = sys;
+            opt.textContent = sys;
+            agentSystemSelect.appendChild(opt);
+          }
+        }
+      }
+      return;
+    }
+    setMarketStatus(res2?.error || 'Install failed', true);
+    return;
+  }
+  if (res1?.success) {
+    setMarketStatus(`Installed: ${res1.installed_name}`, false);
+    if (kind !== 'skill') {
+      const systemsResult = await window.api.getAgentSystems();
+      if (systemsResult.success) {
+        agentSystemSelect.innerHTML = '';
+        for (const sys of systemsResult.systems) {
+          const opt = document.createElement('option');
+          opt.value = sys;
+          opt.textContent = sys;
+          agentSystemSelect.appendChild(opt);
+        }
+      }
+    }
+    return;
+  }
+  setMarketStatus(res1?.error || 'Install failed', true);
+}
+
+if (marketBtn) {
+  marketBtn.addEventListener('click', async () => {
+    marketModal.style.display = 'flex';
+    marketActiveKind = 'skill';
+    await loadMarketIndex();
+  });
+}
+if (marketCloseBtn) {
+  marketCloseBtn.addEventListener('click', () => { marketModal.style.display = 'none'; });
+}
+if (marketModal) {
+  marketModal.addEventListener('click', (e) => {
+    if (e.target === marketModal) marketModal.style.display = 'none';
+  });
+}
+if (marketRefreshBtn) marketRefreshBtn.addEventListener('click', loadMarketIndex);
+if (marketSearch) marketSearch.addEventListener('input', renderMarketList);
+if (marketTabSkills) marketTabSkills.addEventListener('click', () => { marketActiveKind = 'skill'; renderMarketList(); });
+if (marketTabSystems) marketTabSystems.addEventListener('click', () => { marketActiveKind = 'agent_system'; renderMarketList(); });
 
 // ==================== Skills Modal ====================
 

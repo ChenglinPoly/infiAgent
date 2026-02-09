@@ -46,6 +46,40 @@ try:
 except Exception:
     pass
 
+# rich loads unicode cell-width tables via dynamic imports like:
+#   import_module(".unicode17-0-0", "rich._unicode_data")
+# Those submodules have hyphens in their module names and are not discovered by
+# static analysis, so we must explicitly include them, otherwise frozen builds hit:
+#   No module named 'rich._unicode_data.unicode17-0-0'
+try:
+    import rich  # type: ignore
+    rich_dir = Path(rich.__file__).resolve().parent
+    ud_dir = rich_dir / "_unicode_data"
+    if ud_dir.exists():
+        for p in ud_dir.glob("unicode*.py"):
+            stem = p.stem  # e.g. "unicode17-0-0"
+            hiddenimports.append(f"rich._unicode_data.{stem}")
+            # PyInstaller 的 modulegraph 可能不会把带 '-' 的模块名当作“模块”收集进 PYZ。
+            # 保险起见，把这些 unicode*.py 当作 data 文件拷进 bundle 的 rich/_unicode_data/，
+            # 让 importlib 在运行时能从文件系统导入它们。
+            datas.append((str(p), "rich/_unicode_data"))
+except Exception:
+    pass
+
+# crawl4ai ships runtime JS snippets under `crawl4ai/js_snippet/*`.
+# In frozen builds these package data files are not always auto-collected,
+# causing errors like:
+#   "Script update_image_dimensions not found in .../_internal/crawl4ai/js_snippet"
+try:
+    hiddenimports += collect_submodules("crawl4ai")
+except Exception:
+    pass
+
+try:
+    datas += collect_data_files("crawl4ai")
+except Exception:
+    pass
+
 a = Analysis(
     [str(repo_root / "start.py")],
     pathex=[str(repo_root)],

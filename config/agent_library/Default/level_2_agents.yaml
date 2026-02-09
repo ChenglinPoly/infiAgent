@@ -118,12 +118,9 @@ tools:
       - dir_list
       - dir_create
       - coding_task_agent
-      - execute_code
-      - pip_install
       - execute_command
       - target_to_coding_task_agent
       - human_in_loop
-      - manage_code_process
       - reference_list
       - reference_add
       - reference_delete
@@ -151,8 +148,8 @@ tools:
             ii. 运行。
             注意：
             1. 如果没有用户的明确需求，作为编码任务，你应该都在 code_run 目录下创建文件（包括所有代码）,注意每次创建自己的文件前检查是否存在别人的文件，不要覆盖，有些别人已经写过的可以复用的功能文件你可以复用。
-            2. 执行代码时，应该使用 execute_code 工具，并给出文件的相对路径。注意execute_code的执行逻辑，再运行代码前，你应该检查是否需要安装一些额外的包，并执行安装。
-            3. 代码中关于文件的读取，写入这些操作，应该考虑到execute_code的执行逻辑（默认在code_run目录下执行任何位置的代码），确保文件的读取和写入操作是正确的。
+            2. 执行代码时，统一使用 execute_command 运行（例如：`python -u code_run/xxx.py`）。需要依赖时也用 execute_command 运行 pip（例如：`pip install -r requirements.txt` 或 `pip install xxx`）。
+            3. 如果需要长时间运行（如 Web 服务），使用 execute_command 的后台模式 `background=true` 并指定 `output_file`，用 file_read 查看输出日志；结束后使用 execute_command 运行 `ps`/`kill` 清理遗留进程。
         根据难度进行编排。如果任务比较简单，大部分情况下，非学术研究的编程任务都可以直接完成.例如简单的成本计算，验证等。
         注意事项：
         1. 如果是需要挂起执行的例如flask 网站任务，使用后台执行并定向输出文件。检查输出文件进行 debug。同时及时管理运行进程进行终止。

@@ -322,7 +322,9 @@ class SimpleLLMClient:
                                 if len(_url) > 120:
                                     _part["image_url"]["url"] = _url[:80] + f"...({len(_url)} chars)"
                     elif isinstance(_c, str) and len(_c) > 2000:
-                        _dm["content"] = _c[:2000] + f"\n...({len(_c)} chars total)"
+                        # 不截断 system prompt（用于排查真实传参），其余消息仍做截断避免 debug 文件过大
+                        if (_dm.get("role") or "").lower() != "system":
+                            _dm["content"] = _c[:2000] + f"\n...({len(_c)} chars total)"
                 _debug_file = Path(__file__).parent.parent / "tests" / "debug_messages.json"
                 with open(_debug_file, 'w', encoding='utf-8') as _f:
                     json.dump({
@@ -385,233 +387,225 @@ class SimpleLLMClient:
                     if "extra_body" not in kwargs:
                         kwargs["extra_body"] = {}
                     kwargs["extra_body"].update(model_extra_params["extra_body"])
-            
+
             # 发起流式请求（LiteLLM 会根据 timeout 和 stream_timeout 自动管理超时）
-            safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
-            safe_print(f"   📨 请求模型: {model}")
-            safe_print(f"   🛠️ 工具数量: {len(tools_definition)}")
-            safe_print(f"   📝 消息数: {len(messages)}")
-            request_start_time = time.time()
-            
-            # 累积变量
-            accumulated_content = ""
-            accumulated_reasoning_content = ""  # reasoning/thinking 内容
-            accumulated_tool_calls = {}  # index -> {id, name, arguments}
-            finish_reason = "unknown"
-            response_model = model
-            
-            chunk_count = 0
-            
-            # --- 强制首包超时检测（包含 completion 调用以防止连接池死锁）---
-            try:
-                # 定义完整的初始化和首包获取函数（防止 httpx 连接池锁死锁）
-                def get_response_and_first_chunk():
-                    iterator = completion(**kwargs)
-                    first = next(iterator)
-                    return iterator, first
-                
-                # 强制首包超时时间（秒），包含连接建立+首包接收，防止 httpx 连接池死锁
-                first_chunk_timeout = self.first_chunk_timeout  # 从配置文件读取
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(get_response_and_first_chunk)
-                    try:
-                        # 强制等待整个初始化过程（包括 completion 调用）
-                        response_iterator, first_chunk = future.result(timeout=first_chunk_timeout)
-                        
-                        # 处理首包
-                        chunk_count += 1
-                        latency = time.time() - request_start_time
-                        safe_print(f"   ⚡️ 首包延迟: {latency:.2f}s")
-                        
-                        # 处理首包逻辑
-                        if hasattr(first_chunk, 'model'):
-                            response_model = first_chunk.model
-                        
-                        # 打印首包
-                        # try:
-                        #     safe_print(f"\n[chunk #1] {first_chunk}", flush=True)
-                        # except Exception:
-                        #     pass
+            def _is_tool_required_thinking_incompatible(msg: str) -> bool:
+                m = (msg or "").lower()
+                return ("tool_choice" in m and "required" in m and "thinking" in m and "incompat" in m)
 
-                        if first_chunk.choices:
-                            delta = first_chunk.choices[0].delta
-                            if hasattr(delta, 'content') and delta.content:
-                                accumulated_content += delta.content
-                                # 关键修复：首包的 delta.content 不能只累积不发送，否则前端会丢失首 token
-                                try:
-                                    safe_print(delta.content, end="", flush=True)
-                                    if emit_tokens:
-                                        from utils.event_emitter import get_event_emitter as _get_ee_first
-                                        _ee_first = _get_ee_first()
-                                        if _ee_first.enabled:
-                                            if emit_tokens == "thinking":
-                                                _ee_first.emit({"type": "thinking_token", "text": delta.content})
-                                            else:
-                                                _ee_first.token(delta.content)
-                                except Exception:
-                                    pass
-                            
-                            # 累积 reasoning_content（thinking/reasoning 模型）
-                            if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                                accumulated_reasoning_content += delta.reasoning_content
-                                # 关键修复：首包的 reasoning_content 同样需要发出（否则 reasoning/thinking 首段缺失）
-                                try:
-                                    if emit_tokens:
-                                        from utils.event_emitter import get_event_emitter as _get_ee_reason_first
-                                        _ee_reason_first = _get_ee_reason_first()
-                                        if _ee_reason_first.enabled:
-                                            _ee_reason_first.emit({"type": "reasoning_token", "text": delta.reasoning_content})
-                                except Exception:
-                                    pass
-                            
-                            if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                                for tc in delta.tool_calls:
-                                    idx = tc.index
-                                    if idx not in accumulated_tool_calls:
-                                        accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
-                                    if tc.id:
-                                        accumulated_tool_calls[idx]["id"] = tc.id
-                                    if tc.function and tc.function.name:
-                                        accumulated_tool_calls[idx]["name"] += tc.function.name
-                                    if tc.function and tc.function.arguments:
-                                        accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
-                                    
-                                    # try:
-                                    #     tc_args_preview = tc.function.arguments[:200] if tc.function and tc.function.arguments else ""
-                                    #     safe_print(f"\n[tool_call #{idx}] {tc.function.name}: {tc_args_preview}", flush=True)
-                                    # except Exception:
-                                    #     pass
-                                        
-                            if first_chunk.choices[0].finish_reason:
-                                finish_reason = first_chunk.choices[0].finish_reason
+            # 有些 OpenAI-compatible（如月之暗面/Kimi）会拒绝 tool_choice=required + thinking。
+            # 这里做一次“就地兼容重试”：第一次失败则移除 tool_choice，保持 tools 但不强制 required。
+            for _compat_try in range(2):
+                safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
+                safe_print(f"   📨 请求模型: {model}")
+                safe_print(f"   🛠️ 工具数量: {len(tools_definition)}")
+                safe_print(f"   📝 消息数: {len(messages)}")
+                request_start_time = time.time()
 
-                    except concurrent.futures.TimeoutError:
-                        raise TimeoutError(f"连接建立或首包接收超时（超过 {first_chunk_timeout}s）- 可能原因：httpx连接池死锁、网络断开、服务器无响应")
-            
-            except StopIteration:
-                safe_print("   ⚠️ 响应为空（无数据块）")
-                return LLMResponse(
-                    status="error",
-                    output="",
-                    tool_calls=[],
-                    model=model,
-                    finish_reason="empty",
-                    error_information="Empty response - no chunks received"
-                )
-            
-            # --- 继续处理剩余 chunk ---
-            # 直接迭代流式响应（LiteLLM 会自动处理后续的 stream_timeout）
-            for chunk in response_iterator:
-                chunk_count += 1
-                # 全量打印 chunk（方便观察断联和增量内容，可能较噪声）
-                # try:
-                #     safe_print(f"\n[chunk #{chunk_count}] {chunk}", flush=True)
-                # except Exception:
-                #     pass
-                
-                # 提取模型信息
-                if hasattr(chunk, 'model'):
-                    response_model = chunk.model
-                
-                if not chunk.choices:
-                    continue
-                    
-                delta = chunk.choices[0].delta
-                
-                # A. 累积文本内容
-                if hasattr(delta, 'content') and delta.content:
-                    accumulated_content += delta.content
-                    try:
-                        safe_print(delta.content, end="", flush=True)
-                        # 根据 emit_tokens 参数决定是否发送 JSONL 事件
-                        if emit_tokens:
-                            from utils.event_emitter import get_event_emitter as _get_ee
-                            _ee = _get_ee()
-                            if _ee.enabled:
-                                if emit_tokens == "thinking":
-                                    _ee.emit({"type": "thinking_token", "text": delta.content})
-                                else:
-                                    _ee.token(delta.content)
-                    except Exception:
-                        pass
-                
-                # A2. 累积 reasoning_content（thinking/reasoning 模型）
-                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                    accumulated_reasoning_content += delta.reasoning_content
-                    try:
-                        if emit_tokens:
-                            from utils.event_emitter import get_event_emitter as _get_ee2
-                            _ee2 = _get_ee2()
-                            if _ee2.enabled:
-                                _ee2.emit({"type": "reasoning_token", "text": delta.reasoning_content})
-                    except Exception:
-                        pass
-                
-                # B. 累积工具调用
-                if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in accumulated_tool_calls:
-                            accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
-                        
-                        if tc.id:
-                            accumulated_tool_calls[idx]["id"] = tc.id
-                        if tc.function and tc.function.name:
-                            accumulated_tool_calls[idx]["name"] += tc.function.name
-                        if tc.function and tc.function.arguments:
-                            accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
-                        
-                        # 工具调用流式打印：名称与参数增量，便于无 CLI 时跟踪
-                        # try:
-                        #     tc_args_preview = tc.function.arguments[:200] if tc.function and tc.function.arguments else ""
-                        #     safe_print(f"\n[tool_call #{idx}] {tc.function.name}: {tc_args_preview}", flush=True)
-                        # except Exception:
-                        #     pass
-                
-                # C. 记录结束原因
-                if chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason
-            
-            safe_print(f"   ✅ 流式响应完成，共接收 {chunk_count} 个数据块")
-            
-            # 构建最终的 ToolCall 对象列表
-            final_tool_calls = []
-            for idx in sorted(accumulated_tool_calls.keys()):
-                tc_data = accumulated_tool_calls[idx]
-                
+                # 累积变量
+                accumulated_content = ""
+                accumulated_reasoning_content = ""  # reasoning/thinking 内容
+                accumulated_tool_calls = {}  # index -> {id, name, arguments}
+                finish_reason = "unknown"
+                response_model = model
+                chunk_count = 0
+
                 try:
-                    args_str = tc_data["arguments"]
-                    if not args_str:
-                        args = {}
-                    else:
-                        args = json.loads(args_str)
-                except json.JSONDecodeError as e:
-                    safe_print(f"\n⚠️ 工具参数JSON解析失败: {str(e)}")
-                    safe_print(f"   原始参数: {tc_data['arguments'][:200]}...")
-                    
-                    # 尝试修复常见的 JSON 错误
-                    args = self._try_fix_json(tc_data["arguments"])
-                    if args:
-                        safe_print(f"   ✅ JSON 自动修复成功")
-                    else:
-                        safe_print(f"   ❌ JSON 修复失败，使用空参数")
-                        args = {}
-                
-                final_tool_calls.append(ToolCall(
-                    id=tc_data["id"] or f"call_{idx}",
-                    name=tc_data["name"],
-                    arguments=args
-                ))
-            
-            return LLMResponse(
-                status="success",
-                output=accumulated_content,
-                tool_calls=final_tool_calls,
-                model=response_model,
-                finish_reason=finish_reason,
-                reasoning_content=accumulated_reasoning_content
-            )
+                    # --- 强制首包超时检测（包含 completion 调用以防止连接池死锁）---
+                    try:
+                        # 定义完整的初始化和首包获取函数（防止 httpx 连接池锁死锁）
+                        def get_response_and_first_chunk():
+                            iterator = completion(**kwargs)
+                            first = next(iterator)
+                            return iterator, first
+
+                        # 强制首包超时时间（秒），包含连接建立+首包接收，防止 httpx 连接池死锁
+                        first_chunk_timeout = self.first_chunk_timeout  # 从配置文件读取
+
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                            future = executor.submit(get_response_and_first_chunk)
+                            try:
+                                # 强制等待整个初始化过程（包括 completion 调用）
+                                response_iterator, first_chunk = future.result(timeout=first_chunk_timeout)
+
+                                # 处理首包
+                                chunk_count += 1
+                                latency = time.time() - request_start_time
+                                safe_print(f"   ⚡️ 首包延迟: {latency:.2f}s")
+
+                                # 处理首包逻辑
+                                if hasattr(first_chunk, 'model'):
+                                    response_model = first_chunk.model
+
+                                if first_chunk.choices:
+                                    delta = first_chunk.choices[0].delta
+                                    if hasattr(delta, 'content') and delta.content:
+                                        accumulated_content += delta.content
+                                        # 关键修复：首包的 delta.content 不能只累积不发送，否则前端会丢失首 token
+                                        try:
+                                            safe_print(delta.content, end="", flush=True)
+                                            if emit_tokens:
+                                                from utils.event_emitter import get_event_emitter as _get_ee_first
+                                                _ee_first = _get_ee_first()
+                                                if _ee_first.enabled:
+                                                    if emit_tokens == "thinking":
+                                                        _ee_first.emit({"type": "thinking_token", "text": delta.content})
+                                                    else:
+                                                        _ee_first.token(delta.content)
+                                        except Exception:
+                                            pass
+
+                                    # 累积 reasoning_content（thinking/reasoning 模型）
+                                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                                        accumulated_reasoning_content += delta.reasoning_content
+                                        # 关键修复：首包的 reasoning_content 同样需要发出（否则 reasoning/thinking 首段缺失）
+                                        try:
+                                            if emit_tokens:
+                                                from utils.event_emitter import get_event_emitter as _get_ee_reason_first
+                                                _ee_reason_first = _get_ee_reason_first()
+                                                if _ee_reason_first.enabled:
+                                                    _ee_reason_first.emit({"type": "reasoning_token", "text": delta.reasoning_content})
+                                        except Exception:
+                                            pass
+
+                                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                                        for tc in delta.tool_calls:
+                                            idx = tc.index
+                                            if idx not in accumulated_tool_calls:
+                                                accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                                            if tc.id:
+                                                accumulated_tool_calls[idx]["id"] = tc.id
+                                            if tc.function and tc.function.name:
+                                                accumulated_tool_calls[idx]["name"] += tc.function.name
+                                            if tc.function and tc.function.arguments:
+                                                accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+
+                                    if first_chunk.choices[0].finish_reason:
+                                        finish_reason = first_chunk.choices[0].finish_reason
+
+                            except concurrent.futures.TimeoutError:
+                                raise TimeoutError(f"连接建立或首包接收超时（超过 {first_chunk_timeout}s）- 可能原因：httpx连接池死锁、网络断开、服务器无响应")
+
+                    except StopIteration:
+                        safe_print("   ⚠️ 响应为空（无数据块）")
+                        return LLMResponse(
+                            status="error",
+                            output="",
+                            tool_calls=[],
+                            model=model,
+                            finish_reason="empty",
+                            error_information="Empty response - no chunks received"
+                        )
+
+                    # --- 继续处理剩余 chunk ---
+                    for chunk in response_iterator:
+                        chunk_count += 1
+
+                        if hasattr(chunk, 'model'):
+                            response_model = chunk.model
+
+                        if not chunk.choices:
+                            continue
+
+                        delta = chunk.choices[0].delta
+
+                        # A. 累积文本内容
+                        if hasattr(delta, 'content') and delta.content:
+                            accumulated_content += delta.content
+                            try:
+                                safe_print(delta.content, end="", flush=True)
+                                if emit_tokens:
+                                    from utils.event_emitter import get_event_emitter as _get_ee
+                                    _ee = _get_ee()
+                                    if _ee.enabled:
+                                        if emit_tokens == "thinking":
+                                            _ee.emit({"type": "thinking_token", "text": delta.content})
+                                        else:
+                                            _ee.token(delta.content)
+                            except Exception:
+                                pass
+
+                        # A2. 累积 reasoning_content（thinking/reasoning 模型）
+                        if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                            accumulated_reasoning_content += delta.reasoning_content
+                            try:
+                                if emit_tokens:
+                                    from utils.event_emitter import get_event_emitter as _get_ee2
+                                    _ee2 = _get_ee2()
+                                    if _ee2.enabled:
+                                        _ee2.emit({"type": "reasoning_token", "text": delta.reasoning_content})
+                            except Exception:
+                                pass
+
+                        # B. 累积工具调用
+                        if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.index
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+
+                                if tc.id:
+                                    accumulated_tool_calls[idx]["id"] = tc.id
+                                if tc.function and tc.function.name:
+                                    accumulated_tool_calls[idx]["name"] += tc.function.name
+                                if tc.function and tc.function.arguments:
+                                    accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+
+                        # C. 记录结束原因
+                        if chunk.choices[0].finish_reason:
+                            finish_reason = chunk.choices[0].finish_reason
+
+                    safe_print(f"   ✅ 流式响应完成，共接收 {chunk_count} 个数据块")
+
+                    # 构建最终的 ToolCall 对象列表
+                    final_tool_calls = []
+                    for idx in sorted(accumulated_tool_calls.keys()):
+                        tc_data = accumulated_tool_calls[idx]
+
+                        try:
+                            args_str = tc_data["arguments"]
+                            if not args_str:
+                                args = {}
+                            else:
+                                args = json.loads(args_str)
+                        except json.JSONDecodeError as e:
+                            safe_print(f"\n⚠️ 工具参数JSON解析失败: {str(e)}")
+                            safe_print(f"   原始参数: {tc_data['arguments'][:200]}...")
+
+                            args = self._try_fix_json(tc_data["arguments"])
+                            if args:
+                                safe_print(f"   ✅ JSON 自动修复成功")
+                            else:
+                                safe_print(f"   ❌ JSON 修复失败，使用空参数")
+                                args = {}
+
+                        final_tool_calls.append(ToolCall(
+                            id=tc_data["id"] or f"call_{idx}",
+                            name=tc_data["name"],
+                            arguments=args
+                        ))
+
+                    return LLMResponse(
+                        status="success",
+                        output=accumulated_content,
+                        tool_calls=final_tool_calls,
+                        model=response_model,
+                        finish_reason=finish_reason,
+                        reasoning_content=accumulated_reasoning_content
+                    )
+
+                except Exception as _compat_e:
+                    _compat_msg = str(_compat_e)
+                    if (
+                        _compat_try == 0
+                        and kwargs.get("tool_choice") == "required"
+                        and tools_definition
+                        and _is_tool_required_thinking_incompatible(_compat_msg)
+                    ):
+                        safe_print("⚠️ 当前模型不支持 tool_choice=required + thinking，自动降级为 tool_choice=auto 重试一次...")
+                        kwargs.pop("tool_choice", None)
+                        continue
+                    raise
         
         except Exception as e:
             # 捕获所有异常，包括 LiteLLM 抛出的超时异常

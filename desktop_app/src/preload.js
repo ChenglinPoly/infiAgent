@@ -19,6 +19,15 @@ contextBridge.exposeInMainWorld('api', {
   saveSettings: (config) => ipcRenderer.invoke('save-settings', config),
   getAgentSystems: () => ipcRenderer.invoke('get-agent-systems'),
   importAgentSystemFolder: () => ipcRenderer.invoke('import-agent-system-folder'),
+  deleteAgentSystem: (name) => ipcRenderer.invoke('delete-agent-system', name),
+
+  // App config (app_config.json)
+  getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  saveAppConfig: (config) => ipcRenderer.invoke('save-app-config', config),
+
+  // Marketplace
+  marketGetIndex: () => ipcRenderer.invoke('market-get-index'),
+  marketInstall: (params) => ipcRenderer.invoke('market-install', params),
   
   // Skills library
   importSkillFolder: () => ipcRenderer.invoke('import-skill-folder'),
