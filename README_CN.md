@@ -32,6 +32,9 @@
 ### 更新 & 新闻🔥
 
 如果你在最新更新日期前拉取镜像或者代码，请参考修复的问题，重新拉取镜像和代码。
+- [2026/02/09] **mac系统桌面端发布！**  [点击此处跳转下载页面](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0)。支持 skills的外部库导入，支持不同智能体共享记忆接力工作，支持本地模型完全本地化运行。
+
+<img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/bae36a54-7c70-4ba5-a2cf-3d53856ca461" />
 
 - [2026/02/07] **支持 Agent Skills！** InfiAgent 现已支持 [Agent Skills 开放标准](https://agentskills.io/)。Skills 是包含指令、脚本和资源的文件夹，智能体可按需加载以增强专业任务能力。Docker 用户：将 skill 文件夹放入 `~/.mla_v3/skills_library/`（挂载到容器内 `/root/mla_v3/skills_library/`）。本地开发者：放入 `~/mla_v3/skills_library/`。Windows 用户：`%USERPROFILE%\mla_v3\skills_library\`。智能体会自动发现可用 skills 并通过 `load_skill` 工具按需部署到工作空间。
 
