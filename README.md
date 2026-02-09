@@ -31,6 +31,10 @@
 
 If you pulled the image or code before the latest update date, please refer to the issues that have been fixed and, based on your needs, pull the image and code again.
 
+- [2026/02/09] **Mac desktop version released!** [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0). Support download skills from offical market. It supports any API that is allowed to be called by tools, and runs fully locally with the support of the localization model.
+  <img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/435c5bd9-ace1-46a8-9814-883d3ce507d4" />
+
+
 - [2026/02/07] **Agent Skills Support!** InfiAgent now supports the [Agent Skills open standard](https://agentskills.io/). Skills are folders of instructions, scripts, and resources that agents can dynamically load to improve performance on specialized tasks. Docker users: place skill folders in `~/.mla_v3/skills_library/` (mounted to `/root/mla_v3/skills_library/` inside the container). Local developers: place them in `~/mla_v3/skills_library/`. Windows users: `%USERPROFILE%\mla_v3\skills_library\`. The agent will automatically discover available skills and deploy them to the workspace on demand via `load_skill` tool.
 
 - [2026/02/07] **Multi-Provider Model Support!** You can now use models from different providers in the same configuration. Each model can optionally override `api_key` and `base_url` to use a different provider. Different sub-agents can use different models. See `llm_config.example.yaml` for configuration details.
