@@ -277,7 +277,7 @@ class HierarchyManager:
             
             self._save_context(context)
             
-            # 检查是否所有Agent都完成，如果是则移动current到history
+            # 检查是否当前栈已清空（无可 resume 的运行中 agent），若是则归档 current 到 history
             self._check_and_complete_if_all_done()
             
             safe_print(f"📚 Agent出栈: {agent_id}")
@@ -315,47 +315,56 @@ class HierarchyManager:
         return self._load_context()
     
     def _check_and_complete_if_all_done(self):
-        """检查是否所有Agent都完成，如果是则移动current到history"""
+        """
+        检查是否应将 current 归档到 history。
+        
+        关键逻辑：**以 stack 是否为空为准**（而不是 agents_status 是否都为 completed）。
+        
+        原因：
+        - 用户可能会人为中断/暂停任务（例如 Ctrl+C、需求变更），导致某些 agent 状态仍停留在 running，
+          但 stack 已被清空（不可 resume / 实际已无运行中的 agent）。
+        - 如果仍按 agents_status 判断，会出现 current 永远无法归档到 history 的问题。
+        """
         context = self._load_context()
         current_agents = context.get("current", {}).get("agents_status", {})
         
-        if not current_agents:
+        # 栈非空：说明仍存在运行链路，不能归档
+        stack = self._load_stack()
+        if stack:
             return
         
-        # 检查是否所有Agent都已completed
-        all_completed = all(
-            agent_info.get("status") == "completed"
-            for agent_info in current_agents.values()
-        )
+        # 栈为空：仅当 current 有实际内容时才归档（避免空归档）
+        current_instructions = context.get("current", {}).get("instructions", [])
+        if not current_agents and not current_instructions:
+            return
         
-        if all_completed:
-            safe_print("🎉 所有Agent已完成，移动current到history")
+        safe_print("🎉 当前栈已清空，移动current到history")
             
-            # 移动到history
-            history_entry = {
-                "instructions": context["current"]["instructions"].copy(),
-                "hierarchy": context["current"]["hierarchy"].copy(),
-                "agents_status": context["current"]["agents_status"].copy(),
-                "start_time": context["current"]["start_time"],
-                "completion_time": datetime.now().isoformat()
-            }
-            
-            context["history"].append(history_entry)
-            
-            # 清空current
-            context["current"] = {
-                "instructions": [],
-                "hierarchy": {},
-                "agents_status": {},
-                "start_time": datetime.now().isoformat(),
-                "last_updated": datetime.now().isoformat()
-            }
-            
-            # 清空栈
-            self._save_stack([])
-            
-            self._save_context(context)
-            safe_print("✅ 任务已归档到history")
+        # 移动到history
+        history_entry = {
+            "instructions": context["current"]["instructions"].copy(),
+            "hierarchy": context["current"]["hierarchy"].copy(),
+            "agents_status": context["current"]["agents_status"].copy(),
+            "start_time": context["current"].get("start_time"),
+            "completion_time": datetime.now().isoformat()
+        }
+        
+        context["history"].append(history_entry)
+        
+        # 清空current
+        context["current"] = {
+            "instructions": [],
+            "hierarchy": {},
+            "agents_status": {},
+            "start_time": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        # 清空栈（保持幂等）
+        self._save_stack([])
+        
+        self._save_context(context)
+        safe_print("✅ 任务已归档到history")
     
     def get_current_agent_id(self) -> Optional[str]:
         """获取当前栈顶的Agent ID"""
