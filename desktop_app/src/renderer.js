@@ -10,10 +10,12 @@ const statusText = document.getElementById('status-text');
 const newChatBtn = document.getElementById('new-chat-btn');
 const workspaceCurrent = document.getElementById('workspace-current');
 const resumeBtn = document.getElementById('resume-btn');
+const autoScrollBtn = document.getElementById('auto-scroll-btn');
 
 // ==================== State ====================
 let workspacePath = null;
 let isRunning = false;
+let autoScrollEnabled = true;
 
 // Streaming state
 let currentAgentBubble = null;
@@ -618,6 +620,13 @@ function resetState() {
 }
 
 function scrollToBottom() {
+  if (!autoScrollEnabled) return;
+  requestAnimationFrame(() => {
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  });
+}
+
+function forceScrollToBottom() {
   requestAnimationFrame(() => {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
   });
@@ -627,6 +636,45 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// ==================== Auto Scroll Toggle ====================
+function updateAutoScrollBtn() {
+  if (!autoScrollBtn) return;
+  autoScrollBtn.textContent = autoScrollEnabled ? 'Auto Scroll: On' : 'Auto Scroll: Off';
+  autoScrollBtn.classList.toggle('off', !autoScrollEnabled);
+}
+
+if (autoScrollBtn) {
+  autoScrollBtn.addEventListener('click', () => {
+    autoScrollEnabled = !autoScrollEnabled;
+    updateAutoScrollBtn();
+    if (autoScrollEnabled) forceScrollToBottom();
+  });
+  updateAutoScrollBtn();
+}
+
+// Keep chat scroll usable even when nested <pre>/<thinking> areas exist.
+// If inner scroll area can't continue scrolling in current direction,
+// route wheel delta to the main messages container.
+if (messagesContainer) {
+  const INNER_SCROLL_SELECTOR = '.tool-params-content, .thinking-content';
+  messagesContainer.addEventListener('wheel', (e) => {
+    let node = e.target;
+    while (node && node !== messagesContainer) {
+      if (node.matches && node.matches(INNER_SCROLL_SELECTOR)) {
+        const canScrollUp = node.scrollTop > 0;
+        const canScrollDown = node.scrollTop + node.clientHeight < node.scrollHeight - 1;
+        if ((e.deltaY < 0 && canScrollUp) || (e.deltaY > 0 && canScrollDown)) {
+          return; // Let inner panel consume wheel
+        }
+        break; // Inner panel at edge -> fall through to main container
+      }
+      node = node.parentElement;
+    }
+    e.preventDefault();
+    messagesContainer.scrollTop += e.deltaY;
+  }, { passive: false });
 }
 
 // ==================== Settings Modal ====================
