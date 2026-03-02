@@ -9,6 +9,7 @@ const AdmZip = require('adm-zip');
 
 let mainWindow;
 let pythonProcess = null;
+let currentTaskLogger = null;
 
 // ==================== Path Helpers ====================
 
@@ -102,6 +103,9 @@ function defaultAppConfig() {
       // system: use /usr/libexec/path_helper + common paths
       // zsh_login_interactive: use zsh -lic to get PATH (more terminal-like, may have side effects)
       shell_mode: 'system',
+      // direct: run execute_command in backend process
+      // system_terminal: macOS only, execute_command is proxied via Terminal.app
+      command_mode: 'direct',
       extra_path: [],
       // additional env vars to inject into backend + execute_command
       extra_env: {}
@@ -143,6 +147,7 @@ function readAppConfig() {
   // normalize types
   if (!Array.isArray(out.env.extra_path)) out.env.extra_path = [];
   if (!out.env.extra_env || typeof out.env.extra_env !== 'object') out.env.extra_env = {};
+  if (typeof out.env.command_mode !== 'string' || !out.env.command_mode.trim()) out.env.command_mode = 'direct';
   if (typeof out.market.base_url !== 'string') out.market.base_url = '';
   return out;
 }
@@ -228,6 +233,7 @@ function buildRuntimeEnv() {
   const appCfg = readAppConfig();
   const env = { ...process.env };
   env.PATH = computeEffectivePath(appCfg);
+  env.MLA_EXECUTE_COMMAND_MODE = (appCfg?.env?.command_mode === 'system_terminal') ? 'system_terminal' : 'direct';
 
   // Encourage consistent unicode behavior
   env.LANG = env.LANG || 'en_US.UTF-8';
@@ -251,6 +257,7 @@ function ensureUserDataRootScaffold() {
   fs.mkdirSync(getSkillsLibraryPath(), { recursive: true });
   fs.mkdirSync(getUserAgentLibraryPath(), { recursive: true });
   fs.mkdirSync(getConversationsPath(), { recursive: true });
+  fs.mkdirSync(getLogsPath(), { recursive: true });
 
   // Seed default bundled skills (best-effort; never overwrite existing ones)
   try {
@@ -337,6 +344,58 @@ function getUserAgentLibraryPath() {
 // Conversations path: ~/mla_v3/conversations/
 function getConversationsPath() {
   return path.join(getUserDataRoot(), 'conversations');
+}
+
+function getLogsPath() {
+  return path.join(getUserDataRoot(), 'logs');
+}
+
+function sanitizeFilenamePart(input) {
+  const s = String(input || '').trim();
+  if (!s) return 'unknown';
+  return s.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'unknown';
+}
+
+function createTaskLogger({ workspacePath, agentName, agentSystem, mode, launchSpec }) {
+  try {
+    fs.mkdirSync(getLogsPath(), { recursive: true });
+    const now = new Date();
+    const ts = now.toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '_');
+    const workspaceName = sanitizeFilenamePart(path.basename(String(workspacePath || 'workspace')));
+    const runHash = crypto.createHash('md5')
+      .update(`${workspacePath}|${agentName}|${agentSystem}|${now.toISOString()}`)
+      .digest('hex')
+      .slice(0, 8);
+    const fileName = `${ts}_${workspaceName}_${runHash}_${mode}.log`;
+    const filePath = path.join(getLogsPath(), fileName);
+    const stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf-8' });
+
+    const write = (line) => {
+      try {
+        stream.write(`${new Date().toISOString()} ${line}\n`);
+      } catch (_) {}
+    };
+
+    write('[TASK_START]');
+    write(`[META] mode=${mode} workspace="${workspacePath}" agent="${agentName}" system="${agentSystem}"`);
+    if (launchSpec && launchSpec.command) {
+      const args = Array.isArray(launchSpec.args) ? launchSpec.args.join(' ') : '';
+      write(`[LAUNCH] ${launchSpec.command} ${args}`);
+    }
+
+    return {
+      filePath,
+      write,
+      close(exitCode) {
+        try {
+          write(`[TASK_END] exit_code=${exitCode}`);
+          stream.end();
+        } catch (_) {}
+      }
+    };
+  } catch (_) {
+    return null;
+  }
 }
 
 function safeReadJson(filePath) {
@@ -440,6 +499,14 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
     ? getBackendLaunchSpecPackaged(userInput, workspacePath, agentName, agentSystem, true)
     : getBackendLaunchSpecDev(userInput, workspacePath, agentName, agentSystem, true);
 
+  currentTaskLogger = createTaskLogger({
+    workspacePath,
+    agentName: agentName || 'alpha_agent',
+    agentSystem: agentSystem || 'OpenCowork',
+    mode: 'start',
+    launchSpec: spec
+  });
+
   pythonProcess = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
     env: {
@@ -459,6 +526,7 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
   let errBuffer = '';
 
   pythonProcess.stdout.on('data', (data) => {
+    if (currentTaskLogger) currentTaskLogger.write(`[STDOUT_CHUNK] ${JSON.stringify(data.toString())}`);
     buffer += data.toString();
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
@@ -467,30 +535,38 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line);
+        if (currentTaskLogger) currentTaskLogger.write(`[EVENT] ${line}`);
         mainWindow.webContents.send('agent-event', evt);
       } catch (e) {
         // Non-JSON output (debug prints, etc.)
+        if (currentTaskLogger) currentTaskLogger.write(`[LOG] ${line}`);
         mainWindow.webContents.send('agent-log', line);
       }
     }
   });
 
   pythonProcess.stderr.on('data', (data) => {
+    if (currentTaskLogger) currentTaskLogger.write(`[STDERR_CHUNK] ${JSON.stringify(data.toString())}`);
     errBuffer += data.toString();
     const lines = errBuffer.split('\n');
     errBuffer = lines.pop() || '';
     for (const line of lines) {
       if (!line.trim()) continue;
+      if (currentTaskLogger) currentTaskLogger.write(`[ERR] ${line}`);
       mainWindow.webContents.send('agent-log', line);
     }
   });
 
   pythonProcess.on('close', (code) => {
     pythonProcess = null;
+    if (currentTaskLogger) {
+      currentTaskLogger.close(code);
+      currentTaskLogger = null;
+    }
     mainWindow.webContents.send('agent-done', { code });
   });
 
-  return { success: true };
+  return { success: true, log_file: currentTaskLogger?.filePath || null };
 });
 
 // Human-in-loop respond (no-HTTP, via stdin JSONL to Python)
@@ -569,6 +645,14 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
       ? getBackendLaunchSpecPackaged(String(userInput), workspacePath, String(agentName), agentSystem, false)
       : getBackendLaunchSpecDev(String(userInput), workspacePath, String(agentName), agentSystem, false);
 
+    currentTaskLogger = createTaskLogger({
+      workspacePath,
+      agentName: String(agentName),
+      agentSystem: agentSystem || 'OpenCowork',
+      mode: 'resume',
+      launchSpec: spec
+    });
+
     pythonProcess = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env: {
@@ -584,6 +668,7 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
     let errBuffer = '';
 
     pythonProcess.stdout.on('data', (data) => {
+      if (currentTaskLogger) currentTaskLogger.write(`[STDOUT_CHUNK] ${JSON.stringify(data.toString())}`);
       buffer += data.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -592,31 +677,43 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
         if (!line.trim()) continue;
         try {
           const evt = JSON.parse(line);
+          if (currentTaskLogger) currentTaskLogger.write(`[EVENT] ${line}`);
           mainWindow.webContents.send('agent-event', evt);
         } catch (e) {
+          if (currentTaskLogger) currentTaskLogger.write(`[LOG] ${line}`);
           mainWindow.webContents.send('agent-log', line);
         }
       }
     });
 
     pythonProcess.stderr.on('data', (data) => {
+      if (currentTaskLogger) currentTaskLogger.write(`[STDERR_CHUNK] ${JSON.stringify(data.toString())}`);
       errBuffer += data.toString();
       const lines = errBuffer.split('\n');
       errBuffer = lines.pop() || '';
       for (const line of lines) {
         if (!line.trim()) continue;
+        if (currentTaskLogger) currentTaskLogger.write(`[ERR] ${line}`);
         mainWindow.webContents.send('agent-log', line);
       }
     });
 
     pythonProcess.on('close', (code) => {
       pythonProcess = null;
+      if (currentTaskLogger) {
+        currentTaskLogger.close(code);
+        currentTaskLogger = null;
+      }
       mainWindow.webContents.send('agent-done', { code });
     });
 
-    return { success: true };
+    return { success: true, log_file: currentTaskLogger?.filePath || null };
   } catch (e) {
     pythonProcess = null;
+    if (currentTaskLogger) {
+      currentTaskLogger.close(-1);
+      currentTaskLogger = null;
+    }
     return { error: e.message || String(e) };
   }
 });
@@ -629,6 +726,9 @@ ipcMain.handle('stop-task', async () => {
 
 function killPythonProcess() {
   if (pythonProcess) {
+    if (currentTaskLogger) {
+      currentTaskLogger.write('[STOP_REQUESTED] task stopped by user');
+    }
     try {
       process.kill(-pythonProcess.pid, 'SIGTERM');
     } catch (e) {

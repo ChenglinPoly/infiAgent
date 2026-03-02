@@ -5,11 +5,14 @@
 """
 
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import subprocess
 import sys
 import re
 import time
+import os
+import shlex
+import uuid
 from datetime import datetime
 from .file_tools import BaseTool, get_abs_path
 
@@ -19,6 +22,8 @@ from .file_tools import BaseTool, get_abs_path
 # 全局后台进程注册表
 # 格式: {process_id: {task_id, pid, command, output_file, start_time, process_obj}}
 BACKGROUND_PROCESSES = {}
+TERMINAL_SESSION_WINDOW_ID = None
+TERMINAL_SESSION_TAB_TITLE = "infiAgent-exec"
 
 
 class ExecuteCodeTool(BaseTool):
@@ -561,6 +566,239 @@ class ExecuteCommandTool(BaseTool):
                 return False, "pip 命令仅允许只读操作（如 list, show, freeze 等）"
         
         return True, ""
+
+    def _use_system_terminal_mode(self) -> bool:
+        """macOS only: optionally route execute_command through Terminal.app."""
+        mode = str(os.environ.get("MLA_EXECUTE_COMMAND_MODE", "direct")).strip().lower()
+        return sys.platform == "darwin" and mode == "system_terminal"
+
+    def _escape_applescript_str(self, s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _run_osascript(self, script: str, timeout: int = 10) -> str:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(err or "unknown osascript error")
+        return (result.stdout or "").strip()
+
+    def _get_or_create_terminal_window_id(self) -> int:
+        """
+        Reuse one dedicated Terminal tab/window to avoid opening many terminals.
+        """
+        global TERMINAL_SESSION_WINDOW_ID
+
+        # Fast-path: cached window still exists
+        if TERMINAL_SESSION_WINDOW_ID is not None:
+            check_script = (
+                f'tell application "Terminal" to return (exists window id {int(TERMINAL_SESSION_WINDOW_ID)}) as string'
+            )
+            try:
+                ok = self._run_osascript(check_script, timeout=5).lower()
+                if ok == "true":
+                    return int(TERMINAL_SESSION_WINDOW_ID)
+            except Exception:
+                pass
+
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        # Find an existing tagged tab; if none, create one and tag it.
+        script = (
+            'tell application "Terminal"\n'
+            'set targetWin to missing value\n'
+            'repeat with w in windows\n'
+            'repeat with t in tabs of w\n'
+            f'if (custom title of t) is "{title}" then\n'
+            'set targetWin to w\n'
+            'exit repeat\n'
+            'end if\n'
+            'end repeat\n'
+            'if targetWin is not missing value then exit repeat\n'
+            'end repeat\n'
+            'if targetWin is missing value then\n'
+            'if (count of windows) is 0 then\n'
+            'do script ""\n'
+            'else\n'
+            'do script "" in selected tab of front window\n'
+            'end if\n'
+            'set targetWin to front window\n'
+            f'set custom title of selected tab of targetWin to "{title}"\n'
+            'end if\n'
+            'return id of targetWin\n'
+            'end tell'
+        )
+        out = self._run_osascript(script, timeout=10)
+        wid = int(out)
+        TERMINAL_SESSION_WINDOW_ID = wid
+        return wid
+
+    def _launch_terminal_script(self, script_path: Path) -> None:
+        """
+        Ask Terminal.app to execute the generated shell script.
+        Reuse one dedicated Terminal tab/window.
+        """
+        window_id = self._get_or_create_terminal_window_id()
+        cmd = f'/bin/bash {shlex.quote(str(script_path))}'
+        esc_cmd = self._escape_applescript_str(cmd)
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        apple_script = (
+            'tell application "Terminal"\n'
+            f'set w to window id {window_id}\n'
+            'set targetTab to missing value\n'
+            'repeat with t in tabs of w\n'
+            f'if (custom title of t) is "{title}" then\n'
+            'set targetTab to t\n'
+            'exit repeat\n'
+            'end if\n'
+            'end repeat\n'
+            'if targetTab is missing value then\n'
+            'set targetTab to selected tab of w\n'
+            f'set custom title of targetTab to "{title}"\n'
+            'end if\n'
+            f'do script "{esc_cmd}" in targetTab\n'
+            'end tell'
+        )
+        try:
+            self._run_osascript(apple_script, timeout=10)
+        except Exception as e:
+            # If cached window was closed by user, reset cache and retry once.
+            if "Can’t get window id" in str(e) or "can't get window id" in str(e).lower():
+                global TERMINAL_SESSION_WINDOW_ID
+                TERMINAL_SESSION_WINDOW_ID = None
+                window_id = self._get_or_create_terminal_window_id()
+                retry_script = (
+                    'tell application "Terminal"\n'
+                    f'set w to window id {window_id}\n'
+                    'set targetTab to selected tab of w\n'
+                    f'set custom title of targetTab to "{title}"\n'
+                    f'do script "{esc_cmd}" in targetTab\n'
+                    'end tell'
+                )
+                self._run_osascript(retry_script, timeout=10)
+                return
+            raise RuntimeError(f"Failed to launch Terminal command: {str(e)}")
+
+    def _build_terminal_paths(self, workspace: Path, output_path: Optional[Path]) -> tuple[Path, Path, Path]:
+        token = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        runtime_dir = workspace / "temp" / "terminal_exec"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        script_path = runtime_dir / f"run_{token}.sh"
+        if output_path is None:
+            output_path = runtime_dir / f"output_{token}.log"
+        exit_path = runtime_dir / f"exit_{token}.txt"
+        return script_path, output_path, exit_path
+
+    def _write_terminal_script(
+        self,
+        script_path: Path,
+        abs_working_dir: Path,
+        command: str,
+        output_path: Path,
+        exit_path: Path,
+    ) -> None:
+        shell = (
+            "#!/bin/bash\n"
+            f"cd {shlex.quote(str(abs_working_dir))} || exit 1\n"
+            f"{{ {command}; }} > {shlex.quote(str(output_path))} 2>&1\n"
+            f'echo "$?" > {shlex.quote(str(exit_path))}\n'
+        )
+        script_path.write_text(shell, encoding="utf-8")
+        script_path.chmod(0o755)
+
+    def _run_via_terminal_foreground(
+        self,
+        workspace: Path,
+        abs_working_dir: Path,
+        command: str,
+        timeout: int,
+        output_file: Optional[str],
+    ) -> Dict[str, Any]:
+        user_output_path = get_abs_path(str(workspace), output_file) if output_file else None
+        if user_output_path:
+            user_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        script_path, output_path, exit_path = self._build_terminal_paths(workspace, user_output_path)
+        self._write_terminal_script(script_path, abs_working_dir, command, output_path, exit_path)
+        self._launch_terminal_script(script_path)
+
+        deadline = time.time() + max(1, int(timeout))
+        while time.time() < deadline:
+            if exit_path.exists():
+                break
+            time.sleep(0.2)
+
+        if not exit_path.exists():
+            return {
+                "status": "error",
+                "output": "",
+                "error": f"Command timeout ({timeout}s) in system_terminal mode",
+            }
+
+        try:
+            exit_code = int(exit_path.read_text(encoding="utf-8").strip() or "1")
+        except Exception:
+            exit_code = 1
+
+        content = ""
+        try:
+            content = output_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            content = ""
+
+        if output_file:
+            msg = f"命令执行完成（system_terminal），输出已保存到: {output_file}\nExit code: {exit_code}"
+            if content:
+                preview = content[:1000]
+                msg += "\n\n输出预览（前1000字符）:\n" + preview + ("\n..." if len(content) > 1000 else "")
+            return {"status": "success", "output": msg, "error": ""}
+
+        if exit_code != 0:
+            content = (content or "") + f"\nExit code: {exit_code}"
+        return {"status": "success", "output": content, "error": ""}
+
+    def _run_via_terminal_background(
+        self,
+        workspace: Path,
+        abs_working_dir: Path,
+        command: str,
+        output_file: str,
+    ) -> Dict[str, Any]:
+        output_path = get_abs_path(str(workspace), output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        script_path, _, exit_path = self._build_terminal_paths(workspace, output_path)
+        self._write_terminal_script(script_path, abs_working_dir, command, output_path, exit_path)
+        self._launch_terminal_script(script_path)
+
+        process_id = f"bg_term_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+        BACKGROUND_PROCESSES[process_id] = {
+            "task_id": str(workspace),
+            "pid": None,
+            "command": command,
+            "output_file": output_file,
+            "start_time": datetime.now().isoformat(),
+            "process_obj": None,
+            "mode": "system_terminal",
+            "exit_file": str(exit_path),
+        }
+
+        return {
+            "status": "success",
+            "output": (
+                "✅ 命令已在后台启动（system_terminal）\n"
+                f"   Process ID: {process_id}\n"
+                "   PID: terminal-managed\n"
+                f"   输出文件: {output_file}\n"
+                f"   提示: 使用 file_read 读取 {output_file} 查看执行结果\n"
+                "   提示: system_terminal 模式下建议直接在 Terminal 中终止对应命令"
+            ),
+            "error": "",
+        }
     
     def execute(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -625,6 +863,23 @@ class ExecuteCommandTool(BaseTool):
                 }
             
             workspace = Path(task_id)
+
+            # macOS only: optionally proxy through Terminal.app to align with terminal-side permissions
+            if self._use_system_terminal_mode():
+                if background:
+                    return self._run_via_terminal_background(
+                        workspace=workspace,
+                        abs_working_dir=abs_working_dir,
+                        command=command,
+                        output_file=output_file,
+                    )
+                return self._run_via_terminal_foreground(
+                    workspace=workspace,
+                    abs_working_dir=abs_working_dir,
+                    command=command,
+                    timeout=timeout,
+                    output_file=output_file,
+                )
 
             # 输出重定向到文件
             if output_file:
@@ -966,7 +1221,11 @@ class CodeProcessManagerTool(BaseTool):
         for proc_id, info in BACKGROUND_PROCESSES.items():
             if info["task_id"] == task_id:
                 process = info.get("process_obj")
-                status = "running" if process and process.poll() is None else "finished"
+                if info.get("mode") == "system_terminal":
+                    exit_file = info.get("exit_file")
+                    status = "finished" if (exit_file and Path(exit_file).exists()) else "running"
+                else:
+                    status = "running" if process and process.poll() is None else "finished"
                 
                 workspace_processes.append({
                     "process_id": proc_id,
@@ -1017,6 +1276,13 @@ class CodeProcessManagerTool(BaseTool):
         
         process = info.get("process_obj")
         pid = info["pid"]
+
+        if info.get("mode") == "system_terminal":
+            return {
+                "status": "error",
+                "output": "",
+                "error": "system_terminal 模式下不支持通过 manage_code_process 终止。请在 Terminal.app 中手动终止命令。"
+            }
         
         # 检查进程是否还在运行
         if process and process.poll() is None:

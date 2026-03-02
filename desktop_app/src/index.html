@@ -226,6 +226,18 @@
         <!-- Environment Tab -->
         <div id="tab-env" class="tab-content">
           <div class="form-group">
+            <label class="form-label">Command Execution Mode</label>
+            <select id="setting-command-mode" class="form-input">
+              <option value="direct">Direct (default, backend subprocess)</option>
+              <option value="system_terminal">System Terminal (macOS only, use Terminal.app permissions)</option>
+            </select>
+            <p class="form-hint-block">
+              仅影响 <code>execute_command</code>。选择 System Terminal 后，命令会通过 Terminal.app 执行，
+              可用于对齐终端侧权限（如录屏相关场景）。
+            </p>
+          </div>
+
+          <div class="form-group">
             <label class="form-label">PATH Mode</label>
             <select id="setting-path-mode" class="form-input">
               <option value="system">System (path_helper + common paths)</option>

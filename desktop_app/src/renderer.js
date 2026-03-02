@@ -728,10 +728,12 @@ async function loadSettings() {
     const env = cfg.env || {};
     const market = cfg.market || {};
     const pathModeEl = document.getElementById('setting-path-mode');
+    const commandModeEl = document.getElementById('setting-command-mode');
     const extraPathEl = document.getElementById('setting-extra-path');
     const extraEnvEl = document.getElementById('setting-extra-env');
     const marketUrlEl = document.getElementById('setting-market-url');
     if (pathModeEl) pathModeEl.value = env.shell_mode || 'system';
+    if (commandModeEl) commandModeEl.value = env.command_mode || 'direct';
     if (extraPathEl) extraPathEl.value = Array.isArray(env.extra_path) ? env.extra_path.join('\n') : '';
     if (extraEnvEl) {
       const extraEnv = env.extra_env || {};
@@ -845,6 +847,7 @@ settingsSaveBtn.addEventListener('click', async () => {
   // Environment tab saves app_config.json
   if (activeTab === 'env') {
     const mode = document.getElementById('setting-path-mode')?.value || 'system';
+    const commandMode = document.getElementById('setting-command-mode')?.value || 'direct';
     const extraPathText = document.getElementById('setting-extra-path')?.value || '';
     const extraEnvText = document.getElementById('setting-extra-env')?.value || '';
     const marketUrl = document.getElementById('setting-market-url')?.value || '';
@@ -862,7 +865,7 @@ settingsSaveBtn.addEventListener('click', async () => {
     }
 
     const appCfg = {
-      env: { shell_mode: mode, extra_path, extra_env },
+      env: { shell_mode: mode, command_mode: commandMode, extra_path, extra_env },
       market: { base_url: String(marketUrl || '').trim() }
     };
 
@@ -1228,6 +1231,7 @@ async function loadConversations() {
         if (file) {
           await loadConversationDetail(file);
         }
+        await refreshResumeButton();
         
         // Highlight selected
         conversationsContainer.querySelectorAll('.conversation-item').forEach(i => i.classList.remove('active'));
