@@ -50,7 +50,7 @@ from .reference_tools import (
 
 from .powerpoint_tools import ImagesToPptTool
 
-from .skill_tools import LoadSkillTool
+from .skill_tools import LoadSkillTool, OffloadSkillTool, FreshTool
 
 from .browser_tools import (
     BrowserLaunchTool,
@@ -121,5 +121,7 @@ __all__ = [
     "BrowserHoverTool",
     "BrowserScrollTool",
     "LoadSkillTool",
+    "OffloadSkillTool",
+    "FreshTool",
 ]
 

@@ -2,61 +2,141 @@
 from utils.windows_compat import safe_print
 # -*- coding: utf-8 -*-
 """
-工具执行器 - 通过HTTP调用toolServer
-参考原项目tool_utils.py的逻辑
+工具执行器 - 统一使用进程内 direct-tools 模式。
 """
 
-import requests
-import yaml
 import json
 import time
 import uuid
+import asyncio
+import threading
 from typing import Dict, Any
-from pathlib import Path
 
+from tool_server_lite.registry import get_runtime_registry, get_runtime_registry_failures
+from utils.mcp_manager import call_mcp_tool
 
 class ToolExecutor:
-    """工具执行器 - 通过HTTP调用toolServer"""
+    """工具执行器 - 统一使用进程内 direct-tools 模式"""
     
     # 危险工具列表（需要用户确认）
     DANGEROUS_TOOLS = [
         "file_write",      # 文件写入
-        "pip_install",     # 安装包
-        "execute_code",    # 执行代码
+        "execute_command", # 执行命令
     ]
     
-    def __init__(self, config_loader, hierarchy_manager):
+    def __init__(self, config_loader, hierarchy_manager, direct_mode=False):
         """
         初始化工具执行器
         
         Args:
             config_loader: 配置加载器
             hierarchy_manager: 层级管理器
+            direct_mode: 兼容旧参数，当前始终使用进程内 direct-tools 模式
         """
         self.config_loader = config_loader
         self.hierarchy_manager = hierarchy_manager
-        self.task_cache = {}  # 缓存已创建的任务
-        
-        # 从tool_config.yaml读取toolServer URL
-        self.tools_server_url = self._load_tools_server_url()
+        self.direct_mode = True
+        self._tools_registry = None  # 懒加载
+        safe_print("🔧 工具执行器: 进程内直接调用模式（无需 ToolServer）")
         
         # 权限管理：task_id → auto_mode 映射
         self.task_permissions = {}  # {task_id: {"auto_mode": True/False}}
     
-    def _load_tools_server_url(self) -> str:
-        """从配置文件加载工具服务器URL"""
+    def _init_tools_registry(self):
+        """
+        懒加载：初始化进程内工具注册表（与 server.py 的注册中心一致）
+        仅在 direct_mode=True 时使用
+        """
+        if self._tools_registry is not None:
+            return
+        
+        safe_print("🔧 初始化进程内工具注册表...")
+        self._tools_registry = get_runtime_registry(force_reload=True)
+        safe_print(f"✅ 工具注册表初始化完成，共 {len(self._tools_registry)} 个工具")
+    
+    def _call_direct(self, tool_name: str, arguments: Dict, task_id: str) -> Dict:
+        """
+        进程内直接调用工具（不经过 HTTP）
+        
+        返回格式保持与旧工具执行层一致（data 被 json.dumps 到 output 字符串），
+        确保 agent_executor 中的后续处理逻辑（如 image_read base64 提取）兼容。
+        """
         try:
-            project_root = Path(__file__).parent.parent
-            config_path = project_root / "config" / "run_env_config" / "tool_config.yaml"
+            # 懒加载工具注册表
+            self._init_tools_registry()
             
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-                url = config.get('tools_server', 'http://127.0.0.1:8001/')
-                # 移除末尾的斜杠
-                return url.rstrip('/')
+            tool = self._tools_registry.get(tool_name)
+            if not tool:
+                failure_reason = ""
+                for item in get_runtime_registry_failures():
+                    if item.get("name") == tool_name:
+                        failure_reason = item.get("error", "")
+                        break
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error_information": (
+                        f"工具未注册到运行时: {tool_name}"
+                        + (f"（加载失败原因: {failure_reason}）" if failure_reason else "")
+                    )
+                }
+            
+            safe_print(f"   🔧 直接调用工具: {tool_name}")
+            
+            # 调用工具（保持与既有工具返回格式兼容）
+            #
+            # 注意：部分工具（如 human_in_loop）只实现 execute_async（用于非阻塞等待），
+            # 在 direct_mode 下也必须支持，否则会触发 NotImplementedError。
+            if hasattr(tool, "execute_async") and callable(getattr(tool, "execute_async")):
+                # 在子线程里创建 event loop 执行，避免未来在已有 event loop 场景下崩溃
+                result_holder: Dict[str, Any] = {}
+                err_holder: Dict[str, Any] = {}
+
+                def _runner():
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            coro = tool.execute_async(task_id, arguments)
+                            result_holder["tool_result"] = loop.run_until_complete(coro)
+                        finally:
+                            loop.close()
+                    except Exception as e:
+                        err_holder["error"] = e
+
+                t = threading.Thread(target=_runner, daemon=True)
+                t.start()
+                t.join()
+
+                if err_holder.get("error") is not None:
+                    raise err_holder["error"]
+                tool_result = result_holder.get("tool_result")
+            else:
+                tool_result = tool.execute(task_id, arguments)
+            
+            # 包装返回值（保持与既有工具执行层的 output 字段格式一致）
+            wrapped = {
+                "status": "success",
+                "output": json.dumps(tool_result, indent=2, ensure_ascii=False),
+                "error_information": ""
+            }
+            # 透传内部控制字段，供 agent_executor 处理特殊副作用（load/offload skill、fresh 等）
+            if isinstance(tool_result, dict):
+                for key, value in tool_result.items():
+                    if str(key).startswith("_"):
+                        wrapped[key] = value
+            return wrapped
+        
         except Exception as e:
-            safe_print(f"⚠️ 加载工具服务器配置失败: {e}，使用默认值")
-            return "http://127.0.0.1:8001"
+            try:
+                safe_print(f"❌ 直接调用工具异常: {tool_name}: {str(e)[:300]}")
+            except Exception:
+                pass
+            return {
+                "status": "error",
+                "output": "",
+                "error_information": f"直接调用工具失败: {str(e)}"
+            }
     
     def set_task_permission(self, task_id: str, auto_mode: bool):
         """设置任务的权限模式"""
@@ -66,38 +146,6 @@ class ToolExecutor:
     def is_auto_mode(self, task_id: str) -> bool:
         """检查任务是否为自动模式（默认 True）"""
         return self.task_permissions.get(task_id, {}).get("auto_mode", True)
-    
-    def _ensure_task_exists(self, task_id: str):
-        """确保任务在toolServer中存在"""
-        if task_id in self.task_cache:
-            return
-        
-        try:
-            # URL 编码 task_id（避免路径中的特殊字符和双斜杠问题）
-            from urllib.parse import quote
-            encoded_task_id = quote(task_id, safe='')
-            
-            # 检查任务状态（确保 URL 格式正确）
-            status_url = f"{self.tools_server_url}/api/task/{encoded_task_id}/status"
-            response = requests.get(status_url, timeout=5)
-            
-            if response.status_code == 200:
-                self.task_cache[task_id] = True
-                return
-            
-            # 任务不存在，创建它
-            create_url = f"{self.tools_server_url}/api/task/create"
-            params = {"task_id": task_id, "task_name": f"MLA-V3-{task_id}"}
-            create_response = requests.post(create_url, params=params, timeout=10)
-            
-            if create_response.status_code == 200:
-                safe_print(f"✅ 任务 '{task_id}' 已在toolServer中创建")
-                self.task_cache[task_id] = True
-            else:
-                safe_print(f"⚠️ 创建任务失败: {create_response.text}")
-        
-        except Exception as e:
-            safe_print(f"⚠️ 检查/创建任务时出错: {e}")
     
     def _request_tool_confirmation(self, tool_name: str, arguments: Dict[str, Any], task_id: str) -> bool:
         """
@@ -110,19 +158,14 @@ class ToolExecutor:
         try:
             # 生成唯一确认ID
             confirm_id = f"confirm_{tool_name}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-            
-            # 创建确认请求
-            create_url = f"{self.tools_server_url}/api/tool-confirmation/create"
-            create_payload = {
-                "confirm_id": confirm_id,
-                "task_id": task_id,
-                "tool_name": tool_name,
-                "arguments": arguments
-            }
-            
-            response = requests.post(create_url, json=create_payload, timeout=5)
-            if response.status_code != 200:
-                safe_print(f"⚠️  创建确认请求失败，默认拒绝执行")
+            from tool_server_lite.tools.human_tools import (
+                create_tool_confirmation,
+                get_tool_confirmation_status,
+            )
+
+            created = create_tool_confirmation(confirm_id, task_id, tool_name, arguments)
+            if not created.get("success"):
+                safe_print("⚠️  创建确认请求失败，默认拒绝执行")
                 return False
             
             safe_print(f"⏸️  等待用户确认: {tool_name}")
@@ -132,24 +175,19 @@ class ToolExecutor:
             check_interval = 2
             elapsed = 0
             
-            status_url = f"{self.tools_server_url}/api/tool-confirmation/{confirm_id}"
-            
             while elapsed < max_wait:
                 time.sleep(check_interval)
                 elapsed += check_interval
                 
                 try:
-                    status_response = requests.get(status_url, timeout=5)
-                    if status_response.status_code == 200:
-                        result = status_response.json()
-                        
-                        if result.get("found") and result.get("status") == "completed":
-                            approved = result.get("result") == "approved"
-                            if approved:
-                                safe_print(f"✅ 用户批准执行: {tool_name}")
-                            else:
-                                safe_print(f"❌ 用户拒绝执行: {tool_name}")
-                            return approved
+                    result = get_tool_confirmation_status(confirm_id)
+                    if result.get("found") and result.get("status") == "completed":
+                        approved = result.get("result") == "approved"
+                        if approved:
+                            safe_print(f"✅ 用户批准执行: {tool_name}")
+                        else:
+                            safe_print(f"❌ 用户拒绝执行: {tool_name}")
+                        return approved
                 except Exception:
                     continue
             
@@ -201,8 +239,12 @@ class ToolExecutor:
                             "error_information": f"工具执行被用户拒绝: {tool_name}"
                         }
                 
-                # 普通工具 - 通过HTTP调用toolServer
-                return self._call_toolserver(tool_name, arguments, task_id)
+                # MCP 动态工具：由 MCP 客户端路由执行
+                if tool_config.get("_mcp"):
+                    return call_mcp_tool(tool_config, arguments)
+
+                # 普通工具 - 统一 direct-tools 调用
+                return self._call_direct(tool_name, arguments, task_id)
             
             elif tool_type == "llm_call_agent":
                 # 子Agent - 递归调用
@@ -223,61 +265,6 @@ class ToolExecutor:
                 "error_information": f"工具执行失败: {str(e)}"
             }
     
-    def _call_toolserver(self, tool_name: str, arguments: Dict, task_id: str) -> Dict:
-        """通过HTTP调用toolServer执行工具"""
-        try:
-            # 确保任务存在
-            self._ensure_task_exists(task_id)
-            
-            # 构建请求
-            execute_url = f"{self.tools_server_url}/api/tool/execute"
-            payload = {
-                "task_id": task_id,
-                "tool_name": tool_name,
-                "params": arguments
-            }
-            
-            headers = {
-                'Content-Type': 'application/json; charset=utf-8',
-                'Accept': 'application/json; charset=utf-8'
-            }
-            
-            safe_print(f"   🔗 调用toolServer: {tool_name}")
-            
-            # 发送请求
-            response = requests.post(
-                execute_url,
-                json=payload,
-                headers=headers,
-                timeout=100000
-            )
-            response.raise_for_status()
-            
-            # 解析响应
-            tool_server_response = response.json()
-            
-            if tool_server_response.get("success"):
-                output_data = tool_server_response.get("data", {})
-                return {
-                    "status": "success",
-                    "output": json.dumps(output_data, indent=2, ensure_ascii=False),
-                    "error_information": ""
-                }
-            else:
-                error_msg = tool_server_response.get("error", "工具服务器返回未知错误")
-                return {
-                    "status": "error",
-                    "output": "",
-                    "error_information": error_msg
-                }
-        
-        except Exception as e:
-            return {
-                "status": "error",
-                "output": "",
-                "error_information": f"调用toolServer失败: {str(e)}"
-            }
-    
     def _execute_sub_agent(
         self,
         agent_name: str,
@@ -293,12 +280,13 @@ class ToolExecutor:
             # 获取任务输入
             task_input = arguments.get("task_input", "")
             
-            # 创建子Agent执行器
+            # 创建子Agent执行器（传递 direct_mode 保持一致）
             sub_agent = AgentExecutor(
                 agent_name=agent_name,
                 agent_config=agent_config,
                 config_loader=self.config_loader,
-                hierarchy_manager=self.hierarchy_manager
+                hierarchy_manager=self.hierarchy_manager,
+                direct_tools=self.direct_mode
             )
             
             # 执行子Agent
@@ -328,7 +316,7 @@ if __name__ == "__main__":
     
     executor = ToolExecutor(config_loader, hierarchy_manager)
     safe_print(f"✅ 工具执行器初始化成功")
-    safe_print(f"   ToolServer URL: {executor.tools_server_url}")
+    safe_print("   Mode: direct-tools")
     
     # 测试final_output
     result = executor.execute("final_output", {

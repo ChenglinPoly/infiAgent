@@ -11,13 +11,15 @@ from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 
+from utils.user_paths import get_user_conversations_dir
+
 
 class ConversationStorage:
     """对话历史存储器"""
     
     def __init__(self, task_id: str = None):
         """初始化存储器 - 使用用户主目录（跨平台）"""
-        self.conversations_dir = Path.home() / "mla_v3" / "conversations"
+        self.conversations_dir = get_user_conversations_dir()
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self.task_id = task_id
     

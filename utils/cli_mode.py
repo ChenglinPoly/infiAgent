@@ -16,6 +16,12 @@ import json
 import hashlib
 from datetime import datetime
 
+from utils.user_paths import (
+    apply_runtime_env_defaults,
+    get_user_conversations_dir,
+    get_user_agent_library_root,
+)
+
 try:
     from prompt_toolkit import PromptSession, print_formatted_text
     from prompt_toolkit.completion import WordCompleter
@@ -216,10 +222,12 @@ class InteractiveCLI:
     """交互式命令行界面"""
     
     def __init__(self, task_id: str, agent_system: str = "Test_agent"):
+        apply_runtime_env_defaults()
         self.task_id = task_id
         self.agent_system = agent_system
         self.current_agent = "alpha_agent"
         self.current_process = None
+        self.direct_tools = True
         self.output_queue = queue.Queue()
         self.output_lines = []  # 保存最近的输出
         self.max_output_lines = 20  # 最多保留20行输出
@@ -244,10 +252,7 @@ class InteractiveCLI:
         # 加载可用 agent 列表
         self.available_agents = self._load_available_agents()
         
-        # 获取工具服务器地址
-        self._load_tool_server_url()
-        
-        # 启动后台 HIL 检查线程
+        # direct-tools 模式通过 JSONL 事件 + stdin 控制
         self._start_hil_checker()
     
     def t(self, key: str) -> str:
@@ -271,72 +276,29 @@ class InteractiveCLI:
         except:
             return ["alpha_agent"]
     
-    def _load_tool_server_url(self):
-        """加载工具服务器地址"""
-        try:
-            import yaml
-            config_path = Path(__file__).parent.parent / "config" / "run_env_config" / "tool_config.yaml"
-            with open(config_path, 'r', encoding='utf-8') as f:
-                tool_config = yaml.safe_load(f)
-            self.server_url = tool_config.get('tools_server', 'http://127.0.0.1:8001').rstrip('/')
-        except Exception:
-            self.server_url = 'http://127.0.0.1:8001'
-    
     def _check_hil_task(self) -> dict:
         """检查当前 workspace 是否有等待中的 HIL 任务"""
-        try:
-            import requests
-            response = requests.get(
-                f"{self.server_url}/api/hil/workspace/{self.task_id}",
-                timeout=2
-            )
-            if response.status_code == 200:
-                return response.json()
-            return {"found": False}
-        except Exception:
-            return {"found": False}
+        return self.pending_hil or {"found": False}
     
     def _respond_hil_task(self, hil_id: str, response: str) -> bool:
         """响应 HIL 任务"""
-        try:
-            import requests
-            resp = requests.post(
-                f"{self.server_url}/api/hil/respond/{hil_id}",
-                json={"response": response},
-                timeout=5
-            )
-            result = resp.json()
-            return result.get('success', False)
-        except Exception:
-            return False
+        return self._send_control_message({
+            "type": "hil_response",
+            "hil_id": hil_id,
+            "response": response,
+        })
     
     def _check_tool_confirmation(self) -> dict:
         """检查当前 workspace 是否有等待中的工具确认请求"""
-        try:
-            import requests
-            response = requests.get(
-                f"{self.server_url}/api/tool-confirmation/workspace/{self.task_id}",
-                timeout=2
-            )
-            if response.status_code == 200:
-                return response.json()
-            return {"found": False}
-        except Exception:
-            return {"found": False}
+        return self.pending_tool_confirmation or {"found": False}
     
     def _respond_tool_confirmation(self, confirm_id: str, approved: bool) -> bool:
         """响应工具确认请求"""
-        try:
-            import requests
-            resp = requests.post(
-                f"{self.server_url}/api/tool-confirmation/respond/{confirm_id}",
-                json={"approved": approved},
-                timeout=5
-            )
-            result = resp.json()
-            return result.get('success', False)
-        except Exception:
-            return False
+        return self._send_control_message({
+            "type": "tool_confirmation_response",
+            "confirm_id": confirm_id,
+            "approved": approved,
+        })
     
     def _get_interrupted_task(self) -> dict:
         """获取中断的任务（检查 stack）"""
@@ -349,7 +311,7 @@ class InteractiveCLI:
             task_name = f"{task_hash}_{task_folder}"
             
             # Stack 文件位置（与 hierarchy_manager 一致）
-            conversations_dir = Path.home() / "mla_v3" / "conversations"
+            conversations_dir = get_user_conversations_dir()
             stack_file = conversations_dir / f"{task_name}_stack.json"
             
             if not stack_file.exists():
@@ -384,6 +346,9 @@ class InteractiveCLI:
     
     def _start_hil_checker(self):
         """启动后台 HIL/工具确认检查线程"""
+        if self.direct_tools:
+            return
+
         def hil_checker_thread():
             while not self.stop_hil_checker:
                 try:
@@ -418,6 +383,17 @@ class InteractiveCLI:
         
         thread = threading.Thread(target=hil_checker_thread, daemon=True)
         thread.start()
+
+    def _send_control_message(self, payload: dict) -> bool:
+        """向 direct-tools 子进程发送控制消息（HIL/工具确认）。"""
+        try:
+            if not self.current_process or not self.current_process.stdin:
+                return False
+            self.current_process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            self.current_process.stdin.flush()
+            return True
+        except Exception:
+            return False
     
     def _show_hil_prompt(self, hil_id: str, instruction: str):
         """显示 HIL 提示界面"""
@@ -585,6 +561,7 @@ class InteractiveCLI:
         popen_kwargs = {
             'stdout': subprocess.PIPE,
             'stderr': subprocess.PIPE,
+            'stdin': subprocess.PIPE,
             'text': True,
             'encoding': 'utf-8',
             'errors': 'replace',
@@ -603,7 +580,8 @@ class InteractiveCLI:
                 '--agent_name', agent_name,
                 '--user_input', user_input,
                 '--agent_system', self.agent_system,
-                '--jsonl'  # JSONL 模式，实时流式输出
+                '--jsonl',  # JSONL 模式，实时流式输出
+                '--direct-tools',
         ]
         
         # 添加权限模式参数
@@ -620,6 +598,36 @@ class InteractiveCLI:
         def read_output():
             try:
                 import json
+                RESET = "\033[0m"
+                THINKING_COLOR = "\033[94m"
+                TOOL_PENDING_COLOR = "\033[33m"
+                TOOL_SUCCESS_COLOR = "\033[32m"
+                TOOL_ERROR_COLOR = "\033[31m"
+                stream_kind = None
+
+                def push_output_line(text: str):
+                    self.output_lines.append(text)
+                    if len(self.output_lines) > self.max_output_lines:
+                        self.output_lines.pop(0)
+
+                def flush_stream(force_newline: bool = True):
+                    nonlocal stream_kind
+                    if stream_kind is not None and force_newline:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    stream_kind = None
+
+                def write_stream(text: str, kind: str):
+                    nonlocal stream_kind
+                    if not text:
+                        return
+                    if stream_kind != kind:
+                        flush_stream(force_newline=(stream_kind is not None))
+                        stream_kind = kind
+                    color = THINKING_COLOR if kind in ("thinking", "reasoning") else ""
+                    sys.stdout.write(f"{color}{text}{RESET if color else ''}")
+                    sys.stdout.flush()
+
                 for line in self.current_process.stdout:
                     if not line:
                         continue
@@ -634,15 +642,75 @@ class InteractiveCLI:
                         # 显示所有事件（不截断）
                         if event['type'] == 'token':
                             text = event['text']
-                            # 完整显示所有文本
-                            display_line = f"  {text}"
-                            
-                            self.output_lines.append(display_line)
-                            if len(self.output_lines) > self.max_output_lines:
-                                self.output_lines.pop(0)
+                            write_stream(text, "token")
+
+                        elif event['type'] == 'thinking_token':
+                            text = event.get('text', '')
+                            if text:
+                                write_stream(text, "thinking")
+
+                        elif event['type'] == 'reasoning_token':
+                            text = event.get('text', '')
+                            if text:
+                                write_stream(text, "reasoning")
+
+                        elif event['type'] == 'agent_start':
+                            flush_stream()
+                            agent = event.get('agent', '')
+                            task = event.get('task', '')
+                            display_line = f"🤖 Agent开始: {agent}"
+                            push_output_line(display_line)
                             print(display_line)
+                            if task:
+                                print(f"   任务: {task}")
+
+                        elif event['type'] == 'agent_end':
+                            flush_stream()
+                            status = event.get('status', 'unknown')
+                            display_line = f"🏁 Agent结束: {status}"
+                            push_output_line(display_line)
+                            print(display_line)
+
+                        elif event['type'] == 'thinking_start':
+                            # Thinking 已按 token 流式显示，这里不再额外插入分隔标题
+                            flush_stream(force_newline=False)
+
+                        elif event['type'] == 'thinking_end':
+                            # Thinking 已在流式 token 中完整输出，结束时只换行，避免重复显示
+                            flush_stream()
+
+                        elif event['type'] == 'tool_call':
+                            flush_stream()
+                            name = event.get('name', '')
+                            arguments = event.get('arguments', {}) or {}
+                            display_line = f"🔧 工具调用: {name}"
+                            push_output_line(display_line)
+                            print(f"{TOOL_PENDING_COLOR}{display_line}{RESET}")
+                            if arguments:
+                                for key, value in arguments.items():
+                                    value_str = str(value)
+                                    if len(value_str) > 200:
+                                        value_str = value_str[:200] + "..."
+                                    print(f"   {key}: {value_str}")
+
+                        elif event['type'] == 'tool_result':
+                            flush_stream()
+                            name = event.get('name', '')
+                            status = event.get('status', 'unknown')
+                            error_text = event.get('error', '') or ''
+                            preview = event.get('output_preview', '') or ''
+                            status_icon = "✅" if status == "success" else "❌"
+                            display_line = f"{status_icon} 工具结果: {name} ({status})"
+                            push_output_line(display_line)
+                            color = TOOL_SUCCESS_COLOR if status == "success" else TOOL_ERROR_COLOR
+                            print(f"{color}{display_line}{RESET}")
+                            if error_text:
+                                print(f"   error: {error_text}")
+                            elif preview:
+                                print(f"   output: {preview}")
                         
                         elif event['type'] == 'result':
+                            flush_stream()
                             # 显示完整结果
                             summary = event.get('summary', '')
                             
@@ -653,21 +721,62 @@ class InteractiveCLI:
                             print(f"{'='*80}\n")
                             
                             # 简短摘要到输出历史
-                            self.output_lines.append(f"📊 结果: {summary[:100]}...")
+                            push_output_line(f"📊 结果: {summary[:100]}...")
                         
                         elif event['type'] == 'end':
+                            flush_stream()
                             status_icon = "✅" if event.get('status') == 'ok' else "❌"
                             duration_sec = event.get('duration_ms', 0) / 1000
                             display_line = f"{status_icon} 任务完成 ({duration_sec:.1f}s)"
-                            self.output_lines.append(display_line)
+                            push_output_line(display_line)
                             print(display_line)
                             print()
+
+                        elif event['type'] == 'human_in_loop':
+                            flush_stream()
+                            self.pending_hil = {
+                                "found": True,
+                                "hil_id": event.get("hil_id", ""),
+                                "instruction": event.get("message", ""),
+                                "task_id": self.task_id,
+                            }
+                            print("\n\n\a")
+                            print("\n" + "="*80)
+                            print(f"🔔🔔🔔 {self.t('hil_detected')} 🔔🔔🔔")
+                            print("="*80 + "\n")
+
+                        elif event['type'] == 'tool_confirmation':
+                            flush_stream()
+                            self.pending_tool_confirmation = {
+                                "found": True,
+                                "confirm_id": event.get("confirm_id", ""),
+                                "tool_name": event.get("tool_name", ""),
+                                "arguments": event.get("arguments", {}) or {},
+                                "task_id": self.task_id,
+                            }
+                            print("\n\n\a")
+                            print("\n" + "="*80)
+                            print(f"⚠️⚠️⚠️ {self.t('tool_confirm_detected')} ⚠️⚠️⚠️")
+                            print("="*80 + "\n")
                         
                         elif event['type'] == 'error':
+                            flush_stream()
                             # 错误事件 - 完整显示错误信息
                             error_text = event.get('text', '')
                             print(error_text)
-                            self.output_lines.append(f"❌ 发生错误")
+                            push_output_line("❌ 发生错误")
+
+                        elif event['type'] == 'warn':
+                            flush_stream()
+                            warn_text = event.get('text', '')
+                            print(f"⚠️ {warn_text}")
+                            push_output_line("⚠️ 警告")
+
+                        elif event['type'] == 'notice':
+                            flush_stream()
+                            notice_text = event.get('text', '')
+                            print(f"ℹ️ {notice_text}")
+                            push_output_line("ℹ️ 通知")
                     
                     except json.JSONDecodeError:
                         # 不是有效的 JSON，跳过
@@ -701,15 +810,10 @@ class InteractiveCLI:
     
     def get_bottom_toolbar(self):
         """获取底部工具栏文本"""
-        # 检查是否有 HIL 任务（不频繁检查，避免性能问题）
-        try:
-            hil_task = self._check_hil_task()
-            if hil_task.get("found"):
-                return HTML(
-                    f'<style bg="ansired" fg="ansiwhite"> 🔔 {self.t("toolbar_hil")} </style>'
-                )
-        except:
-            pass
+        if self.pending_hil:
+            return HTML(
+                f'<style bg="ansired" fg="ansiwhite"> 🔔 {self.t("toolbar_hil")} </style>'
+            )
         
         return HTML(
             f'<style bg="ansiblue" fg="ansiwhite"> 💡 {self.t("toolbar")} </style>'
@@ -1030,19 +1134,12 @@ class InteractiveCLI:
 def get_available_agent_systems():
     """获取可用的 Agent 系统列表"""
     try:
-        # 查找 config/agent_library/ 目录
-        project_root = Path(__file__).parent.parent
-        agent_library_dir = project_root / "config" / "agent_library"
-        
-        if not agent_library_dir.exists():
-            return ["Test_agent"]
-        
-        # 获取所有子目录作为可用系统
         systems = []
-        for item in agent_library_dir.iterdir():
+
+        for item in get_user_agent_library_root().iterdir():
             if item.is_dir() and not item.name.startswith('.'):
                 systems.append(item.name)
-        
+
         return sorted(systems) if systems else ["Test_agent"]
     
     except Exception:

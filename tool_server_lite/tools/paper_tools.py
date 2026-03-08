@@ -121,7 +121,7 @@ class PaperAnalyzeTool(BaseTool):
             if parent_dir not in sys.path:
                 sys.path.insert(0, parent_dir)
             
-            from llm_client_lite import get_llm_client
+            from tool_server_lite.llm_client_lite import get_llm_client
             
             try:
                 # 获取 LLM 客户端

@@ -31,9 +31,9 @@ flask-cors
 
 ### 方法 1：使用便捷脚本（推荐）
 
-**注意**：启动脚本会自动启动工具服务器（tool_server_lite），无需手动启动。首次运行时会询问您设置工作空间路径（Workspace Root）。
+**注意**：当前版本使用进程内 `direct-tools` 运行时，不需要单独启动工具服务器。首次运行时会询问您设置工作空间路径（Workspace Root）。
 
-1. 启动服务器（会自动启动 Web UI 和工具服务器）：
+1. 启动服务器（会自动启动 Web UI 服务并调用 Python 后端）：
    - 首次运行时会提示输入工作空间路径
    - 直接回车将使用当前目录作为工作空间（与 CLI 模式相同）
    - 或输入绝对路径指定自定义工作空间
@@ -47,7 +47,7 @@ flask-cors
    ./server start
    ```
 
-2. 停止服务器（会同时停止 Web UI 和工具服务器）：
+2. 停止服务器：
    ```bash
    cd web_ui/server
    ./stop.sh
@@ -63,7 +63,7 @@ flask-cors
    cd web_ui/server
    ./server status
    ```
-   会显示 Web UI 和工具服务器的运行状态。
+   会显示 Web UI 运行状态。
 
 4. 重启服务器：
    ```bash
@@ -78,26 +78,18 @@ flask-cors
    
    **服务器地址**：
    - Web UI: http://localhost:22228
-   - 工具服务器 API: http://localhost:24243
-   - 工具服务器文档: http://localhost:24243/docs
 
 ### 方法 2：直接运行 Python（传统方式）
 
-**注意**：如果使用此方法，需要手动启动工具服务器。
+**注意**：如果使用此方法，只需要启动 Web UI 服务；工具调用由 Python 后端进程内完成。
 
-1. 启动工具服务器（在一个终端）：
-   ```bash
-   cd tool_server_lite
-   python server.py
-   ```
-
-2. 启动 Web UI 服务器（在另一个终端）：
+1. 启动 Web UI 服务器：
    ```bash
    cd web_ui/server
    python server.py
    ```
 
-3. 打开浏览器访问：
+2. 打开浏览器访问：
    ```
    http://localhost:22228
    ```
@@ -105,13 +97,12 @@ flask-cors
 ### 端口配置
 
 - **Web UI 默认端口**: 22228（因为 macOS 的 AirPlay 可能占用 5000 端口）
-- **工具服务器默认端口**: 24243
 - 可以通过环境变量指定其他端口：
   ```bash
   cd web_ui/server
-  PORT=8080 TOOL_PORT=8002 ./start.sh
+  PORT=8080 ./start.sh
   # 或
-  PORT=8080 TOOL_PORT=8002 ./server start
+  PORT=8080 ./server start
   ```
 
 ## 使用说明
@@ -141,7 +132,7 @@ flask-cors
   - 你可以通过列表选择任意 Agent 作为本次对话的入口智能体，后续所有对话都会从该 Agent 开始编排调用
   - 选择结果会保存在浏览器本地（localStorage），刷新页面后仍会保持
 - **Agent 系统**：
-  - 当前版本固定使用 `Default` 系统（`config/agent_library/Default`）
+  - 当前版本默认使用 `Researcher` 系统（`config/agent_library/Researcher`）
   - Agent 体系结构请参考主仓库 `README` 中的配置说明
 
 ### 3. 输入任务
@@ -188,7 +179,7 @@ Agent 的执行输出会实时显示在对话窗口中：
 - **Select Agent**：入口智能体选择按钮，点击后可在弹窗中选择对话入口 Agent，并查看对应 Agent Tree
 - **Task ID**: 任务工作目录路径（支持任务选择下拉框）
 - **Agent**: 当前选中的入口 Agent（默认 `alpha_agent`）
-- **System**: 固定使用 `Default` 系统
+- **System**: 默认使用 `Researcher` 系统，可切换到 `OpenCowork`
 - **文件浏览器**: 右侧可浏览和管理任务文件
 
 ### 对话窗口
@@ -330,4 +321,3 @@ const agentAvatars = {
 ## 许可证
 
 与主项目相同。
-

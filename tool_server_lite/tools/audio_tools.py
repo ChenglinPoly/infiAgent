@@ -9,14 +9,8 @@ from typing import Dict, Any
 
 from .file_tools import BaseTool, get_abs_path
 
-# 导入llm_client_lite
-import sys
-import os
-# 添加父目录到路径
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
-from llm_client_lite import get_llm_client
+# NOTE: 统一使用包内绝对导入，避免 direct-tools / PyInstaller 下找不到顶层模块。
+from tool_server_lite.llm_client_lite import get_llm_client
 
 
 class AudioTool(BaseTool):

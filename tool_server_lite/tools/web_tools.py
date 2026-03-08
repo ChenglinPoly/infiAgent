@@ -31,6 +31,21 @@ except ImportError:
         DDGS_AVAILABLE = False
 
 
+def _get_field(obj: Any, name: str, default: Any = None) -> Any:
+    """
+    crawl4ai 的返回对象在不同版本/运行环境下可能是:
+    - 一个带属性的对象 (result.markdown / result.cleaned_html ...)
+    - 或者被序列化/包装成 dict
+    这里统一做兼容读取，避免 `getattr(...)=None` 造成误判。
+    """
+    try:
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+    except Exception:
+        return default
+
+
 class CrawlPageTool(BaseTool):
     """网页爬取工具 - 使用 crawl4ai"""
     
@@ -103,11 +118,45 @@ class CrawlPageTool(BaseTool):
         async with AsyncWebCrawler(config=browser_conf) as crawler:
             result = await crawler.arun(url, config=run_conf)
             
-            markdown_attr = getattr(result, "markdown", None)
+            # 先看 crawl4ai 是否明确失败
+            success = _get_field(result, "success", None)
+            if success is False:
+                err = _get_field(result, "error_message", "") or _get_field(result, "error", "") or ""
+                raise Exception(f"crawl4ai failed: {err[:300]}")
+
+            markdown_attr = _get_field(result, "markdown", None)
             if markdown_attr is None:
-                raise Exception("Unable to extract markdown from crawl result")
-            
-            markdown_text = getattr(markdown_attr, "raw_markdown", None) or str(markdown_attr)
+                # 输出可诊断信息，便于定位不同版本的字段差异
+                if isinstance(result, dict):
+                    keys = list(result.keys())[:60]
+                    raise Exception(f"Unable to extract markdown from crawl result (missing field: markdown; dict keys sample={keys})")
+                attrs = [a for a in dir(result) if not a.startswith("_")][:60]
+                raise Exception(f"Unable to extract markdown from crawl result (missing field: markdown; attrs sample={attrs})")
+
+            try:
+                markdown_text = (
+                    _get_field(markdown_attr, "raw_markdown", None)
+                    or _get_field(markdown_attr, "markdown", None)
+                    or str(markdown_attr)
+                )
+            except Exception:
+                markdown_text = str(markdown_attr)
+
+            if not (isinstance(markdown_text, str) and markdown_text.strip()):
+                # 不做兜底：确保“原生使用 crawl4ai 的 markdown”才算成功
+                mtype = type(markdown_attr).__name__
+                raw_len = 0
+                md_len = 0
+                try:
+                    raw_len = len((_get_field(markdown_attr, "raw_markdown", "") or ""))
+                except Exception:
+                    raw_len = 0
+                try:
+                    md_len = len((_get_field(markdown_attr, "markdown", "") or ""))
+                except Exception:
+                    md_len = 0
+                raise Exception(f"Unable to extract markdown from crawl result (markdown empty; type={mtype}; raw_markdown_len={raw_len}; markdown_len={md_len})")
+
             return markdown_text
 
 
@@ -146,8 +195,33 @@ class GoogleScholarSearchTool(BaseTool):
                     "error": "query is required"
                 }
             
-            # 爬取学术搜索结果
-            all_content = await self._crawl_scholar(query, year_low, year_high, pages)
+            # 爬取学术搜索结果（Google Scholar 在很多网络环境下会被封/重定向/403）
+            # 如果失败，则回退到 DuckDuckGo 的 site:scholar.google.com 搜索（无需代理也更稳）
+            try:
+                all_content = await self._crawl_scholar(query, year_low, year_high, pages)
+            except Exception as crawl_err:
+                if DDGS_AVAILABLE:
+                    ddg_query = f"site:scholar.google.com {query}"
+                    results = DDGS().text(ddg_query, max_results=min(10, pages * 10))
+                    lines = [
+                        "# Google Scholar (fallback via DuckDuckGo)",
+                        "",
+                        f"- query: `{query}`",
+                        f"- note: direct crawling failed: `{str(crawl_err)[:200]}`",
+                        "",
+                    ]
+                    for i, r in enumerate(results or [], 1):
+                        title = (r.get("title") or "").strip()
+                        href = (r.get("href") or r.get("link") or "").strip()
+                        body = (r.get("body") or "").strip()
+                        if href:
+                            lines.append(f"{i}. **{title or 'Untitled'}**")
+                            lines.append(f"   - {href}")
+                            if body:
+                                lines.append(f"   - {body}")
+                    all_content = "\n".join(lines) + "\n"
+                else:
+                    raise
             
             # 保存到文件
             if save_path:
@@ -214,9 +288,13 @@ class GoogleScholarSearchTool(BaseTool):
                 
                 result = await crawler.arun(url, config=run_conf)
                 
-                markdown_attr = getattr(result, "markdown", None)
+                markdown_attr = _get_field(result, "markdown", None)
                 if markdown_attr:
-                    markdown_text = getattr(markdown_attr, "raw_markdown", None) or str(markdown_attr)
+                    markdown_text = (
+                        _get_field(markdown_attr, "raw_markdown", None)
+                        or _get_field(markdown_attr, "markdown", None)
+                        or str(markdown_attr)
+                    )
                     # 移除图片
                     markdown_text = re.sub(r"!\[[^\]]*\]\([^\)]+\)", "", markdown_text)
                     all_content.append(f"--- Page {page + 1} ---\n{markdown_text}\n")
