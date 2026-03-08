@@ -35,7 +35,7 @@ If you pulled the image or code before the latest update date, please refer to t
 
   [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0).
 
-- [2026/02/09] **Mac desktop version released!** [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0). Support download skills from offical market. It supports any API that is allowed to be called by tools, and runs fully locally with the support of the localization model.
+- [2026/02/09] **Mac desktop version released!** [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0). Support download skills from offical market. It supports any API that is allowed to be called by tools, and runs fully locally with the support of the localization model.
   <img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/435c5bd9-ace1-46a8-9814-883d3ce507d4" />
 
 
