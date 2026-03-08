@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动 Web UI 服务器和工具服务器
+# 启动 Web UI 服务器（direct-tools 模式）
 
 # 设置 UTF-8 编码（兼容 macOS）
 export LANG=${LANG:-en_US.UTF-8}
@@ -42,93 +42,7 @@ if lsof -ti:$WEB_PORT &> /dev/null; then
     exit 1
 fi
 
-# 读取工具服务器端口配置（从 tool_config.yaml）
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
-TOOL_CONFIG_FILE="$PROJECT_ROOT/config/run_env_config/tool_config.yaml"
-TOOL_SERVER_PORT=""
-
-if [ -f "$TOOL_CONFIG_FILE" ]; then
-    # 使用 Python 解析 YAML 中的端口（更可靠）
-    TOOL_SERVER_URL=$(python3 -c "import yaml, sys; config = yaml.safe_load(open('$TOOL_CONFIG_FILE')); print(config.get('tools_server', 'http://127.0.0.1:8001/'))" 2>/dev/null)
-    
-    if [ -n "$TOOL_SERVER_URL" ]; then
-        # 提取端口号（从 URL 中提取，例如 http://127.0.0.1:8002/）
-        TOOL_SERVER_PORT=$(echo "$TOOL_SERVER_URL" | sed -n 's/.*:\([0-9]*\)\/.*/\1/p')
-    fi
-fi
-
-# 如果读取失败，使用默认端口 8001
-TOOL_SERVER_PORT=${TOOL_SERVER_PORT:-8001}
-
-# 启动工具服务器（如果未运行）
-printf "🔧 检查工具服务器（端口: %s）...\n" "$TOOL_SERVER_PORT"
-
-# 先清理可能存在的僵尸进程（端口被占用但无法连接）
-if lsof -ti:$TOOL_SERVER_PORT > /dev/null 2>&1; then
-    # 检查端口是否有响应
-    if ! curl -s "http://127.0.0.1:$TOOL_SERVER_PORT/health" > /dev/null 2>&1; then
-        printf "   🧹 清理占用端口 %s 的僵尸进程...\n" "$TOOL_SERVER_PORT"
-        kill -9 $(lsof -ti:$TOOL_SERVER_PORT) 2>/dev/null || true
-        sleep 1
-    fi
-fi
-
-# 检查工具服务器是否已在运行（通过 health endpoint）
-if curl -s "http://127.0.0.1:$TOOL_SERVER_PORT/health" > /dev/null 2>&1; then
-    printf "   ✅ 工具服务器已在运行（端口: %s）\n" "$TOOL_SERVER_PORT"
-    else
-    # 尝试启动工具服务器
-    printf "   🚀 启动工具服务器（端口: %s）...\n" "$TOOL_SERVER_PORT"
-    
-    TOOL_SERVER_DIR="$PROJECT_ROOT/tool_server_lite"
-    SERVER_PY="$TOOL_SERVER_DIR/server.py"
-    
-    # 优先使用 mla-tool-server 命令
-    if command -v mla-tool-server > /dev/null 2>&1; then
-        if mla-tool-server start --port "$TOOL_SERVER_PORT" 2>/dev/null; then
-            printf "   ✅ 工具服务器已启动（端口: %s）\n" "$TOOL_SERVER_PORT"
-            sleep 3
-        else
-            printf "   ⚠️  mla-tool-server 启动失败，尝试直接启动...\n"
-            _start_tool_server_direct "$TOOL_SERVER_PORT"
-        fi
-    elif [ -f "$SERVER_PY" ]; then
-        # 直接启动 server.py
-        _start_tool_server_direct "$TOOL_SERVER_PORT"
-    else
-        printf "   ⚠️  未找到工具服务器文件: %s\n" "$SERVER_PY"
-        printf "   💡 请确保项目目录正确\n"
-        printf "   💡 但继续启动 Web UI...\n"
-    fi
-fi
-
-# 辅助函数：直接启动工具服务器
-_start_tool_server_direct() {
-    local port=$1
-    local log_file="$TOOL_SERVER_DIR/tool_server.log"
-    
-    # 后台启动工具服务器
-    cd "$TOOL_SERVER_DIR"
-    nohup python3 server.py --port "$port" > "$log_file" 2>&1 &
-    local pid=$!
-    cd "$SCRIPT_DIR"
-    
-    # 等待服务器启动（最多15秒）
-    local retries=15
-    while [ $retries -gt 0 ]; do
-        sleep 1
-        if curl -s "http://127.0.0.1:$port/health" > /dev/null 2>&1; then
-            printf "   ✅ 工具服务器已启动（PID: %s, 端口: %s）\n" "$pid" "$port"
-            return 0
-        fi
-        retries=$((retries - 1))
-    done
-    
-    printf "   ⚠️  工具服务器启动超时\n"
-    printf "   💡 请查看日志: %s\n" "$log_file"
-    printf "   💡 但继续启动 Web UI...\n"
-    return 1
-}
 
 # 询问用户 workspace 路径
 printf "\n"

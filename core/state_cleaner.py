@@ -23,7 +23,7 @@ def clean_before_start(task_id: str, new_user_input: str = None):
     策略：
     1. 如果用户输入改变 → 归档 running agents 到 history，清空 current
     2. 如果用户输入相同 → 保留 running agents（续跑）
-    3. 清空栈（因为要重新建立层级）
+    3. 仅在“新任务”时清空栈；续跑/恢复时必须保留栈（否则会出现 stack 为空但 current 仍为 running 的不一致状态，且无法 resume）
     
     Args:
         task_id: 任务ID
@@ -117,9 +117,18 @@ def clean_before_start(task_id: str, new_user_input: str = None):
                 else:
                     final_output += "## 已完成的子任务\n(无)"
                 
-                # 标记为 completed 并设置 final_output
-                agent_info["status"] = "completed"
+                # 标记为 interrupted 并设置 final_output（语义更准确，且不会误导为“已成功完成”）
+                agent_info["status"] = "interrupted"
                 agent_info["final_output"] = final_output
+                # 尝试补齐 end_time（若缺失）
+                try:
+                    from datetime import datetime
+                    end_time = datetime.now().isoformat()
+                    agent_info["end_time"] = end_time
+                    if agent_id in context.get("agent_time_history", {}):
+                        context["agent_time_history"][agent_id]["end_time"] = end_time
+                except Exception:
+                    pass
                 
                 # 移到 history
                 if "history" not in context:
@@ -171,13 +180,19 @@ def clean_before_start(task_id: str, new_user_input: str = None):
         # 保存
         hierarchy_manager._save_context(context)
         
-        # 清空栈
-        hierarchy_manager._save_stack([])
+        # 栈处理：
+        # - 新任务：清空栈（重新建立层级）
+        # - 续跑/恢复：保留栈（否则无法 resume，且会造成“stack 为空但 current 仍 running”）
+        if not is_same_task:
+            hierarchy_manager._save_stack([])
+            safe_print(f"   栈已清空")
+        else:
+            safe_print(f"   栈保留（续跑/恢复）")
         
         safe_print(f"✅ 清理完成:")
         safe_print(f"   保留: {len(completed_agents)} 个已完成agent")
         safe_print(f"   删除: {running_count} 个运行中agent")
-        safe_print(f"   栈已清空")
+        # 栈状态在上面已打印
     
     except Exception as e:
         safe_print(f"⚠️ 清理失败: {e}")

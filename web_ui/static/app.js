@@ -9,6 +9,7 @@
 let currentEventSource = null;
 let isRunning = false;
 let currentHILTask = null;  // Current HIL task: {hil_id, instruction}
+let currentToolConfirmation = null;  // Current tool confirmation: {confirm_id, tool_name, arguments}
 let hilCheckInterval = null;  // Interval for checking HIL tasks
 
 // Message save queue (ensures serial saving to avoid concurrency issues)
@@ -95,6 +96,7 @@ const resumeTaskBtn = document.getElementById('resume-task-btn');
 const copyTaskBtn = document.getElementById('copy-task-btn');
 const downloadTaskBtn = document.getElementById('download-task-btn');
 const configBtn = document.getElementById('config-btn');
+const toolsBtn = document.getElementById('tools-btn');
 const agentSelectBtn = document.getElementById('agent-select-btn');
 const agentSelectText = document.getElementById('agent-select-text');
 const agentSelectModal = document.getElementById('agent-select-modal');
@@ -105,7 +107,7 @@ const agentTreePanel = document.getElementById('agent-tree-panel');
 const agentTreePanelContent = document.getElementById('agent-tree-panel-content');
 // Agent system: dynamic, loaded from selector / localStorage
 const agentSystemSelect = document.getElementById('agent-system-select');
-let agentSystem = localStorage.getItem('mla_agent_system') || 'Default';
+let agentSystem = localStorage.getItem('mla_agent_system') || 'Researcher';
 
 // Current selected agent (default: alpha_agent)
 let selectedAgent = localStorage.getItem('mla_selected_agent') || 'alpha_agent';
@@ -128,6 +130,13 @@ const fileViewerContent = document.getElementById('file-viewer-content');
 const closeFileBtn = document.getElementById('close-file-btn');
 const deleteFileBtn = document.getElementById('delete-file-btn');
 const downloadFileBtn = document.getElementById('download-file-btn');
+const toolsModal = document.getElementById('tools-modal');
+const closeToolsBtn = document.getElementById('close-tools-btn');
+const uploadToolBtn = document.getElementById('upload-tool-btn');
+const reloadToolsBtn = document.getElementById('reload-tools-btn');
+const toolUploadInput = document.getElementById('tool-upload-input');
+const toolsList = document.getElementById('tools-list');
+const toolsStatus = document.getElementById('tools-status');
 
 // Current browsing path (for directory navigation)
 let currentBrowsePath = '';
@@ -374,6 +383,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Initialize configuration modal
     initConfigModal();
+    initToolsModal();
 });
 
 // 加载聊天记录
@@ -754,8 +764,8 @@ function updateTaskButtonsState() {
 function updateSendButtonState() {
     const hasContent = userInput.value.trim().length > 0;
     
-    // If there's a HIL task waiting, enable the button (even if input is empty)
-    if (currentHILTask) {
+    // If there's an interaction waiting, enable the button (even if input is empty)
+    if (currentHILTask || currentToolConfirmation) {
         sendBtn.disabled = false;
         return;
     }
@@ -1538,7 +1548,7 @@ async function initAgentSystemSelector() {
             
             // Ensure current value is valid
             if (!data.systems.includes(agentSystem)) {
-                agentSystem = data.systems[0] || 'Default';
+                agentSystem = data.systems[0] || 'Researcher';
                 localStorage.setItem('mla_agent_system', agentSystem);
                 agentSystemSelect.value = agentSystem;
             }
@@ -1928,6 +1938,17 @@ async function sendMessage() {
         await respondToHILTask(userInputText);
         return;
     }
+
+    // Tool confirmation takes precedence over starting a new task
+    if (currentToolConfirmation) {
+        const normalized = userInputText.trim().toLowerCase();
+        if (!['y', 'yes', 'n', 'no'].includes(normalized)) {
+            alert('Please enter yes/y or no/n for tool confirmation');
+            return;
+        }
+        await respondToToolConfirmation(normalized === 'y' || normalized === 'yes');
+        return;
+    }
     
     // If input is empty or button is disabled, return directly（不弹出提示）
     if (!userInputText || sendBtn.disabled) {
@@ -2055,6 +2076,7 @@ async function stopTask() {
             // Stop HIL checking
             stopHILTaskChecking();
             clearHILState();
+            clearToolConfirmationState();
             sendBtn.disabled = false;
             sendBtn.style.display = 'inline-block';
             stopBtn.style.display = 'none';
@@ -2156,6 +2178,7 @@ function startSSEConnection(taskId, agentName, userInputText, agentSystem) {
                 stopBtn.style.display = 'none';
                 userInput.disabled = false;
                 statusText.textContent = 'Error';
+                clearToolConfirmationState();
                 updateTaskButtonsState(); // Update task button state
                 updateSendButtonState(); // Update send button state
                 showMessage('system', 'error', `Connection error: ${error.message}`);
@@ -2174,6 +2197,7 @@ function startSSEConnection(taskId, agentName, userInputText, agentSystem) {
         stopBtn.style.display = 'none';
         userInput.disabled = false;
         statusText.textContent = 'Error';
+        clearToolConfirmationState();
         showMessage('system', 'error', `Request failed: ${error.message}`);
     });
 }
@@ -2200,16 +2224,36 @@ function handleSSEMessage(data) {
         stopHILTaskChecking();
         // Clear HIL state
         clearHILState();
+        clearToolConfirmationState();
         // Refresh file list when task completes
         loadFiles();
     } else {
         // All messages from SSE are agent messages（isUser = false，保存到历史记录）
         addMessage(agent, type, content, false, true);
-        
-        // Check if this is a human_in_loop tool call - trigger immediate check
-        if (type === 'tool_call' && content.includes('human_in_loop')) {
-            // Trigger immediate check (don't wait for polling interval)
-            setTimeout(() => checkHILTask(), 500);  // Small delay to allow tool server to register the task
+
+        if (type === 'human_in_loop') {
+            currentHILTask = {
+                hil_id: data.hil_id,
+                instruction: data.instruction || content
+            };
+            userInput.disabled = false;
+            userInput.classList.add('hil-waiting');
+            userInput.placeholder = '🔔 ' + (currentHILTask.instruction || 'Waiting for your response...');
+            statusText.textContent = '🔔 HIL Task Waiting';
+            statusText.style.color = '#ff6b6b';
+            updateSendButtonState();
+        } else if (type === 'tool_confirmation') {
+            currentToolConfirmation = {
+                confirm_id: data.confirm_id,
+                tool_name: data.tool_name,
+                arguments: data.arguments || {}
+            };
+            userInput.disabled = false;
+            userInput.classList.add('hil-waiting');
+            userInput.placeholder = `⚠️ Confirm tool "${currentToolConfirmation.tool_name}" with yes/no`;
+            statusText.textContent = '⚠️ Tool Confirmation Waiting';
+            statusText.style.color = '#ffd43b';
+            updateSendButtonState();
         }
     }
 }
@@ -2456,7 +2500,7 @@ async function checkHILTask() {
             }
         }
     } catch (error) {
-        // Silently fail - tool server may be unavailable
+        // Silently fail - the backend may be unavailable during polling
         console.error('Check HIL task failed:', error);
     }
 }
@@ -2512,6 +2556,49 @@ async function respondToHILTask(responseText) {
     }
 }
 
+// Respond to tool confirmation
+async function respondToToolConfirmation(approved) {
+    if (!currentToolConfirmation) {
+        return;
+    }
+
+    try {
+        const responseText = userInput.value.trim();
+        addMessage('user', 'user', responseText, true, true);
+
+        const response = await fetch('/api/tool-confirm/respond', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                confirm_id: currentToolConfirmation.confirm_id,
+                approved
+            })
+        });
+
+        const data = await response.json();
+        if (!data.success) {
+            alert(`Failed to respond to tool confirmation: ${data.error || 'Unknown error'}`);
+            return;
+        }
+
+        userInput.value = '';
+        clearToolConfirmationState();
+        statusText.textContent = approved ? '✅ Tool approved' : '❌ Tool rejected';
+        statusText.style.color = approved ? '#51cf66' : '#ff6b6b';
+        setTimeout(() => {
+            if (isRunning) {
+                statusText.textContent = 'Running...';
+                statusText.style.color = '';
+            }
+        }, 2000);
+    } catch (error) {
+        alert(`Failed to respond to tool confirmation: ${error.message}`);
+    }
+}
+
 // Clear HIL state
 function clearHILState() {
     currentHILTask = null;
@@ -2526,6 +2613,15 @@ function clearHILState() {
         stopHILTaskChecking();
         hilCheckInterval = setInterval(checkHILTask, 10000);
     }
+}
+
+function clearToolConfirmationState() {
+    currentToolConfirmation = null;
+    userInput.classList.remove('hil-waiting');
+    userInput.placeholder = 'Enter task description...';
+    userInput.disabled = isRunning;
+    updateSendButtonState();
+    statusText.style.color = '';
 }
 
 // Configuration Modal Functions
@@ -2866,6 +2962,160 @@ function renderAgentTreeNode(node, depth = 0) {
     return nodeDiv;
 }
 
+function setToolsStatus(message, isError = false) {
+    if (!toolsStatus) return;
+    toolsStatus.textContent = message || '';
+    toolsStatus.className = 'config-status';
+    if (message) {
+        toolsStatus.classList.add(isError ? 'error' : 'success');
+    }
+}
+
+async function loadToolsList() {
+    if (!toolsList) return;
+    toolsList.innerHTML = '<div class="config-file-empty">Loading tools...</div>';
+    setToolsStatus('');
+    try {
+        const response = await fetch('/api/tools/list', { credentials: 'include' });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+
+        const items = [
+            ...(data.tools || []).map(item => ({ ...item, failure: false })),
+            ...(data.failures || []).map(item => ({
+                name: item.name,
+                source: item.source || 'custom',
+                path: item.path || '',
+                class_name: '',
+                status: 'error',
+                error: item.error || 'Failed to load',
+                agent_systems: [],
+                bound: false,
+                failure: true,
+            }))
+        ];
+
+        if (!items.length) {
+            toolsList.innerHTML = '<div class="config-file-empty">No runtime tools found.</div>';
+            return;
+        }
+
+        toolsList.innerHTML = '';
+        for (const tool of items) {
+            const bindings = (tool.agent_systems && tool.agent_systems.length)
+                ? tool.agent_systems.join(', ')
+                : 'Not bound in any agent_system YAML';
+            const card = document.createElement('div');
+            card.className = `tool-item ${tool.status === 'error' ? 'error' : ''}`;
+            card.innerHTML = `
+                <div class="tool-item-header">
+                    <div>
+                        <div class="tool-item-title">${escapeHtml(tool.name || 'unknown')}</div>
+                        <div class="tool-item-meta">
+                            <div>Source: ${escapeHtml(tool.source || 'builtin')}</div>
+                            ${tool.class_name ? `<div>Class: ${escapeHtml(tool.class_name)}</div>` : ''}
+                            ${tool.path ? `<div>Path: ${escapeHtml(tool.path)}</div>` : ''}
+                            <div>Bindings: ${escapeHtml(bindings)}</div>
+                            ${tool.error ? `<div>Error: ${escapeHtml(tool.error)}</div>` : ''}
+                        </div>
+                    </div>
+                    <span class="tool-item-status ${tool.status === 'error' ? 'error' : ''}">${escapeHtml(tool.status || 'loaded')}</span>
+                </div>
+                <div class="tool-item-actions">
+                    ${tool.source === 'custom' ? `<button class="btn-danger tool-delete-btn" data-tool="${escapeHtml(tool.name || '')}"><i class="fas fa-trash"></i> Delete</button>` : ''}
+                </div>
+            `;
+            toolsList.appendChild(card);
+        }
+
+        toolsList.querySelectorAll('.tool-delete-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const toolName = btn.dataset.tool;
+                if (!confirm(`Delete custom tool "${toolName}"?`)) return;
+                try {
+                    const response = await fetch(`/api/tools/${encodeURIComponent(toolName)}`, {
+                        method: 'DELETE',
+                        credentials: 'include'
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setToolsStatus(`Deleted tool: ${toolName}`, false);
+                    await loadToolsList();
+                } catch (error) {
+                    setToolsStatus(error.message, true);
+                }
+            });
+        });
+    } catch (error) {
+        toolsList.innerHTML = '<div class="config-file-empty">Failed to load tools.</div>';
+        setToolsStatus(error.message, true);
+    }
+}
+
+async function uploadToolFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const response = await fetch('/api/tools/upload', {
+            method: 'POST',
+            credentials: 'include',
+            body: formData
+        });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+        setToolsStatus(`Uploaded tool: ${data.tool_name}`, false);
+        await loadToolsList();
+    } catch (error) {
+        setToolsStatus(error.message, true);
+    } finally {
+        event.target.value = '';
+    }
+}
+
+async function reloadToolsRegistry() {
+    try {
+        const response = await fetch('/api/tools/reload', {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+        setToolsStatus('Runtime registry reloaded', false);
+        await loadToolsList();
+    } catch (error) {
+        setToolsStatus(error.message, true);
+    }
+}
+
+function openToolsModal() {
+    if (!toolsModal) return;
+    toolsModal.style.display = 'flex';
+    loadToolsList();
+}
+
+function closeToolsModal() {
+    if (!toolsModal) return;
+    toolsModal.style.display = 'none';
+}
+
+function initToolsModal() {
+    if (toolsBtn) toolsBtn.addEventListener('click', openToolsModal);
+    if (closeToolsBtn) closeToolsBtn.addEventListener('click', closeToolsModal);
+    if (uploadToolBtn && toolUploadInput) {
+        uploadToolBtn.addEventListener('click', () => toolUploadInput.click());
+        toolUploadInput.addEventListener('change', uploadToolFile);
+    }
+    if (reloadToolsBtn) reloadToolsBtn.addEventListener('click', reloadToolsRegistry);
+    if (toolsModal) {
+        toolsModal.addEventListener('click', (e) => {
+            if (e.target === toolsModal) closeToolsModal();
+        });
+    }
+}
+
 // Initialize configuration modal event listeners (called in main DOMContentLoaded)
 function initConfigModal() {
     // Close button
@@ -2914,4 +3164,3 @@ function initConfigModal() {
         }
     });
 }
-

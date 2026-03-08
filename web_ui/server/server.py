@@ -31,8 +31,26 @@ sys.path.insert(0, str(project_root))
 server_dir = Path(__file__).parent
 sys.path.insert(0, str(server_dir))
 
+from tool_server_lite.registry import (
+    get_runtime_registry,
+    get_runtime_registry_failures,
+    get_runtime_registry_metadata,
+    reload_runtime_registry,
+)
+from utils.user_paths import (
+    apply_runtime_env_defaults,
+    ensure_user_llm_config_exists,
+    get_user_agent_library_root,
+    get_user_conversations_dir,
+    get_user_data_root,
+    get_user_llm_config_path,
+    get_user_tools_library_root,
+)
+
 # OutputCapture is no longer used - we directly parse JSONL events
 # from output_capture import OutputCapture
+
+apply_runtime_env_defaults()
 
 # Set template and static file paths (pointing to web_ui directory)
 web_ui_dir = Path(__file__).parent.parent
@@ -88,9 +106,62 @@ def get_user_execution(username: str) -> dict:
             'stop_requested': False,
             'thread': None,
             'reader_thread': None,
-            'sse_connections': set()  # Track active SSE connections
+            'sse_connections': set(),  # Track active SSE connections
+            'pending_hil': None,
+            'pending_tool_confirmation': None,
         }
     return current_executions[username]
+
+
+def get_agent_system_dir(agent_system: str) -> Path:
+    return get_user_agent_library_root() / agent_system
+
+
+def get_run_env_config_dir() -> Path:
+    cfg = get_user_llm_config_path().parent
+    cfg.mkdir(parents=True, exist_ok=True)
+    ensure_user_llm_config_exists()
+    return cfg
+
+
+def sanitize_tool_name(raw_name: str) -> str:
+    import re
+    name = re.sub(r'[^a-zA-Z0-9_.-]+', '_', (raw_name or '').strip())
+    name = name.strip('._-')
+    return name
+
+
+def collect_tool_bindings() -> dict:
+    systems = []
+    root = get_user_agent_library_root()
+    if root.exists():
+        systems = sorted(d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith('.'))
+
+    bound_by_tool = {}
+    declared_without_impl = []
+    runtime_tools = set(get_runtime_registry().keys())
+
+    from utils.config_loader import ConfigLoader
+    for system_name in systems:
+        try:
+            loader = ConfigLoader(system_name)
+        except Exception:
+            continue
+        for tool_name, config in loader.all_tools.items():
+            if config.get("type") != "tool_call_agent":
+                continue
+            bound_by_tool.setdefault(tool_name, []).append(system_name)
+            if tool_name not in runtime_tools:
+                declared_without_impl.append({
+                    "tool_name": tool_name,
+                    "agent_system": system_name,
+                    "reason": "YAML 已声明但运行时未注册"
+                })
+
+    return {
+        "bindings": bound_by_tool,
+        "missing_runtime": declared_without_impl,
+    }
 
 
 def normalize_task_id(task_id: str, username: str = None) -> tuple[Path, str]:
@@ -473,6 +544,15 @@ def check_auth():
         })
 
 
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "service": "web_ui",
+        "running_users": sum(1 for st in current_executions.values() if st.get('running'))
+    })
+
+
 @app.route('/api/run', methods=['POST'])
 @login_required
 def run_task():
@@ -486,7 +566,7 @@ def run_task():
     task_id_input = data.get('task_id')
     agent_name = data.get('agent_name', 'alpha_agent')
     user_input = data.get('user_input')
-    agent_system = data.get('agent_system', 'Default')
+    agent_system = data.get('agent_system', 'Researcher')
     
     if not task_id_input or not user_input:
         return jsonify({"error": "Missing required parameters"}), 400
@@ -510,11 +590,17 @@ def run_task():
     user_execution['output_queue'] = output_queue
     user_execution['running'] = True
     user_execution['stop_requested'] = False
+    user_execution['pending_hil'] = None
+    user_execution['pending_tool_confirmation'] = None
     
     # Get path to start.py
     start_script = project_root / 'start.py'
     
     # Start subprocess to run start.py (using absolute path)
+    process_env = os.environ.copy()
+    process_env.setdefault('MLA_USER_DATA_ROOT', str(get_user_data_root()))
+    process_env.setdefault('MLA_LLM_CONFIG_PATH', str(ensure_user_llm_config_exists()))
+
     process = subprocess.Popen(
         [
             sys.executable,
@@ -523,13 +609,16 @@ def run_task():
             '--agent_name', agent_name,
             '--user_input', user_input,
             '--agent_system', agent_system,
-            '--jsonl'  # Use JSONL mode to parse output
+            '--jsonl',  # Use JSONL mode to parse output
+            '--direct-tools',
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,  # Merge stderr to stdout
+        stdin=subprocess.PIPE,
         text=True,
         bufsize=1,
-        universal_newlines=True
+        universal_newlines=True,
+        env=process_env,
     )
     
     user_execution['process'] = process
@@ -550,8 +639,8 @@ def run_task():
         # Map event types to frontend format
         if event_type == "tool_call":
             # 结构化工具调用事件
-            tool_name = event.get("tool_name", "unknown")
-            parameters = event.get("parameters", {})
+            tool_name = event.get("tool_name") or event.get("name", "unknown")
+            parameters = event.get("parameters") or event.get("arguments", {})
             import json
             params_str = json.dumps(parameters, ensure_ascii=False, indent=2)
             frontend_event["type"] = "tool_call"
@@ -566,6 +655,54 @@ def run_task():
             frontend_event["type"] = "agent_call"
             frontend_event["content"] = f"🤖 [{default_agent_name}] calls sub-agent: {agent_name}\n\n📋 Parameters:\n{params_str}"
             
+        elif event_type == "human_in_loop":
+            frontend_event["type"] = "human_in_loop"
+            frontend_event["hil_id"] = event.get("hil_id", "")
+            frontend_event["instruction"] = event.get("message", "")
+            frontend_event["content"] = event.get("message", "")
+
+        elif event_type == "tool_confirmation":
+            frontend_event["type"] = "tool_confirmation"
+            frontend_event["confirm_id"] = event.get("confirm_id", "")
+            frontend_event["tool_name"] = event.get("tool_name", "")
+            frontend_event["arguments"] = event.get("arguments", {})
+            frontend_event["content"] = f"⚠️ Tool confirmation required: {frontend_event['tool_name']}"
+
+        elif event_type == "tool_result":
+            frontend_event["type"] = "tool_result"
+            name = event.get("name", "unknown")
+            status = event.get("status", "unknown")
+            preview = event.get("output_preview", "")
+            error_text = event.get("error", "")
+            frontend_event["content"] = (
+                f"🔧 Tool result: {name} ({status})\n\n"
+                + (f"Error:\n{error_text}" if error_text else f"Output:\n{preview}")
+            )
+
+        elif event_type == "agent_start":
+            frontend_event["type"] = "info"
+            frontend_event["agent"] = event.get("agent", default_agent_name)
+            frontend_event["content"] = f"🤖 Agent start: {event.get('agent', default_agent_name)}"
+
+        elif event_type == "agent_end":
+            frontend_event["type"] = "info"
+            frontend_event["content"] = f"🏁 Agent end: {event.get('status', 'unknown')}"
+
+        elif event_type == "thinking_start":
+            frontend_event["type"] = "thinking"
+            frontend_event["content"] = "Thinking..."
+
+        elif event_type == "thinking_end":
+            frontend_event["type"] = "thinking"
+            frontend_event["content"] = str(event.get("result", "") or "")
+
+        elif event_type in ("thinking_token", "reasoning_token"):
+            text = event.get("text", "")
+            if not text:
+                return None
+            frontend_event["type"] = "thinking"
+            frontend_event["content"] = text
+
         elif event_type == "token":
             text = event.get("text", "")
             if not text.strip():
@@ -693,6 +830,17 @@ def run_task():
                         # Track if end event was received
                         if event.get("type") == "end":
                             end_event_received = True
+                        elif event.get("type") == "human_in_loop":
+                            user_execution['pending_hil'] = {
+                                "hil_id": event.get("hil_id", ""),
+                                "instruction": event.get("message", ""),
+                            }
+                        elif event.get("type") == "tool_confirmation":
+                            user_execution['pending_tool_confirmation'] = {
+                                "confirm_id": event.get("confirm_id", ""),
+                                "tool_name": event.get("tool_name", ""),
+                                "arguments": event.get("arguments", {}) or {},
+                            }
                         
                         # Convert to frontend format
                         frontend_event = convert_event_to_frontend_format(event, agent_name)
@@ -808,6 +956,9 @@ def run_task():
                 output_queue.put(None)  # 发送终止标记
         finally:
             user_execution['running'] = False
+            user_execution['process'] = None
+            user_execution['pending_hil'] = None
+            user_execution['pending_tool_confirmation'] = None
     
     reader_thread = threading.Thread(target=read_process_output, daemon=True)
     user_execution['reader_thread'] = reader_thread
@@ -1012,6 +1163,8 @@ def stop_task():
                     pass
         
         user_execution['running'] = False
+        user_execution['pending_hil'] = None
+        user_execution['pending_tool_confirmation'] = None
         
         return jsonify({
             "success": True,
@@ -1028,7 +1181,7 @@ def stop_task():
 def get_agents():
     """Get available agent list"""
     try:
-        agent_system = request.args.get('agent_system', 'Default')
+        agent_system = request.args.get('agent_system', 'Researcher')
         
         from utils.config_loader import ConfigLoader
         config_loader = ConfigLoader(agent_system)
@@ -1054,9 +1207,9 @@ def get_agents():
 @app.route('/api/agent-systems', methods=['GET'])
 @login_required
 def get_agent_systems():
-    """List all available agent systems (subdirectories under config/agent_library/)"""
+    """List all available agent systems from user library."""
     try:
-        agent_library_dir = project_root / "config" / "agent_library"
+        agent_library_dir = get_user_agent_library_root()
         systems = []
         if agent_library_dir.exists():
             for d in sorted(agent_library_dir.iterdir()):
@@ -1095,7 +1248,7 @@ def check_resume():
         task_name = f"{task_hash}_{task_folder}"
         
         # Stack file location
-        conversations_dir = Path.home() / "mla_v3" / "conversations"
+        conversations_dir = get_user_conversations_dir()
         stack_file = conversations_dir / f"{task_name}_stack.json"
         
         if not stack_file.exists():
@@ -1389,7 +1542,7 @@ def clear_task():
         task_name = f"{task_hash}_{task_folder}"
         
         # Delete all files matching the pattern in home conversations directory
-        conversations_dir = Path.home() / "mla_v3" / "conversations"
+        conversations_dir = get_user_conversations_dir()
         if conversations_dir.exists():
             deleted_files = []
             # Pattern: {task_hash}_{task_folder}_*.json
@@ -2254,55 +2407,15 @@ def check_hil_task():
         username = session.get('username')
         if not username:
             return jsonify({"error": "User not authenticated"}), 401
-        
-        data = request.json
-        task_id_input = data.get('task_id', '').strip()
-        
-        if not task_id_input:
-            return jsonify({"error": "Missing task_id parameter"}), 400
-        
-        # Normalize task ID path (user-aware)
-        try:
-            task_path, _ = normalize_task_id(task_id_input, username=username)
-            task_id_absolute = str(task_path)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        
-        # Call tool server to check for HIL tasks
-        import requests
-        import urllib.parse
-        
-        # Load tool server URL from config (same as tool_executor.py)
-        config_path = project_root / "config" / "run_env_config" / "tool_config.yaml"
-        with open(config_path, 'r', encoding='utf-8') as f:
-            tool_config = yaml.safe_load(f)
-        tool_server_url = tool_config.get('tools_server', 'http://127.0.0.1:8001/').rstrip('/')
-        
-        # URL encode task_id for the API call
-        encoded_task_id = urllib.parse.quote(task_id_absolute, safe='')
-        
-        try:
-            response = requests.get(
-                f"{tool_server_url}/api/hil/workspace/{encoded_task_id}",
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                hil_data = response.json()
-                if hil_data.get("found"):
-                    return jsonify({
-                        "found": True,
-                        "hil_id": hil_data.get("hil_id"),
-                        "instruction": hil_data.get("instruction")
-                    })
-                else:
-                    return jsonify({"found": False})
-            else:
-                return jsonify({"found": False, "error": f"Tool server returned {response.status_code}"})
-        
-        except requests.exceptions.RequestException as e:
-            # Tool server may be unavailable, return not found
-            return jsonify({"found": False, "error": str(e)})
+        user_execution = get_user_execution(username)
+        pending = user_execution.get('pending_hil')
+        if pending:
+            return jsonify({
+                "found": True,
+                "hil_id": pending.get("hil_id"),
+                "instruction": pending.get("instruction", "")
+            })
+        return jsonify({"found": False})
     
     except Exception as e:
         import traceback
@@ -2325,38 +2438,167 @@ def respond_hil_task():
         
         if not hil_id:
             return jsonify({"error": "Missing hil_id parameter"}), 400
-        
-        # Call tool server to respond to HIL task
-        import requests
-        
-        # Load tool server URL from config (same as tool_executor.py)
-        config_path = project_root / "config" / "run_env_config" / "tool_config.yaml"
-        with open(config_path, 'r', encoding='utf-8') as f:
-            tool_config = yaml.safe_load(f)
-        tool_server_url = tool_config.get('tools_server', 'http://127.0.0.1:8001/').rstrip('/')
-        
-        try:
-            api_response = requests.post(
-                f"{tool_server_url}/api/hil/respond/{hil_id}",
-                json={"response": response_text},
-                timeout=5
-            )
-            
-            if api_response.status_code == 200:
-                result = api_response.json()
-                if result.get("success"):
-                    return jsonify({"success": True, "message": result.get("message", "HIL task responded")})
-                else:
-                    return jsonify({"error": result.get("error", "Failed to respond to HIL task")}), 400
-            else:
-                return jsonify({"error": f"Tool server returned {api_response.status_code}"}), 500
-        
-        except requests.exceptions.RequestException as e:
-            return jsonify({"error": f"Failed to connect to tool server: {str(e)}"}), 500
+        user_execution = get_user_execution(username)
+        process = user_execution.get('process')
+        if not process or process.poll() is not None or not process.stdin:
+            return jsonify({"error": "No active task process"}), 400
+
+        process.stdin.write(json.dumps({
+            "type": "hil_response",
+            "hil_id": hil_id,
+            "response": response_text,
+        }, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+        user_execution['pending_hil'] = None
+        return jsonify({"success": True, "message": "HIL task responded"})
     
     except Exception as e:
         import traceback
         print(f"Respond to HIL task error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/tool-confirm/respond', methods=['POST'])
+@login_required
+def respond_tool_confirmation():
+    """Respond to a pending direct-tools tool confirmation."""
+    try:
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
+
+        data = request.json or {}
+        confirm_id = data.get('confirm_id')
+        approved = data.get('approved')
+        if not confirm_id or approved is None:
+            return jsonify({"error": "Missing confirm_id or approved"}), 400
+
+        user_execution = get_user_execution(username)
+        process = user_execution.get('process')
+        if not process or process.poll() is not None or not process.stdin:
+            return jsonify({"error": "No active task process"}), 400
+
+        process.stdin.write(json.dumps({
+            "type": "tool_confirmation_response",
+            "confirm_id": confirm_id,
+            "approved": bool(approved),
+        }, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+        user_execution['pending_tool_confirmation'] = None
+        return jsonify({"success": True, "message": "Tool confirmation responded"})
+    except Exception as e:
+        import traceback
+        print(f"Respond tool confirmation error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/tools/list', methods=['GET'])
+@login_required
+def list_runtime_tools():
+    """List runtime tools, custom tool load failures, and YAML binding status."""
+    try:
+        metadata = get_runtime_registry_metadata()
+        failures = get_runtime_registry_failures()
+        bindings_info = collect_tool_bindings()
+        bound_map = bindings_info["bindings"]
+
+        tools = []
+        for tool_name, meta in sorted(metadata.items()):
+            tools.append({
+                "name": tool_name,
+                "source": meta.get("source", "builtin"),
+                "path": meta.get("path", ""),
+                "class_name": meta.get("class_name", ""),
+                "status": meta.get("status", "loaded"),
+                "error": meta.get("error", ""),
+                "agent_systems": sorted(bound_map.get(tool_name, [])),
+                "bound": tool_name in bound_map,
+            })
+
+        return jsonify({
+            "tools": tools,
+            "failures": failures,
+            "binding_issues": bindings_info["missing_runtime"],
+        })
+    except Exception as e:
+        import traceback
+        print(f"List tools error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/tools/reload', methods=['POST'])
+@login_required
+def reload_runtime_tools():
+    """Reload runtime registry after tool changes."""
+    try:
+        reload_runtime_registry()
+        return jsonify({"success": True})
+    except Exception as e:
+        import traceback
+        print(f"Reload tools error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/tools/upload', methods=['POST'])
+@login_required
+def upload_runtime_tool():
+    """Upload a Python tool implementation into ~/mla_v3/tools_library/."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "Missing file field"}), 400
+        upload = request.files['file']
+        if not upload or not upload.filename:
+            return jsonify({"error": "Missing filename"}), 400
+        if not upload.filename.endswith('.py'):
+            return jsonify({"error": "Only .py files are supported"}), 400
+
+        tool_name = sanitize_tool_name(Path(upload.filename).stem)
+        if not tool_name:
+            return jsonify({"error": "Invalid tool filename"}), 400
+
+        tools_root = get_user_tools_library_root()
+        tool_dir = tools_root / tool_name
+        tool_dir.mkdir(parents=True, exist_ok=True)
+        target_path = tool_dir / f"{tool_name}.py"
+        upload.save(str(target_path))
+
+        reload_runtime_registry()
+        return jsonify({
+            "success": True,
+            "tool_name": tool_name,
+            "path": str(target_path),
+            "message": "Tool uploaded"
+        })
+    except Exception as e:
+        import traceback
+        print(f"Upload tool error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/tools/<tool_name>', methods=['DELETE'])
+@login_required
+def delete_runtime_tool(tool_name):
+    """Delete a custom Python tool from ~/mla_v3/tools_library/."""
+    try:
+        safe_name = sanitize_tool_name(tool_name)
+        if not safe_name:
+            return jsonify({"error": "Invalid tool name"}), 400
+
+        tool_dir = get_user_tools_library_root() / safe_name
+        if not tool_dir.exists():
+            return jsonify({"error": "Tool not found"}), 404
+
+        if tool_dir.is_file():
+            tool_dir.unlink()
+        else:
+            import shutil
+            shutil.rmtree(tool_dir)
+
+        reload_runtime_registry()
+        return jsonify({"success": True, "message": "Tool deleted"})
+    except Exception as e:
+        import traceback
+        print(f"Delete tool error: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2372,15 +2614,16 @@ def list_config_files():
         # Get config type from query parameter (run_env or agent)
         config_type = request.args.get('type', 'run_env')
         
-        agent_system = request.args.get('agent_system', 'Default')
+        agent_system = request.args.get('agent_system', 'Researcher')
         
         if config_type == 'run_env':
-            config_dir = project_root / "config" / "run_env_config"
+            config_dir = get_run_env_config_dir()
         elif config_type == 'agent':
-            config_dir = project_root / "config" / "agent_library" / agent_system
+            config_dir = get_agent_system_dir(agent_system)
         else:
             return jsonify({"error": "Invalid config type. Use 'run_env' or 'agent'"}), 400
         
+        config_dir.mkdir(parents=True, exist_ok=True)
         if not config_dir.exists():
             return jsonify({"error": f"Config directory not found: {agent_system}"}), 404
         
@@ -2390,7 +2633,7 @@ def list_config_files():
             if file_path.is_file():
                 config_files.append({
                     "name": file_path.name,
-                    "path": str(file_path.relative_to(project_root))
+                    "path": str(file_path)
                 })
         
         # Sort by filename
@@ -2414,7 +2657,7 @@ def read_config_file():
         
         filename = request.args.get('file', '')
         config_type = request.args.get('type', 'run_env')
-        agent_system = request.args.get('agent_system', 'Default')
+        agent_system = request.args.get('agent_system', 'Researcher')
         
         if not filename:
             return jsonify({"error": "Missing file parameter"}), 400
@@ -2425,12 +2668,13 @@ def read_config_file():
         
         # Determine config directory based on type
         if config_type == 'run_env':
-            config_dir = project_root / "config" / "run_env_config"
+            config_dir = get_run_env_config_dir()
         elif config_type == 'agent':
-            config_dir = project_root / "config" / "agent_library" / agent_system
+            config_dir = get_agent_system_dir(agent_system)
         else:
             return jsonify({"error": "Invalid config type"}), 400
         
+        config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / filename
         
         # Security: ensure file is within config directory
@@ -2477,7 +2721,7 @@ def get_agent_tree():
         
         # Get optional root_agent and agent_system parameters
         root_agent = request.args.get('root_agent', None)
-        agent_system = request.args.get('agent_system', 'Default')
+        agent_system = request.args.get('agent_system', 'Researcher')
         
         # Load agent configurations
         from utils.config_loader import ConfigLoader
@@ -2612,7 +2856,7 @@ def save_config_file():
         filename = data.get('file', '')
         content = data.get('content', '')
         config_type = data.get('type', 'run_env')
-        agent_system = data.get('agent_system', 'Default')
+        agent_system = data.get('agent_system', 'Researcher')
         
         if not filename:
             return jsonify({"error": "Missing file parameter"}), 400
@@ -2623,12 +2867,13 @@ def save_config_file():
         
         # Determine config directory based on type
         if config_type == 'run_env':
-            config_dir = project_root / "config" / "run_env_config"
+            config_dir = get_run_env_config_dir()
         elif config_type == 'agent':
-            config_dir = project_root / "config" / "agent_library" / agent_system
+            config_dir = get_agent_system_dir(agent_system)
         else:
             return jsonify({"error": "Invalid config type"}), 400
         
+        config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / filename
         
         # Security: ensure file is within config directory
@@ -2667,5 +2912,4 @@ if __name__ == '__main__':
     print(f"📂 Project root: {project_root}")
     print(f"💡 Tip: If port is occupied, specify another port via environment variable PORT=8080")
     app.run(host='0.0.0.0', port=port, debug=True, threaded=True)
-
 

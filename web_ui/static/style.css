@@ -1319,6 +1319,98 @@ body {
     display: none;
 }
 
+.tools-modal-content {
+    max-width: 980px;
+    height: 78vh;
+}
+
+.tools-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px 24px;
+    overflow: hidden;
+    flex: 1;
+}
+
+.tools-toolbar {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.tools-help {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #b0b8c4;
+    background: rgba(0, 212, 255, 0.08);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+
+.tools-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+}
+
+.tool-item {
+    border: 1px solid rgba(0, 212, 255, 0.16);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: rgba(10, 15, 25, 0.72);
+}
+
+.tool-item.error {
+    border-color: rgba(244, 67, 54, 0.35);
+}
+
+.tool-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.tool-item-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.tool-item-meta {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #8ea3b7;
+    line-height: 1.7;
+    word-break: break-word;
+}
+
+.tool-item-status {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(81, 207, 102, 0.14);
+    color: #7ce38f;
+    flex-shrink: 0;
+}
+
+.tool-item-status.error {
+    background: rgba(244, 67, 54, 0.14);
+    color: #ff8e8e;
+}
+
+.tool-item-actions {
+    margin-top: 12px;
+    display: flex;
+    gap: 10px;
+}
+
 /* Scrollbar styling for config sidebar */
 .config-sidebar::-webkit-scrollbar,
 .config-file-list::-webkit-scrollbar {

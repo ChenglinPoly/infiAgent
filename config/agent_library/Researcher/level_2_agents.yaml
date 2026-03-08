@@ -1,0 +1,282 @@
+tools:
+  # browser_agent:
+  #   NOTE: 桌面端默认不启用 Playwright/Chromium 浏览器自动化（未随安装包打包）。
+  #   若需要浏览器能力，请在源码环境安装 playwright 并重新启用 browser_* 工具。
+
+  data_collection_agent:
+    level: 2
+    type: llm_call_agent
+    available_tools:
+      - get_data_from_arxiv
+      - get_data_from_google_scholar
+      - get_data_from_wiki
+      - get_data_from_web_search
+      # - get_figure_from_web
+      # - get_data_from_github
+      # - parse_document
+      # - web_search_agent
+      # - get_searchPdf_by_doi_or_title
+      - judge_agent
+      - file_read
+      - dir_list
+      - dir_create
+      - answer_from_papers
+      - reference_list
+      - reference_add
+      - reference_delete
+      - final_output
+      - human_in_loop
+      - file_move
+      - file_write
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        根据任务场景收集数据，包括但不限于论文，网页资料。以及任何可以通过互联网访问获得的信息。
+      agent_workflow: |
+        详细分析用户的意图，并根据意图编排使用你的工具完成任务。
+        例如，如果用户想要进行学术论文写作，则你应该参考下面的流程：
+        **参考流程:**
+          1. 基于论文写作需求，从arxiv，google scholar上收集必要的论文标题，和原始文献。完成后注意检查 reference.bib文件是否更新。
+          2. 当所有内容都收集完成后，如果有些内容必须人类完成，且内容必要（例如 google scholar中的文章下载），则使用human_in_loop请求人类补充或完成。
+          3. 如果human_in_loop明确返回人类拒绝，则尽量尝试基于当前材料完成后续任务。
+        如果用户是其他目的而搜索资料，你应该自己判断是否无需收集论文，只需要收集网页资料。
+    name: "data_collection_agent"
+    description: "根据任务场景收集数据，包括但不限于论文，网页资料。以及任何可以通过互联网访问获得的信息。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "具体的研究领域和文献收集要求，包括研究主题、关注重点、文献数量等需求。以及前序任务的文件结果信息（如有）。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "文献收集过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  data_analysis_agent:
+    level: 2
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - file_read
+      - dir_list
+      - answer_from_papers
+      - image_read
+      - file_write
+      - reference_list
+      - reference_add
+      - reference_delete
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是对文件空间内的资料（包括 pdf,图片，doc，纯文本，markdown 文件）进行分析，产生需求的结论，计划等各种产物,如实验计划，论文大纲等等。
+      agent_workflow: |
+        详细分析用户的意图，并根据意图编排使用你的工具完成任务。
+        例如，如果用户想要进行学术论文写作，则你应该参考下面的流程：
+        **你的流程:**
+        在开始下面流程前，注意与用户交互中用户的意见，如果用户有 idea 相关的意见，参考用户意见形成论文 idea。
+        idea+研究计划哲学：应该聚焦于一篇文章或者最多两三篇文章的方向上！研究问题针对一个点进行研究和改进！不是每一篇文章都对研究方案有用！目标单一，明确，可实现（要考虑 llm 模型的局限性,无法完成特别难的代码实验）是第一要务！
+        1. 对于每篇论文，你可以先通过 reference.bib查看大致方向。
+        2. 如果需要了解详细内容，或者需要更详细的总结，或特定信息，你可以通过answer_from_papers来阅读多篇文献（如果任务类似，你可以要求该工具一次性读取多篇论文，并生成到统一文件中查看）得到自己想要了解的或者知道的答案和内容。
+        3. 在你有信心基于已有文献做出最终计划后，做出实验计划，或写作计划。
+        4. 你的产出应该较为详细，例如论文的实验计划等，保证后续 agent 能直接使用你的产出而不用重新分析资料。
+        **注意事项:**
+        1. 你在要求工具总结论文前，应该自己先确认文章位置是否存在文章，找到文章真实存放的位置！
+        2. 重要：如果实验计划涉及外部资源。例如数据集，你应该详细说明对应数据集如何找到（依据论文），否则不应该写入到实验计划中！
+        3. 你不是编程 Agent!绝对不要自己尝试去编程！！
+    name: "data_analysis_agent"
+    description: "你的职责是对文件空间内的资料（包括 pdf,图片，doc，纯文本，markdown 文件）进行分析，产生需求的结论，计划等各种产物。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "相关资料的位置和分析需求产物"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "实验规划过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  coder_agent:
+    level: 2
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - file_read
+      - file_write
+      - dir_list
+      - dir_create
+      - coding_task_agent
+      - execute_command
+      - target_to_coding_task_agent
+      - human_in_loop
+      - reference_list
+      - reference_add
+      - reference_delete
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        完成各种复杂的编程任务！
+      agent_workflow: |
+        详细分析用户的意图，并根据意图编排使用你的工具完成任务。
+        例如，如果用户想要进行学术论文写作，则你应该参考下面的流程：
+        **参考流程:**
+          1. 你将会得到之前的 agent或者用户给你提供的详细的实验计划的文件地址（或者直接的实验需求），如果是文件地址，你首先应该确保文件存在。否则进行最终输出并给出错误信息。你应该严格查看注意事项，并严格遵守。
+          2. 检查是否已经存在已有的代码项目，如果已经存在实验代码或项目，则使用execute_command中的 grep，或者 file_read，dir_list来探索整个项目，并对项目进行总结和预览。
+          3. 阅读实验或者代码计划，
+            1)如果代码任务比较复杂：
+            i.  将实验计划的文件地址传送给target_to_coding_task_agent，让其转化为具体的编码任务。
+            ii. 然后分析编码任务，将编码任务按照coding_task_agent指定的要求传递给它，告诉它整个实验计划和 idea 的文件地址作为上下文，但是要提醒其专注于自己分配到的编码任务，注意coding_task_agent只允许在code_run目录下工作。
+            iii.注意各个代码任务中的依赖和关联，在任务时提醒 coding_task_agent。
+            vi. 实验的入口函数或文件应该自己编写，并运行，如果失败，则进行 debug，如果是对于模块问题，依据问题难度考虑直接修复或者调用coding_task_agent进行修复。
+            v.  重复上述过程直到实验运行成功。
+            2)如果任务比较简单：
+            i. 自己编写代码。
+            ii. 运行。
+            注意：
+            1. 如果没有用户的明确需求，作为编码任务，你应该都在 code_run 目录下创建文件（包括所有代码）,注意每次创建自己的文件前检查是否存在别人的文件，不要覆盖，有些别人已经写过的可以复用的功能文件你可以复用。
+            2. 执行代码时，统一使用 execute_command 运行（例如：`python -u code_run/xxx.py`）。需要依赖时也用 execute_command 运行 pip（例如：`pip install -r requirements.txt` 或 `pip install xxx`）。
+            3. 如果需要长时间运行（如 Web 服务），使用 execute_command 的后台模式 `background=true` 并指定 `output_file`，用 file_read 查看输出日志；结束后使用 execute_command 运行 `ps`/`kill` 清理遗留进程。
+        根据难度进行编排。如果任务比较简单，大部分情况下，非学术研究的编程任务都可以直接完成.例如简单的成本计算，验证等。
+        注意事项：
+        1. 如果是需要挂起执行的例如flask 网站任务，使用后台执行并定向输出文件。检查输出文件进行 debug。同时及时管理运行进程进行终止。
+        2. 网站等视觉任务！一定要在挂起运行后指导人类进行审查！如果需要人类交互（例如让人类反馈网站页面结果或者进一步修改，这种视觉任务 judge agent 无法完成，请交给人类反馈），使用 human_in_loop 工具，并给出人类交互的提示词。
+        3. （桌面端默认禁用浏览器自动化能力）
+        4. 确定完成任务后，必须关闭所有遗留进程！
+    name: "coder_agent"
+    description: "完成各种编程任务！"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "实验计划的文件地址或详细实验要求。以及前序任务的文件结果信息（如有）。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "实验实现过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  create_figures_agent:
+    level: 2
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - file_read
+      - file_write
+      - move_data_to_clean_directory
+      - create_figures_python_agent
+      - create_figures_by_ai
+      - dir_list
+      - dir_create
+      - reference_list
+      - reference_add
+      - reference_delete
+      - final_output
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        完成各种作图，包括数据转图像，描述转图像,支持各种风格，ai生图，代码生图（数据图），写实，油画等等。
+      agent_workflow: |
+        详细分析用户的意图，并根据意图编排使用你的工具完成任务。
+        例如，如果用户想要进行学术论文写作，则你应该参考下面的流程：
+        **参考流程:**
+          1. 你将会得到之前的 agent或者用户给你提供的实验代码和生成结果的文件位置，还有实验计划文件的地址（由 idea_agent 生成），或需要你根据其提示信息自己寻找，一般在code_run 目录下，不要保留实验生产的体现数值结果图片（你需要自己重新生成），但是例如地图，网络图类型的文件还是可以保留，但是要找到产生图片的代码，并给出注释文件。
+          2. 分析code_run目录下的文件，找到相关的结果文件（注意和测试文件区分），同时找到所有参与结果生成的算法代码.py和对应的.md文件（可以基于步骤 1 种的说明文字进行寻找，无需完全分析代码）。
+          3. 分析所有代码文件或者其对应的.md文件，分析所有结果文件，读取实验 idea 文件，从学术发表的角度，思考应该绘制什么图。你必须包含的图有框架图（基于总体代码流程，但是是基于 idea 的系统框架图而不是算法流程图），和基于结果的实验图。
+          4. 在进行下一步之前，确保你已经阅读了所有 csv 文件（文件过大的比如超过 1000 行的可以只读前 300 行，理解 paper 的写作意图，从不同方向经可能多的绘制不同类型的图不少于3 张。也可以存在一张图中多个子图的类型。
+          5. 使用create_figures_python_agent工具，生成基于数据的图片，你应该详细说明每个图基于表格的是什么数据进行生成（数据文件地址），生成什么样的图形，一般基于matplotlib,注意告诉她需要英文绘图（必须详细！）。你应该一次性告诉它所有作图需求。
+          6. 使用create_figures_by_ai工具，生成基于框架图的图片，你应该详用英文说明这个框架图的生成提示词(这个提示词应该保存为这个图片的说明文件），还包括保存的位置。你最多生成一张框架图。并配上图片注释文件。
+          **注意事项:**
+          1. 重要：你不是编程 ai，不要自己尝试编程。
+          2. create_figures_python_agent主要用于绘制数据图，文生图或者复杂图像请使用create_figures_by_ai，create_figures_by_ai几乎可以生成任何详细提示的图像。
+    name: "create_figures_agent"
+    description: "完成各种作图，包括数据转图像，描述转图像,支持各种风格，ai生图，代码生图（数据图），写实，油画等等。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "实验代码和结果数据的位置信息。以及前序任务的文件结果信息（如有）。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "绘图过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]
+
+  material_to_document_agent:
+    level: 2
+    type: llm_call_agent
+    available_tools:
+      - judge_agent
+      - file_read
+      - file_write
+      # - md_to_document_agent
+      - sub_part_editor_agent
+      - dir_list
+      - dir_create
+      - file_move
+      - create_figures_agent
+      - move_data_to_clean_directory
+      - reference_list
+      - reference_add
+      - reference_delete
+      - final_output
+      - proof_agent
+    max_turns: 100
+    model_type: claude-3-7-sonnet-20250219
+    prompts:
+      agent_responsibility: |
+        你的职责是基于现在的所有材料完成论文/报告/或者任何文档结果的生成（生成一个 tex 项目）
+      agent_workflow: |
+        详细分析用户的意图，并根据意图编排使用你的工具完成任务。
+        例如，如果用户想要进行学术论文写作，则你应该参考下面的流程：
+          **你的流程:**
+          无需使用复杂的文章格式（例如 IEEE）,避免表格或者图片超出页面等最后的排版错误问题！文章结构应该更具用户需求来定制，保证生成的文章看起来完整有逻辑！
+          0. 你将会得到之前的agent整理的所有图表的地址，包括相关的说明，还有之前进行 idea 生成的时候的所有相关文献。
+          1. 如果材料不在一个文件夹中，使用move_data_to_clean_directory工具将你写作所需的所有材料复制到一个干净的文件夹中
+          2. 有一个目录将会包含大部分资料除了少部分例如文献（但是文献也有可能已经在主要工作目录下，请你自己检查）等，你应该在拥有大部分相关材料的目录下工作，作为主要目录，不要自己创建新的目录！。并将散落的有用文件（特别是所有文章的pdf文件）移动到这个主要目录下，重复则无需移动。
+          3. 第一步，你应该根据大致的图的结果说明（通过读取相关文字材料），实验计划和idea内容，拟定一个标题和文章大纲。
+          4. 根据你拟定的标题和文章大概在指定工作目录下创建 main.tex文件和 bib 文件（先为空）。main.tex文件包含你拟定的大纲，切记所有写作都是使用英文。作者为polyu AI Researcher或者根据用户需求而定。大纲应该完全按照学术论文的标准进行，而且通过引入一些之后要写的 tex 文件来构造整个文件，例如 abstract.tex, introduction.tex, related_work.tex等等。
+          5. 每次完成sub_tex前，使用 dir_list工具和file_read工具观察文章所需要的章节，和已经完成的章节。调用sub_part_editor_agent工具完成剩下的 sub_tex，你应该有计划的完成例如 introduction 和 abstract 部分应该放在最后因为这两个要基于剩下的部分才能完成，告诉工具你要完成的部分，已经完成的部分，和文件夹中所有材料的地址，以及参考文献，并且你的大纲和思路。对于每个部分记得重点强调不同的要求，例如方法说明部分如果实验有代码，应该在该节包含伪代码，如果已经提供了框架图，也需要包含框架图这都是必须要明确要求的。
+          6. 使用proof_agent工具对文章进行润色，修改和语法纠正。
+          **注意事项:**
+          1. 重要：注意写作顺序，严格按照指令执行！不要自己完成所有写作，交给工具完成 sub_tex 的写作！！！！
+          2. 你应该告诉sub_part_editor_agent应该在什么位置生成tex 文件，防止文件地方出错！
+        如果是非学术类的协作任务，你可以直接根据输入要求撰写 md 文档或 tex 文件。
+    name: "material_to_document_agent"
+    description: "你的职责是基于现在的所有材料完成论文/报告/或者任何文档结果的（生成生成一个 tex 项目）"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        task_input:
+          type: "string"
+          description: "所有论文材料的位置信息，包括图表、实验数据、文献等。以及前序任务的文件结果信息（如有）。"
+        max_turns:
+          type: "integer"
+          default: 100
+          description: "论文生成过程的最大轮次，防止无限循环。可选。"
+      required: ["task_id", "task_input"]

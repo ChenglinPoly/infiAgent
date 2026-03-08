@@ -6,6 +6,8 @@ tools:
       - execute_command
       - human_in_loop
       - load_skill
+      - offload_skill
+      - fresh
       - judge_agent
       - file_read
       - file_write
@@ -54,6 +56,8 @@ tools:
       - execute_command
       - human_in_loop
       - load_skill
+      - offload_skill
+      - fresh
       - judge_agent
       - file_read
       - file_write

@@ -13,16 +13,16 @@ models:
 # 简单格式：如果不配置 url 和 key，默认使用用全局 api_key + base_url
 - openai/google/gemini-3-flash-preview
 # 对象格式：覆盖 api_key 和/或 base_url，使用其他供应商的模型。
-- name: openai/qwen-plus
-  api_key: 
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+# - name: openai/qwen-plus
+#   api_key: 
+#   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
 figure_models:
 # 同理
-- openai/google/gemini-3-flash-preview
-- name: openai/qwen-vl-max
-  api_key: 
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+- openai/google/gemini-3-pro-image-preview
+# - name: openai/qwen-vl-max
+#   api_key:  
+#   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
 compressor_models:
 - openai/google/gemini-3-flash-preview    # 用全局 key

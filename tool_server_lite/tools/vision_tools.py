@@ -5,19 +5,18 @@ Vision分析工具 - 图片内容分析 & 图片读取（多模态支持）
 """
 
 import base64
+import os
 from pathlib import Path
 from typing import Dict, Any
 
 from .file_tools import BaseTool, get_abs_path
+from utils.user_paths import ensure_user_llm_config_exists
 
-# 导入llm_client_lite
-import sys
-import os
-# 添加父目录到路径
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
-from llm_client_lite import get_llm_client
+# NOTE:
+# 以前这里用 `sys.path` hack + `from llm_client_lite import ...`，
+# 在 direct-tools / PyInstaller 环境下会因为模块名不在顶层而失败。
+# 统一使用包内绝对导入，保证 dev/packaged 都一致可用。
+from tool_server_lite.llm_client_lite import get_llm_client
 
 
 class ImageReadTool(BaseTool):
@@ -26,7 +25,7 @@ class ImageReadTool(BaseTool):
     1. multimodal 模式：读取图片转 base64，嵌入到主模型 messages 中（主模型直接看图）
     2. text-only 模式：调用 Vision LLM 分析图片，返回文字描述
     
-    mode 由 ToolServer 启动时从 llm_config.yaml 的 multimodal 字段读取决定
+    mode 由运行时从 llm_config.yaml 的 multimodal 字段读取决定
     """
     
     def __init__(self):
@@ -38,7 +37,7 @@ class ImageReadTool(BaseTool):
         """从 llm_config.yaml 读取 multimodal 配置（每次读取，不缓存，确保配置修改后即时生效）"""
         try:
             import yaml
-            config_path = Path(__file__).parent.parent.parent / "config" / "run_env_config" / "llm_config.yaml"
+            config_path = ensure_user_llm_config_exists()
             if config_path.exists():
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = yaml.safe_load(f)

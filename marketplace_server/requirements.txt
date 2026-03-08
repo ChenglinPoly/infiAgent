@@ -1,0 +1,4 @@
+# 该市场服务端默认兼容 CentOS7 的 Python 3.6+，使用内置 WSGI server 运行（无第三方依赖）。
+#
+# 如需更高性能，可自行改用 gunicorn/waitress 等 WSGI server。
+
