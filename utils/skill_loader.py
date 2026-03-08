@@ -4,7 +4,7 @@
 Skill 加载器 - 遵循 Agent Skills 开放标准 (agentskills.io)
 
 职责：
-1. 扫描 ~/.mla_v3/skills_library/ 目录发现所有 skills
+1. 扫描用户主 skills 目录发现所有 skills
 2. 解析 SKILL.md frontmatter（name + description）
 3. 生成 <available_skills> XML 片段注入 system prompt
 """
@@ -12,6 +12,8 @@ Skill 加载器 - 遵循 Agent Skills 开放标准 (agentskills.io)
 import yaml
 from pathlib import Path
 from typing import List, Dict, Optional
+
+from utils.user_paths import get_user_skills_library_root
 
 
 class SkillLoader:
@@ -22,12 +24,12 @@ class SkillLoader:
         初始化
         
         Args:
-            skills_library_path: skills 仓库路径，默认 ~/mla_v3/skills_library/（Docker 中为 /root/mla_v3/skills_library/）
+            skills_library_path: skills 仓库路径，默认 ~/.agent/skills
         """
         if skills_library_path:
-            self.skills_library = Path(skills_library_path)
+            self.skills_library = Path(skills_library_path).expanduser().resolve()
         else:
-            self.skills_library = Path.home() / "mla_v3" / "skills_library"  # 与 conversation_storage 同级
+            self.skills_library = get_user_skills_library_root()
         
         # 确保目录存在
         self.skills_library.mkdir(parents=True, exist_ok=True)
@@ -37,7 +39,7 @@ class SkillLoader:
     
     def discover_skills(self) -> List[Dict]:
         """
-        扫描 skills_library 目录，解析所有 SKILL.md 的 frontmatter
+        扫描 skills 主目录，解析所有 SKILL.md 的 frontmatter
         
         Returns:
             [{name, description, path, license?, compatibility?}, ...] 列表
@@ -141,7 +143,7 @@ class SkillLoader:
             xml_parts.append(f'  </skill>')
         xml_parts.append("</available_skills>")
         xml_parts.append("")
-        xml_parts.append("提示：需要使用某个 skill 时，先调用 load_skill 工具将其部署到 workspace，然后使用 file_read 读取 SKILL.md 获取详细指令。")
+        xml_parts.append("提示：需要使用某个 skill 时，先调用 load_skill 工具将其部署到 workspace 并把对应 SKILL.md 注入当前上下文；当不再需要时，可调用 offload_skill 卸载该注入内容。")
         
         return "\n".join(xml_parts)
     
@@ -173,4 +175,11 @@ def get_skill_loader(skills_library_path: str = None) -> SkillLoader:
     global _skill_loader_instance
     if _skill_loader_instance is None:
         _skill_loader_instance = SkillLoader(skills_library_path)
+    return _skill_loader_instance
+
+
+def reset_skill_loader(skills_library_path: str = None) -> SkillLoader:
+    """重置 SkillLoader 缓存（供 fresh 使用）。"""
+    global _skill_loader_instance
+    _skill_loader_instance = SkillLoader(skills_library_path)
     return _skill_loader_instance

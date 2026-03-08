@@ -47,7 +47,6 @@ setup(
     entry_points={
         'console_scripts': [
             'mla-agent=start:main',
-            'mla-tool-server=tool_server_lite.server:main',
         ],
     },
     classifiers=[

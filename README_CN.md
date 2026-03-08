@@ -26,12 +26,13 @@
 
 - ✅ **支持数以天计的持续复杂任务**：无需担心上下文累积或持续压缩导致的性能下降。任何中断（崩溃、网络异常、手动停止）都可通过 Resume 完全恢复，实现真正的断点续跑。
 - ✅ **支持 Agent Skills 标准**：兼容 [Agent Skills 开放标准](https://agentskills.io/)。将 skill 文件夹放入技能库，智能体即可自动发现、加载并按需执行。
-- ✅ **灵活的智能体架构**：同时支持**多层级架构**（树形编排，适合垂类复杂任务——如默认配置 Default 可长时间进行科学研究并生成论文）和**扁平架构**（单层智能体 + Skills，适合广泛通用任务——如 OpenCowork 配置）。
+- ✅ **灵活的智能体架构**：同时支持**多层级架构**（树形编排，适合垂类复杂任务——如 `Researcher` 配置可长时间进行科学研究并生成论文）和**扁平架构**（单层智能体 + Skills，适合广泛通用任务——如 OpenCowork 配置）。
 - ✅ **持续记忆**：基于文件目录位置的记忆系统。在同一工作目录下启动智能体，即可记忆该目录下所有历史任务的对话和产出，无需外部数据库。
 
 ### 更新 & 新闻🔥
 
 如果你在最新更新日期前拉取镜像或者代码，请参考修复的问题，重新拉取镜像和代码。
+- [2026/03/08] **桌面端分支同步更新：** 当前 `desktop-app` 分支已经加入打包 Python 后端构建脚本、内置 `infiagent` Python SDK、可配置运行时节奏（`action_window_steps`、`thinking_interval`、定时/手动 `fresh`）、MCP 运行时接入、单任务日志、桌面端环境设置和 marketplace 集成。旧的独立 `tool-server` 工作流已被进程内 `direct-tools` 替代，内置科研系统名称也统一为 `Researcher`。
 - [2026/02/09] **mac系统桌面端发布！**  [点击此处跳转下载页面](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0)。支持 skills的外部库导入，支持不同智能体共享记忆接力工作，支持本地模型完全本地化运行。
 
 <img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/bae36a54-7c70-4ba5-a2cf-3d53856ca461" />
@@ -40,11 +41,11 @@
 
 - [2026/02/07] **支持多供应商模型！** 同一配置文件中可以使用来自不同供应商的模型。每个模型可单独覆盖 `api_key` 和 `base_url`，允许不同子智能体使用不同模型。详见 `llm_config.example.yaml` 配置示例。
 
-- [2026/02/07] **Web UI 增强：** 新增 Resume 按钮，支持恢复中断任务（与 CLI `/resume` 功能一致）。新增 Agent System 选择器，可自由切换 Default（学术研究智能体）和 Open Cowork 系统。用户输入自动添加时间戳（与 CLI 行为一致）。
+- [2026/02/07] **Web UI 增强：** 新增 Resume 按钮，支持恢复中断任务（与 CLI `/resume` 功能一致）。新增 Agent System 选择器，可自由切换 `Researcher`（学术研究智能体）和 Open Cowork 系统。用户输入自动添加时间戳（与 CLI 行为一致）。
 
 - [2026/02/07] **多模态消息架构重构：** 分离多模态和纯文本模型的消息逻辑。多模态模型下，`image_read` 工具获取的图片直接嵌入对话上下文，实现原生图片理解。纯文本模型仍保留外部 Vision 工具的图片识别能力。通过 `llm_config.yaml` 中的 `multimodal` 和 `compressor_multimodal` 配置。
 
-- [2026/01/17] 我们推出新的配置文件open cowork，得到类似anthropic 公司 cowork 工具的电脑工作助手。在进入你指定的文件夹后，实现包括但不限于帮你整理文件夹，制作 ppt，整理各种格式的账单发票，深度调研，编写项目代码等。仍然基于 infiagent 架构的长程性能，和相同文件夹下的无限记忆。支持 CLI、Docker CLI 和 Web UI 模式。在 Web UI 中可通过 Agent System 选择器切换 Default 和 OpenCowork。具体可查看演示视频。
+- [2026/01/17] 我们推出新的配置文件open cowork，得到类似anthropic 公司 cowork 工具的电脑工作助手。在进入你指定的文件夹后，实现包括但不限于帮你整理文件夹，制作 ppt，整理各种格式的账单发票，深度调研，编写项目代码等。仍然基于 infiagent 架构的长程性能，和相同文件夹下的无限记忆。支持 CLI、Docker CLI 和 Web UI 模式。在 Web UI 中可通过 Agent System 选择器切换 `Researcher` 和 OpenCowork。具体可查看演示视频。
 
 **Open Cowork 演示视频：**
 
@@ -77,7 +78,7 @@
 
 - [2026/01/01] 现已支持阿里云api包括qwen，适配绝大部分第三方中转站。配置详情请卡config文件夹对应的参考文件。
 
-- [2025/12/31] 现在已支持 gemini api。重新拉取仓库，mla-tool-server restart，或者重新拉取 docker 即可生效。配置文件参考配置文件夹 gemini 开头的样板格式。
+- [2025/12/31] 现在已支持 gemini api。重新拉取仓库或重新拉取 docker 即可生效。配置文件参考配置文件夹 gemini 开头的样板格式。
 
 注意目前只支持 python 编程，早期版本execute_command只支持只读命令，目前已经支持所有命令（包括删除等危险命令），推荐在 docker 环境下使用。
 
@@ -144,7 +145,7 @@ docker pull chenglinhku/mlav3:latest
 **3. 选择模式**
 
 ### 方式 A: Web UI 模式（推荐）
-WEB UI不支持默认配置文件以外的配置文件，请使用 CLI 模式如果希望使用 Cowork 功能
+Web UI 现在支持两个内置系统，可通过 Agent System 选择器切换 `Researcher` 和 `OpenCowork`。
 
 ```bash
 cd /你的工作空间
@@ -230,7 +231,7 @@ docker run -d --name mla-webui `
   <img src="assets/config_web_screen_shot.png" alt="配置管理界面" width="800">
 </p>
 
-编辑 `run_env_config/llm_config.yaml`，填入 API key 并保存。
+编辑 `llm_config.yaml`，填入 API key 并保存。
 
 **🎉 完成！** 开始使用 MLA CLI。
 
@@ -243,7 +244,7 @@ docker run -d --name mla-webui `
 **1. 安装包**
 
 ```bash
-# 确保 Python 版本 > 3.10
+# 支持 Python 3.9+。如果需要使用打包依赖中的 MCP 能力，建议使用 Python 3.10+。
 cd 安装路径
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
@@ -264,13 +265,7 @@ playwright install chromium
 mla-agent --config-set api_key "your-api-key"
 ```
 
-**4. 启动工具服务器**
-
-```bash
-mla-tool-server start
-```
-
-**5. 启动 CLI**
+**4. 启动 CLI**
 
 ```bash
 cd /你的工作空间
@@ -466,16 +461,17 @@ MLA 使用 YAML 文件进行智能体和工具配置。配置文件位于：
 ```
 config/
 ├── agent_library/
-│   └── Default/                    # 默认智能体系统
-│       ├── general_prompts.yaml    # 共享提示词
-│       ├── level_-1_judge_agent.yaml  # 评判智能体
-│       ├── level_0_tools.yaml      # 工具定义
-│       ├── level_1_agents.yaml     # 底层智能体
-│       ├── level_2_agents.yaml     # 中层智能体
-│       └── level_3_agents.yaml     # 顶层智能体
+│   ├── Researcher/                 # 面向科研的多层级系统
+│   │   ├── general_prompts.yaml    # 共享提示词
+│   │   ├── level_-1_judge_agent.yaml  # 评判智能体
+│   │   ├── level_0_tools.yaml      # 工具定义
+│   │   ├── level_1_agents.yaml     # 底层智能体
+│   │   ├── level_2_agents.yaml     # 中层智能体
+│   │   └── level_3_agents.yaml     # 顶层智能体
+│   └── OpenCowork/                 # 通用电脑工作助手
 └── run_env_config/
     ├── llm_config.yaml             # LLM 设置
-    └── tool_config.yaml            # 工具服务器设置
+    └── llm_config.example.yaml     # 示例模板
 ```
 
 ### 关键配置文件
@@ -637,7 +633,7 @@ mla-agent \
 | `--task_id` | 工作空间路径（绝对路径） | 必需 |
 | `--user_input` | 任务描述 | 必需 |
 | `--agent_name` | 调用的智能体 | `alpha_agent` |
-| `--agent_system` | 智能体库名称 | `Default` |
+| `--agent_system` | 智能体库名称 | `Researcher` |
 | `--cli` | 交互式 CLI 模式 | `false` |
 | `--jsonl` | JSONL 输出模式 | `false` |
 | `--force-new` | 清空所有状态并重新开始 | `false` |
@@ -655,20 +651,11 @@ mla-agent --task_id ~/project --user_input "任务" --auto-mode false
 
 ---
 
-### 管理工具服务器
+### 运行时工具执行
 
 ```bash
-# 启动服务器（后台）
-mla-tool-server start
-
-# 检查状态
-mla-tool-server status
-
-# 停止服务器
-mla-tool-server stop
-
-# 重启服务器
-mla-tool-server restart
+# 工具通过进程内 direct-tools 执行
+# 不再需要单独启动 mla-tool-server 进程
 ```
 
 ---
@@ -691,7 +678,7 @@ from core.agent_executor import AgentExecutor
 
 # 初始化组件
 task_id = str(Path.home() / "my_project")
-agent_system = "Default"
+agent_system = "Researcher"
 
 config_loader = ConfigLoader(agent_system)
 hierarchy_manager = get_hierarchy_manager(task_id)
@@ -946,9 +933,9 @@ upload/
 
 ## 📖 文档
 
-- [工具服务器 API 文档](tool_server_lite/README.md) - 18 个可用工具
+- 运行时工具通过 direct-tools 进程内执行，不再需要单独的 tool server。
 - [人机交互 API](tool_server_lite/HIL_API.md) - 用户交互集成
-- [配置示例](config/agent_library/Default/) - 智能体 YAML 模板
+- [配置示例](config/agent_library/Researcher/) - 智能体 YAML 模板
 
 ---
 
@@ -999,4 +986,3 @@ upload/
 ---
 
 **使用 MLA V3 开始构建专属领域的 SOTA 智能体！** 🚀
-

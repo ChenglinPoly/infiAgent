@@ -1,0 +1,16 @@
+[Unit]
+Description=infiAgent Marketplace
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/infiagent-market/marketplace_server
+Environment=MARKET_SKILLS_DIR=/opt/infiagent-market/skills
+Environment=MARKET_AGENT_LIBRARY_DIR=/opt/infiagent-market/config/agent_library
+ExecStart=/usr/bin/python3 /opt/infiagent-market/marketplace_server/app.py --host 127.0.0.1 --port 18080
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+

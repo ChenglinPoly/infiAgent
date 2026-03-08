@@ -1,0 +1,13 @@
+temperature: 0
+max_tokens: 0
+max_context_window: 200000
+base_url: "http://127.0.0.1:1"
+api_key: "DUMMY_KEY_FOR_DEBUG"
+timeout: 5
+stream_timeout: 5
+first_chunk_timeout: 5
+models:
+  - openai/gpt-4o-mini
+multimodal: false
+compressor_multimodal: false
+

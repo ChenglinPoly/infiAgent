@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any
 import asyncio
 from .file_tools import BaseTool
+from utils.event_emitter import get_event_emitter
 
 # 全局 HIL 任务状态存储
 HIL_TASKS = {}
@@ -54,6 +55,18 @@ class HumanInLoopTool(BaseTool):
                 "task_id": task_id,
                 "result": None
             }
+
+            try:
+                get_event_emitter().human_in_loop(
+                    hil_id=hil_id,
+                    title="Human-in-Loop",
+                    message=instruction,
+                    ui={"type": "text"},
+                    timeout_sec=int(timeout) if timeout is not None else 1800,
+                    resume_hint="请在前端或 CLI 中直接回复该请求",
+                )
+            except Exception:
+                pass
             
             # 异步轮询等待完成
             start_time = asyncio.get_event_loop().time()
@@ -178,6 +191,17 @@ def create_tool_confirmation(confirm_id: str, task_id: str, tool_name: str, argu
         "arguments": arguments,
         "result": None  # "approved" or "rejected"
     }
+
+    try:
+        get_event_emitter().emit({
+            "type": "tool_confirmation",
+            "confirm_id": confirm_id,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "task_id": task_id,
+        })
+    except Exception:
+        pass
     
     return {
         "success": True,

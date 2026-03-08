@@ -24,12 +24,14 @@
 
 - ✅ **Days-Long Complex Tasks**: Supports continuous execution over days without context accumulation or compression degradation. Any interruption (crash, network error, manual stop) can be fully recovered via Resume — true breakpoint continuation.
 - ✅ **Agent Skills Standard**: Compatible with the [Agent Skills open standard](https://agentskills.io/). Drop skill folders into the skills library and agents will discover, load, and execute them on demand.
-- ✅ **Flexible Agent Architecture**: Supports both **multi-level hierarchy** (tree-structured orchestration for complex domain tasks — e.g., the Default config enables long-running scientific research with paper generation) and **flat architecture** (single agent with one sub-agent + Skills for broad general-purpose tasks — e.g., the OpenCowork config).
+- ✅ **Flexible Agent Architecture**: Supports both **multi-level hierarchy** (tree-structured orchestration for complex domain tasks — e.g., the `Researcher` config enables long-running scientific research with paper generation) and **flat architecture** (single agent with one sub-agent + Skills for broad general-purpose tasks — e.g., the OpenCowork config).
 - ✅ **Persistent Memory**: File-directory-based memory system. Launch agents in the same workspace directory and they remember all historical tasks across sessions — no external database required.
 
 ### Update & News🔥
 
 If you pulled the image or code before the latest update date, please refer to the issues that have been fixed and, based on your needs, pull the image and code again.
+
+- [2026/03/08] **Desktop branch sync update:** The current desktop branch now includes packaged Python backend build scripts, the bundled `infiagent` Python SDK, configurable runtime cadence (`action_window_steps`, `thinking_interval`, scheduled/manual `fresh`), MCP runtime integration, per-task logs, desktop environment settings, and marketplace integration. The legacy standalone tool-server workflow has been replaced by in-process `direct-tools`, and the built-in research system is now named `Researcher`.
 
 - [2026/02/09] **Mac desktop version released!** [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0). Support download skills from offical market. It supports any API that is allowed to be called by tools, and runs fully locally with the support of the localization model.
   <img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/435c5bd9-ace1-46a8-9814-883d3ce507d4" />
@@ -39,11 +41,11 @@ If you pulled the image or code before the latest update date, please refer to t
 
 - [2026/02/07] **Multi-Provider Model Support!** You can now use models from different providers in the same configuration. Each model can optionally override `api_key` and `base_url` to use a different provider. Different sub-agents can use different models. See `llm_config.example.yaml` for configuration details.
 
-- [2026/02/07] **Web UI Enhancements:** Added Resume button for recovering interrupted tasks (same as CLI `/resume`). Added Agent System selector to freely switch between Default (academic research) and Open Cowork systems. User inputs now automatically include timestamps (consistent with CLI behavior).
+- [2026/02/07] **Web UI Enhancements:** Added Resume button for recovering interrupted tasks (same as CLI `/resume`). Added Agent System selector to freely switch between `Researcher` (academic research) and Open Cowork systems. User inputs now automatically include timestamps (consistent with CLI behavior).
 
 - [2026/02/07] **Multimodal Message Architecture:** Separated multimodal and text-only message logic. For multimodal models, images from `image_read` are embedded directly in the conversation context for native understanding. Text-only models retain the external vision tool approach. Configure via `multimodal` and `compressor_multimodal` in `llm_config.yaml`.
 
-- [2026/01/17] We introduce a new configuration profile, Open Cowork, which delivers a computer-work assistant similar to Anthropic's Cowork. After entering a user-specified working directory, the assistant can perform a wide range of tasks, including but not limited to: organizing folders, creating PowerPoint presentations, processing and categorizing bills and invoices in multiple formats, conducting in-depth research, and writing project code. The system is built on the InfiAgent architecture, preserving its long-horizon execution capabilities and unbounded, file-system–level memory within the same workspace. Open Cowork supports CLI, Docker-based CLI, and Web UI modes. In Web UI, use the Agent System selector to switch between Default and OpenCowork. A demonstration video is available for more details.
+- [2026/01/17] We introduce a new configuration profile, Open Cowork, which delivers a computer-work assistant similar to Anthropic's Cowork. After entering a user-specified working directory, the assistant can perform a wide range of tasks, including but not limited to: organizing folders, creating PowerPoint presentations, processing and categorizing bills and invoices in multiple formats, conducting in-depth research, and writing project code. The system is built on the InfiAgent architecture, preserving its long-horizon execution capabilities and unbounded, file-system–level memory within the same workspace. Open Cowork supports CLI, Docker-based CLI, and Web UI modes. In Web UI, use the Agent System selector to switch between `Researcher` and OpenCowork. A demonstration video is available for more details.
 
 **Open Cowork Demo Videos:**
 
@@ -144,7 +146,7 @@ docker pull chenglinhku/mlav3:latest
 
 ### Option A: Web UI Mode (Recommended)
 
-Attention：WEB UI does not support Cowork. Please Use CLI Mode.
+Web UI supports both bundled agent systems. Use the Agent System selector to switch between `Researcher` and `OpenCowork`.
 
 open localhost:9641 to set keys and base url.
 
@@ -228,7 +230,7 @@ Open browser: `http://localhost:9641`
   <img src="assets/config_web_screen_shot.png" alt="Configuration Web Interface" width="800">
 </p>
 
-Edit `run_env_config/llm_config.yaml`, fill in your API key, and save.
+Edit `llm_config.yaml`, fill in your API key, and save.
 
 **🎉 Done!** Start using MLA CLI.
 
@@ -241,7 +243,7 @@ Edit `run_env_config/llm_config.yaml`, fill in your API key, and save.
 **1. Install the package**
 
 ```bash
-# Ensure Python version > 3.10
+# Python 3.9+ is supported. Use Python 3.10+ if you need MCP support through the packaged dependency set.
 cd install_path
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
@@ -262,13 +264,7 @@ playwright install chromium
 mla-agent --config-set api_key "your-api-key"
 ```
 
-**4. Start Tool Server**
-
-```bash
-mla-tool-server start
-```
-
-**5. Start CLI**
+**4. Start CLI**
 
 ```bash
 cd /your/workspace
@@ -464,16 +460,17 @@ MLA uses YAML files for agent and tool configuration. Configuration files are lo
 ```
 config/
 ├── agent_library/
-│   └── Default/                    # Default agent system
-│       ├── general_prompts.yaml    # Shared prompts
-│       ├── level_-1_judge_agent.yaml  # Judge agent
-│       ├── level_0_tools.yaml      # Tool definitions
-│       ├── level_1_agents.yaml     # Low-level agents
-│       ├── level_2_agents.yaml     # Mid-level agents
-│       └── level_3_agents.yaml     # Top-level agents
+│   ├── Researcher/                 # Research-oriented multi-level system
+│   │   ├── general_prompts.yaml    # Shared prompts
+│   │   ├── level_-1_judge_agent.yaml  # Judge agent
+│   │   ├── level_0_tools.yaml      # Tool definitions
+│   │   ├── level_1_agents.yaml     # Low-level agents
+│   │   ├── level_2_agents.yaml     # Mid-level agents
+│   │   └── level_3_agents.yaml     # Top-level agents
+│   └── OpenCowork/                 # General computer-work assistant
 └── run_env_config/
     ├── llm_config.yaml             # LLM settings
-    └── tool_config.yaml            # Tool server settings
+    └── llm_config.example.yaml     # Example template
 ```
 
 ### Key Configuration Files
@@ -649,7 +646,7 @@ mla-agent \
 | `--task_id` | Workspace path (absolute) | Required |
 | `--user_input` | Task description | Required |
 | `--agent_name` | Agent to invoke | `alpha_agent` |
-| `--agent_system` | Agent library name | `Default` |
+| `--agent_system` | Agent library name | `Researcher` |
 | `--cli` | Interactive CLI mode | `false` |
 | `--jsonl` | JSONL output mode | `false` |
 | `--force-new` | Clear all state and start fresh | `false` |
@@ -667,20 +664,11 @@ mla-agent --task_id ~/project --user_input "Task" --auto-mode false
 
 ---
 
-### Managing Tool Server
+### Runtime Tool Execution
 
 ```bash
-# Start server (background)
-mla-tool-server start
-
-# Check status
-mla-tool-server status
-
-# Stop server
-mla-tool-server stop
-
-# Restart server
-mla-tool-server restart
+# Tools are executed in-process through direct-tools.
+# No standalone mla-tool-server process is required.
 ```
 
 ---
@@ -703,7 +691,7 @@ from core.agent_executor import AgentExecutor
 
 # Initialize components
 task_id = str(Path.home() / "my_project")
-agent_system = "Default"
+agent_system = "Researcher"
 
 config_loader = ConfigLoader(agent_system)
 hierarchy_manager = get_hierarchy_manager(task_id)
@@ -960,9 +948,9 @@ upload/
 
 ## 📖 Documentation
 
-- [Tool Server API Documentation](tool_server_lite/README.md) - 18 available tools
+- Runtime tools are executed in-process via direct-tools; no standalone tool server is required.
 - [Human-in-the-Loop API](tool_server_lite/HIL_API.md) - User interaction integration
-- [Configuration Examples](config/agent_library/Default/) - Agent YAML templates
+- [Configuration Examples](config/agent_library/Researcher/) - Agent YAML templates
 
 ---
 
