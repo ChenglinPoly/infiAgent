@@ -22,7 +22,7 @@ MLA Docker 版本特点：
 
 - ✅ **零依赖**：无需安装 Python 和依赖包
 - ✅ **开箱即用**：一行命令启动
-- ✅ **完整功能**：CLI、Tool Server、Config Web 全包含
+- ✅ **完整功能**：CLI、direct-tools、Config Web 全包含
 - ✅ **跨平台**：Mac、Linux、Windows 统一体验
 - ✅ **数据持久**：对话历史保存在宿主机
 
@@ -156,7 +156,6 @@ docker run -it --rm \
 
 **可编辑的配置：**
 - `llm_config.yaml` - LLM 配置
-- `tool_config.yaml` - 工具服务器配置
 - `general_prompts.yaml` - 通用提示词
 - `level_0_tools.yaml` - 工具定义
 - `level_1/2/3_agents.yaml` - 各层级智能体
@@ -322,17 +321,17 @@ docker logs -f mla-research
 
 ## 🐛 常见问题
 
-### Q1: 无法连接到 Tool Server
+### Q1: CLI 无法启动
 
-**症状：** CLI 启动后显示 "Tool Server failed to start"
+**症状：** 容器内 CLI 启动失败或直接退出
 
 **解决：**
 ```bash
-# 检查端口配置
-docker run --rm chenglinhku/mlav3:latest \
-  cat /app/config/run_env_config/tool_config.yaml
+# 查看镜像内帮助
+docker run --rm chenglinhku/mlav3:latest mla-agent --help
 
-# 确保端口一致（默认 8002）
+# 交互式启动 CLI
+docker run -it --rm chenglinhku/mlav3:latest cli
 ```
 
 ### Q2: 配置不生效
@@ -717,7 +716,6 @@ docker-compose run --rm mla-agent
 |------|------|------|
 | 4242 | Web UI 主界面 | Web UI 模式 ✅ |
 | 9641 | 配置管理界面 | 推荐 ✅ |
-| 8002 | Tool Server API | 必需 ✅ |
 | XXXX | Agent 开发端口 | 可选 |
 
 ### 快速启动 Web UI
@@ -756,11 +754,10 @@ docker logs -f mla
 ## 🎓 学习资源
 
 - [CLI 详细教程](CLI_GUIDE.md)
-- [配置文件说明](../config/agent_library/Default/)
-- [Tool Server API](../tool_server_lite/README.md)
+- [配置文件说明](../config/agent_library/Researcher/)
+- Runtime tools are executed in-process via direct-tools; no standalone Tool Server is required.
 - [主 README](../README.md)
 
 ---
 
 **开始使用 Docker 版 MLA V3，支持 CLI 和 Web UI 双模式！** 🐳
-

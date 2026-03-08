@@ -9,6 +9,8 @@ import yaml
 from typing import Dict, List, Any
 from pathlib import Path
 
+from utils.user_paths import get_user_data_root
+
 
 class ConfigLoader:
     """配置加载器，负责读取和合并agent配置"""
@@ -53,8 +55,9 @@ class ConfigLoader:
         # 1) 用户导入目录（用于桌面端打包后的可扩展配置）
         # 约定：MLA_AGENT_LIBRARY_DIR 指向包含 agent_library/ 的根目录（例如 ~/mla_v3）
         user_root = os.environ.get("MLA_AGENT_LIBRARY_DIR", "").strip()
-        if user_root:
-            candidates.append(Path(user_root) / "agent_library" / agent_system_name)
+        if not user_root:
+            user_root = str(get_user_data_root())
+        candidates.append(Path(user_root) / "agent_library" / agent_system_name)
 
         # 2) 项目内 config
         candidates.append(Path(self.config_root) / "agent_library" / agent_system_name)

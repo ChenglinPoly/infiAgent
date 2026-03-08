@@ -1,6 +1,0 @@
-# 工具服务器配置
-tools_server: "http://127.0.0.1:8002/"
-
-# 其他配置项可以在这里添加
-# timeout: 30
-# max_retries: 3 

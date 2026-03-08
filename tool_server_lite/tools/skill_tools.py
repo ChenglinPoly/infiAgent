@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Dict, Any
 
 from .file_tools import BaseTool, get_abs_path
+from utils.user_paths import get_user_skills_library_root
 
 
 class LoadSkillTool(BaseTool):
     """
-    Skill 部署工具 - 将指定 skill 从 ~/.mla_v3/skills_library/ 复制到 workspace/.skills/
+    Skill 部署工具 - 将指定 skill 从主 skills 目录（默认 ~/.agent/skills）复制到 workspace/.skills/
     
     部署后 Agent 可以通过 file_read 读取 .skills/{skill_name}/SKILL.md 获取详细指令，
     并通过 execute_command 运行 .skills/{skill_name}/scripts/ 中的脚本。
@@ -21,7 +22,7 @@ class LoadSkillTool(BaseTool):
     
     def __init__(self):
         super().__init__()
-        self.skills_library = Path.home() / "mla_v3" / "skills_library"  # 与 conversation_storage 同级
+        self.skills_library = get_user_skills_library_root()
     
     def execute(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -90,16 +91,21 @@ class LoadSkillTool(BaseTool):
             
             output = (
                 f"✅ Skill '{skill_name}' 已部署到 workspace\n"
-                f"   位置: ./skills/{skill_name}/\n"
+                f"   位置: ./.skills/{skill_name}/\n"
                 f"   文件数: {file_count}\n"
                 f"   结构:\n{structure_str}\n\n"
-                f"📖 下一步: 使用 file_read 读取 ./skills/{skill_name}/SKILL.md 获取详细指令"
+                f"📖 下一步: 使用 file_read 读取 ./.skills/{skill_name}/SKILL.md 获取详细指令"
             )
             
+            skill_md_text = source_skill_md.read_text(encoding='utf-8')
             return {
                 "status": "success",
                 "output": output,
-                "error": ""
+                "error": "",
+                "_skill_name": skill_name,
+                "_skill_abs_path": str(source_dir),
+                "_workspace_skill_path": str(target_dir),
+                "_skill_md_text": skill_md_text
             }
         
         except Exception as e:
@@ -108,3 +114,43 @@ class LoadSkillTool(BaseTool):
                 "output": "",
                 "error": f"部署 skill 失败: {str(e)}"
             }
+
+
+class OffloadSkillTool(BaseTool):
+    """
+    Skill 卸载工具 - 仅从当前运行上下文中卸载 skill.md 的注入内容。
+    不删除磁盘上的 skill 文件。
+    """
+
+    def execute(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        skill_name = str(parameters.get("skill_name") or "").strip()
+        if not skill_name:
+            return {
+                "status": "error",
+                "output": "",
+                "error": "缺少必需参数: skill_name"
+            }
+        return {
+            "status": "success",
+            "output": f"已请求从当前上下文卸载 skill: {skill_name}",
+            "error": "",
+            "_offload_skill_name": skill_name
+        }
+
+
+class FreshTool(BaseTool):
+    """
+    Fresh 工具 - 请求在安全点刷新运行时配置/工具注册/提示词缓存。
+    """
+
+    name = "fresh"
+
+    def execute(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        reason = str(parameters.get("reason") or "").strip()
+        return {
+            "status": "success",
+            "output": "已请求 fresh，系统将在安全点重载配置并续跑当前任务。",
+            "error": "",
+            "_fresh_requested": True,
+            "_fresh_reason": reason
+        }

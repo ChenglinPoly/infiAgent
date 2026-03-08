@@ -42,7 +42,7 @@ docker run -it --rm \
 ```bash
 mla-agent --cli \
   --task_id /custom/path \        # 自定义工作空间
-  --agent_system Default \        # 智能体系统
+  --agent_system Researcher \     # 智能体系统
   --auto-mode true               # 工具自动执行
 ```
 
@@ -365,14 +365,8 @@ CLI 使用 `prompt_toolkit` 和 `rich` 提供：
 ### CLI 无法启动
 
 ```bash
-# 检查工具服务器
-mla-tool-server status
-
-# 启动工具服务器
-mla-tool-server start
-
-# 等待 2 秒后再启动 CLI
-sleep 2 && mla-agent --cli
+# 直接启动 CLI（当前版本无需单独启动工具服务器）
+mla-agent --cli
 ```
 
 ### 智能体无响应
@@ -571,11 +565,10 @@ mla-agent --cli
 ## 📖 相关文档
 
 - [Docker 使用指南](DOCKER_GUIDE.md)
-- [配置文件说明](../config/agent_library/Default/)
-- [Tool Server API](../tool_server_lite/README.md)
+- [配置文件说明](../config/agent_library/Researcher/)
+- Runtime tools are executed in-process via direct-tools; no standalone Tool Server is required.
 - [主 README](../README.md)
 
 ---
 
 **掌握 CLI，高效使用 MLA！** 💻
-

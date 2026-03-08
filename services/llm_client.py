@@ -16,6 +16,8 @@ from pathlib import Path
 from litellm import completion  # 直接导入completion函数
 import litellm
 
+from utils.user_paths import ensure_user_llm_config_exists
+
 
 @dataclass
 class ChatMessage:
@@ -59,13 +61,7 @@ class SimpleLLMClient:
         """
         # 加载LLM配置
         if llm_config_path is None:
-            # 优先使用环境变量（桌面端打包后配置在用户目录）
-            env_path = os.environ.get("MLA_LLM_CONFIG_PATH", "").strip()
-            if env_path:
-                llm_config_path = Path(env_path)
-            else:
-                project_root = Path(__file__).parent.parent
-                llm_config_path = project_root / "config" / "run_env_config" / "llm_config.yaml"
+            llm_config_path = ensure_user_llm_config_exists()
         
         if not os.path.exists(llm_config_path):
             raise FileNotFoundError(f"LLM配置文件不存在: {llm_config_path}")

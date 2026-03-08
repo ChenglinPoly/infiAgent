@@ -8,6 +8,8 @@ from utils.windows_compat import safe_print
 from typing import Dict, List, Optional
 import json
 
+from utils.user_paths import get_user_skills_library_root
+
 
 class ContextBuilder:
     """构建XML结构化的Agent上下文（完整）"""
@@ -79,6 +81,8 @@ class ContextBuilder:
         user_agent_history = self._build_user_agent_history(task_id, current)
         structured_call_info = self._build_structured_call_info(current, agent_id)
         current_thinking = self._build_current_thinking(task_id, agent_id, current)
+        workspace_abs_path = task_id
+        skills_root_abs_path = str(get_user_skills_library_root())
         
         # 2.5️⃣ 构建可用 skills 列表（如果有）
         available_skills_xml = ""
@@ -87,6 +91,8 @@ class ContextBuilder:
                 available_skills_xml = self.skill_loader.build_available_skills_xml()
             except Exception:
                 pass
+
+        loaded_skills_xml = self._build_loaded_skills_xml(agent_id)
         
         # 3️⃣ 组装完整上下文（通用部分在最前面）
         full_context = f"""{general_system_prompt}
@@ -102,6 +108,14 @@ class ContextBuilder:
 <当前运行智能体名称>
 {agent_name}
 </当前运行智能体名称>
+
+<当前工作空间绝对路径>
+{workspace_abs_path}
+</当前工作空间绝对路径>
+
+<主Skills目录绝对路径>
+{skills_root_abs_path}
+</主Skills目录绝对路径>
 
 <结构化调用信息>
 {structured_call_info}
@@ -119,6 +133,9 @@ class ContextBuilder:
         # 3.5️⃣ 可选：包含可用 skills（仅当有 skills 时）
         if available_skills_xml:
             full_context += f"\n{available_skills_xml}\n"
+
+        if loaded_skills_xml:
+            full_context += f"\n{loaded_skills_xml}\n"
         
         # 4️⃣ 可选：包含历史动作（thinking/compression时包含，主LLM调用时不包含）
         if include_action_history:
@@ -130,6 +147,30 @@ class ContextBuilder:
 """
         
         return full_context
+
+    def _build_loaded_skills_xml(self, agent_id: str) -> str:
+        """构建当前已加载 skill 的注入内容。"""
+        try:
+            loaded_skills = self.hierarchy_manager.get_loaded_skills(agent_id)
+        except Exception:
+            loaded_skills = []
+
+        if not loaded_skills:
+            return ""
+
+        parts = ["<已加载技能内容>"]
+        for skill in loaded_skills:
+            parts.append(f'  <skill name="{skill.get("name", "")}">')
+            if skill.get("abs_path"):
+                parts.append(f'    <absolute_path>{skill["abs_path"]}</absolute_path>')
+            if skill.get("workspace_path"):
+                parts.append(f'    <workspace_path>{skill["workspace_path"]}</workspace_path>')
+            parts.append("    <skill_md>")
+            parts.append(str(skill.get("md_text", "")).strip())
+            parts.append("    </skill_md>")
+            parts.append("  </skill>")
+        parts.append("</已加载技能内容>")
+        return "\n".join(parts)
     
     def _load_general_system_prompt(self, agent_name: str) -> str:
         """
@@ -145,8 +186,10 @@ class ContextBuilder:
         import yaml
         from pathlib import Path
         
-        agent_system_name = self.config_loader.agent_system_name
-        prompts_file = Path(self.config_loader.config_root) / "agent_library" / agent_system_name / "general_prompts.yaml"
+        # Use the resolved agent system directory from ConfigLoader.
+        # This supports both bundled systems and user-imported systems
+        # under ~/mla_v3/agent_library/<system>/.
+        prompts_file = Path(self.config_loader.agent_config_dir) / "general_prompts.yaml"
         
         if not prompts_file.exists():
             return ""

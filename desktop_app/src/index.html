@@ -32,7 +32,7 @@
         <label class="section-label">Agent System</label>
         <select id="agent-system-select" class="sidebar-select">
           <option value="OpenCowork">OpenCowork</option>
-          <option value="Default">Default (Research)</option>
+          <option value="Researcher">Researcher</option>
         </select>
       </div>
 
@@ -259,6 +259,50 @@
             <textarea id="setting-extra-env" class="form-textarea" rows="4" placeholder="HTTP_PROXY=http://127.0.0.1:7890"></textarea>
           </div>
 
+          <div class="form-divider"></div>
+
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label class="form-label">Action Window Steps</label>
+              <input type="number" id="setting-action-window-steps" class="form-input" min="1" placeholder="10">
+            </div>
+            <div class="form-group form-half">
+              <label class="form-label">Thinking Interval</label>
+              <input type="number" id="setting-thinking-interval" class="form-input" min="1" placeholder="10">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label class="form-label">
+                <input type="checkbox" id="setting-fresh-enabled"> Enable scheduled fresh
+              </label>
+            </div>
+            <div class="form-group form-half">
+              <label class="form-label">Fresh Interval (seconds)</label>
+              <input type="number" id="setting-fresh-interval-sec" class="form-input" min="0" placeholder="0 = disabled">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Skills Root</label>
+            <p class="config-path"><code>~/.agent/skills</code></p>
+            <p class="form-hint-block">
+              这是当前主 skills 目录。导入 skill 或首次播种后，技能会放在这个目录下。
+            </p>
+            <div class="form-row" style="margin-top:10px; gap:10px;">
+              <button id="fresh-runtime-btn" class="btn-secondary" type="button">Fresh Runtime</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">MCP Servers <span class="form-hint">(one per line: JSON / name=url / url)</span></label>
+            <textarea id="setting-mcp-servers" class="form-textarea" rows="5" placeholder='{"name":"github","transport":"streamable_http","url":"https://example.com/mcp"}&#10;github=https://example.com/mcp&#10;https://example.com/mcp'></textarea>
+            <p class="form-hint-block">
+              MCP server 本身不是本地工具类。系统会连接这些 server，发现它们暴露的 tools，并把这些 tools 自动加入当前 agent 的可见工具集中。
+            </p>
+          </div>
+
           <div class="form-group">
             <label class="form-label">Marketplace Base URL</label>
             <input type="text" id="setting-market-url" class="form-input" placeholder="http://101.200.231.88">
@@ -297,7 +341,7 @@
       </div>
       
       <div class="modal-body">
-        <p class="modal-description">Import skill folders into <code>~/mla_v3/skills_library/</code>. Each skill folder should contain a <code>SKILL.md</code> file with frontmatter.</p>
+        <p class="modal-description">Import skill folders into <code>~/.agent/skills/</code>. Each skill folder should contain a <code>SKILL.md</code> file with frontmatter.</p>
         
         <div class="skills-toolbar">
           <button id="import-skill-btn" class="btn-primary">

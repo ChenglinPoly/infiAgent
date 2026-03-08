@@ -13,6 +13,8 @@ from typing import Optional
 from litellm import completion
 import litellm
 
+from utils.user_paths import ensure_user_llm_config_exists
+
 # 尝试导入 transcribe，如果不支持则使用替代方案
 try:
     from litellm import transcribe
@@ -39,19 +41,7 @@ class LLMClientLite:
         """
         # 加载LLM配置
         if llm_config_path is None:
-            # 优先使用环境变量（桌面端/容器外部覆盖）
-            env_path = os.environ.get("MLA_LLM_CONFIG_PATH", "").strip()
-            if env_path:
-                llm_config_path = env_path
-            else:
-                # 从tool_server_lite目录找到config
-                current_dir = Path(__file__).parent
-                config_path = current_dir.parent / "config" / "run_env_config" / "llm_config.yaml"
-                
-                if not config_path.exists():
-                    raise FileNotFoundError(f"LLM配置文件不存在: {config_path}")
-                
-                llm_config_path = str(config_path)
+            llm_config_path = str(ensure_user_llm_config_exists())
         
         if not os.path.exists(llm_config_path):
             raise FileNotFoundError(f"LLM配置文件不存在: {llm_config_path}")
@@ -674,8 +664,7 @@ def get_llm_client(force_reload: bool = False) -> LLMClientLite:
     
     # 确定配置文件路径
     if _config_file_path is None:
-        current_dir = Path(__file__).parent
-        _config_file_path = str(current_dir.parent / "config" / "run_env_config" / "llm_config.yaml")
+        _config_file_path = str(ensure_user_llm_config_exists())
     
     # 检查配置文件是否存在
     if not os.path.exists(_config_file_path):

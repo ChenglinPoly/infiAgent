@@ -7,6 +7,7 @@ Agent执行器 - 使用标准消息格式的核心执行逻辑
 from typing import Dict, List
 import sys
 import json
+import time
 import traceback
 from collections import OrderedDict
 
@@ -22,11 +23,18 @@ from core.context_builder import ContextBuilder
 from core.tool_executor import ToolExecutor
 from utils.conversation_storage import ConversationStorage
 from utils.event_emitter import get_event_emitter as get_jsonl_emitter
+from utils.skill_loader import reset_skill_loader
+from utils.user_paths import apply_runtime_env_defaults, get_runtime_settings
+from utils.runtime_control import pop_fresh_request
+from tool_server_lite.registry import reload_runtime_registry
+from tool_server_lite.tools.code_tools import has_running_background_processes
+from utils.mcp_manager import get_mcp_tools, reload_mcp_tools
 
 from .agent_event_emitter import AgentEventEmitter
 from .event_handlers import ConsoleLogHandler, JsonlStreamHandler
 from .events import *
 from utils.windows_compat import safe_print
+from utils.user_paths import get_runtime_settings
 
 
 class AgentExecutor:
@@ -50,9 +58,10 @@ class AgentExecutor:
         self._setup_event_emitter()
 
         # 从配置中提取信息
-        self.available_tools = agent_config.get("available_tools", [])
+        self.available_tools = list(agent_config.get("available_tools", []))
         self.max_turns = 10000000
         requested_model = agent_config.get("model_type", "claude-3-7-sonnet-20250219")
+        self._inject_mcp_tools()
         
         # 初始化LLM客户端
         self.llm_client = SimpleLLMClient()
@@ -96,9 +105,27 @@ class AgentExecutor:
         self.pending_tools = []  # 待执行的工具（用于恢复）
         self.latest_thinking = ""
         self.first_thinking_done = False
-        self.thinking_interval = 10  # 每10轮工具调用触发一次thinking
+        runtime = get_runtime_settings()
+        self.action_window_steps = runtime.get("action_window_steps", 10)
+        self.thinking_interval = runtime.get("thinking_interval", self.action_window_steps)
+        self.fresh_enabled = runtime.get("fresh_enabled", False)
+        self.fresh_interval_sec = runtime.get("fresh_interval_sec", 0)
+        self.last_fresh_at = time.time()
         self.tool_call_counter = 0
         self.llm_turn_counter = 0  # LLM调用轮次计数器（用于消息分组）
+
+    def _inject_mcp_tools(self):
+        """将 MCP 动态工具并入当前 Agent 的工具配置与可见工具列表。"""
+        try:
+            mcp_tools = get_mcp_tools(force_reload=False)
+            if not mcp_tools:
+                return
+            for tool_name, tool_config in mcp_tools.items():
+                self.config_loader.all_tools[tool_name] = tool_config
+                if tool_name not in self.available_tools:
+                    self.available_tools.append(tool_name)
+        except Exception:
+            pass
 
     def _setup_event_emitter(self):
         """初始化事件发射器并注册处理器"""
@@ -153,6 +180,8 @@ class AgentExecutor:
             ))
             
             try:
+                self._maybe_run_scheduled_fresh(task_id, user_input, turn)
+
                 # 每轮开始前保存状态
                 self._save_state(task_id, user_input, turn)
 
@@ -248,9 +277,10 @@ class AgentExecutor:
                 
                 self.llm_turn_counter += 1
                 
-                # 检查是否该触发thinking（每N轮工具调用）
-                # 用整除判断是否跨过了 thinking_interval 边界（避免多 tool_call 跳过边界值）
                 counter_before = self.tool_call_counter - len(llm_response.tool_calls)
+
+                # 检查是否该触发thinking（每 N 轮工具调用）
+                # 用整除判断是否跨过了 thinking_interval 边界（避免多 tool_call 跳过边界值）
                 crossed_boundary = (counter_before // self.thinking_interval) < (self.tool_call_counter // self.thinking_interval)
                 if self.tool_call_counter > 0 and crossed_boundary:
                     thinking_result = self._trigger_thinking(task_id, user_input, is_initial=False)
@@ -258,8 +288,12 @@ class AgentExecutor:
                         self.latest_thinking = thinking_result
                         self.hierarchy_manager.update_thinking(self.agent_id, thinking_result)
                         self._save_state(task_id, user_input, turn)
-                        self.action_history = []
-                        self.llm_turn_counter = 0  # 重置轮次计数器
+
+                # 检查动作窗口是否跨过边界：thinking 完成后再清空当前可见动作窗口
+                crossed_action_window = (counter_before // self.action_window_steps) < (self.tool_call_counter // self.action_window_steps)
+                if self.tool_call_counter > 0 and crossed_action_window:
+                    self.action_history = []
+                    self.llm_turn_counter = 0
             
             except Exception as e:
                 self._handle_execution_error(e)
@@ -526,6 +560,14 @@ class AgentExecutor:
             task_id
         )
 
+        self._handle_special_tool_side_effects(
+            tool_name=tool_call.name,
+            tool_result=tool_result,
+            task_id=task_id,
+            user_input=user_input,
+            turn=turn
+        )
+
         # ✅ 执行后从pending移除
         self.pending_tools = [t for t in self.pending_tools if t["id"] != tool_call.id]
         
@@ -553,7 +595,7 @@ class AgentExecutor:
         if tool_call.name == "image_read":
             image_base64_list = None
             
-            # ToolServer 的 _call_toolserver 会把工具返回值 json.dumps 到 output 字符串中
+            # 工具执行层会把工具返回值 json.dumps 到 output 字符串中
             # 所以 _image_base64_list 可能嵌套在 output 字符串里，需要解析提取
             output_str = tool_result.get("output", "")
             if isinstance(output_str, str) and ("_image_base64_list" in output_str or "_image_base64" in output_str):
@@ -576,7 +618,7 @@ class AgentExecutor:
                 except (json.JSONDecodeError, TypeError):
                     pass
             
-            # 也检查顶层（以防 ToolServer 未双重包装）
+            # 也检查顶层（以防未双重包装）
             if not image_base64_list:
                 top_list = tool_result.get("_image_base64_list")
                 top_single = tool_result.get("_image_base64")
@@ -618,6 +660,103 @@ class AgentExecutor:
         if tool_call.name == "final_output":
             return tool_result
         return None
+
+    def _handle_special_tool_side_effects(self, tool_name: str, tool_result: Dict, task_id: str, user_input: str, turn: int):
+        """处理 load_skill / offload_skill / fresh 等特殊副作用。"""
+        if tool_name == "load_skill" and tool_result.get("status") == "success":
+            skill_name = tool_result.get("_skill_name")
+            if skill_name:
+                self.hierarchy_manager.add_loaded_skill(self.agent_id, {
+                    "name": skill_name,
+                    "abs_path": tool_result.get("_skill_abs_path", ""),
+                    "workspace_path": tool_result.get("_workspace_skill_path", ""),
+                    "md_text": tool_result.get("_skill_md_text", "")
+                })
+            for k in ["_skill_name", "_skill_abs_path", "_workspace_skill_path", "_skill_md_text"]:
+                tool_result.pop(k, None)
+
+        elif tool_name == "offload_skill" and tool_result.get("status") == "success":
+            skill_name = tool_result.get("_offload_skill_name")
+            if skill_name:
+                self.hierarchy_manager.remove_loaded_skill(self.agent_id, skill_name)
+            tool_result.pop("_offload_skill_name", None)
+
+        elif tool_name == "fresh" and tool_result.get("_fresh_requested"):
+            reason = tool_result.get("_fresh_reason") or "manual fresh requested"
+            ok, msg = self._perform_fresh(task_id, user_input, turn, reason)
+            if ok:
+                tool_result["output"] = f"{tool_result.get('output', '').strip()}\n\n{msg}".strip()
+            else:
+                tool_result["status"] = "error"
+                tool_result["error"] = msg
+                tool_result["output"] = ""
+            tool_result.pop("_fresh_requested", None)
+            tool_result.pop("_fresh_reason", None)
+
+    def _maybe_run_scheduled_fresh(self, task_id: str, user_input: str, turn: int):
+        external_reason = pop_fresh_request()
+        if external_reason:
+            self._perform_fresh(task_id, user_input, turn, external_reason)
+            return
+        if not self.fresh_enabled or self.fresh_interval_sec <= 0:
+            return
+        if time.time() - self.last_fresh_at < self.fresh_interval_sec:
+            return
+        self._perform_fresh(task_id, user_input, turn, "scheduled fresh")
+
+    def _perform_fresh(self, task_id: str, user_input: str, turn: int, reason: str):
+        """
+        在安全点刷新运行时配置/注册表/skill缓存，并继续当前任务。
+        """
+        if has_running_background_processes(task_id):
+            return False, "当前仍有后台工具在运行，暂不允许 fresh。请等待后台工具结束后再刷新。"
+
+        self.event_emitter.dispatch(CliDisplayEvent(
+            message=f"🔄 Fresh 开始: {reason}",
+            style='info'
+        ))
+
+        apply_runtime_env_defaults()
+        reset_skill_loader()
+        reload_runtime_registry()
+        reload_mcp_tools()
+
+        # 重新读取运行时参数
+        runtime = get_runtime_settings()
+        self.action_window_steps = runtime.get("action_window_steps", 10)
+        self.thinking_interval = runtime.get("thinking_interval", self.action_window_steps)
+        self.fresh_enabled = runtime.get("fresh_enabled", False)
+        self.fresh_interval_sec = runtime.get("fresh_interval_sec", 0)
+        self.last_fresh_at = time.time()
+
+        # 重新加载 config_loader / agent_config / llm_client / context_builder / tool_executor
+        loader_cls = self.config_loader.__class__
+        self.config_loader = loader_cls(self.config_loader.agent_system_name)
+        self.agent_config = self.config_loader.get_tool_config(self.agent_name)
+        self.available_tools = list(self.agent_config.get("available_tools", []))
+        self._inject_mcp_tools()
+
+        self.llm_client = SimpleLLMClient()
+        self.llm_client.set_tools_config(self.config_loader.all_tools)
+        requested_model = self.agent_config.get("model_type", self.model_type)
+        available_models = self.llm_client.models
+        self.model_type = requested_model if requested_model in available_models else available_models[0]
+
+        self.context_builder = ContextBuilder(
+            self.hierarchy_manager,
+            agent_config=self.agent_config,
+            config_loader=self.config_loader,
+            llm_client=self.llm_client,
+            max_context_window=self.llm_client.max_context_window
+        )
+        self.tool_executor = ToolExecutor(self.config_loader, self.hierarchy_manager, direct_mode=True)
+
+        self._save_state(task_id, user_input, turn)
+        self.event_emitter.dispatch(CliDisplayEvent(
+            message=f"✅ Fresh 完成，已重载配置/工具注册/skills 缓存，并继续当前任务",
+            style='success'
+        ))
+        return True, "Fresh 完成，已重载配置/工具注册/skills 缓存，并继续当前任务。"
 
     def _handle_execution_error(self, e: Exception):
         """统一处理执行过程中的异常"""

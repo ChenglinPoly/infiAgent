@@ -21,7 +21,7 @@
                         <label for="task-id">Task ID:</label>
                         <div style="display: flex; gap: 8px; align-items: stretch;">
                             <select id="agent-system-select" class="btn-secondary" title="Select Agent System" style="min-width: 120px;">
-                                <option value="Default">Default</option>
+                                <option value="Researcher">Researcher</option>
                             </select>
                             <button id="agent-select-btn" class="btn-secondary" title="Select Agent" style="min-width: 150px; white-space: nowrap;">
                                 <i class="fas fa-robot"></i> <span id="agent-select-text">alpha_agent</span>
@@ -36,6 +36,7 @@
                             <button id="copy-task-btn" class="btn-secondary">Copy Task</button>
                             <button id="download-task-btn" class="btn-secondary">Download Task</button>
                             <button id="config-btn" class="btn-secondary" title="Configuration"><i class="fas fa-cog"></i> Config</button>
+                            <button id="tools-btn" class="btn-secondary" title="Manage Python Tools"><i class="fas fa-wrench"></i> Tools</button>
                         </div>
                     </div>
                 </div>
@@ -100,6 +101,28 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Tools Modal -->
+        <div id="tools-modal" class="config-modal" style="display: none;">
+            <div class="config-modal-content tools-modal-content">
+                <div class="config-modal-header">
+                    <h2><i class="fas fa-wrench"></i> Runtime Tools</h2>
+                    <button id="close-tools-btn" class="btn-icon" title="Close"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="tools-modal-body">
+                    <div class="tools-toolbar">
+                        <button id="upload-tool-btn" class="btn-primary"><i class="fas fa-upload"></i> Upload Python Tool</button>
+                        <button id="reload-tools-btn" class="btn-secondary"><i class="fas fa-sync-alt"></i> Reload Registry</button>
+                    </div>
+                    <div class="tools-help">
+                        Upload a Python file that defines one public tool class. Tool description and parameters are still controlled by your `agent_library` YAML files.
+                    </div>
+                    <div id="tools-status" class="config-status"></div>
+                    <div id="tools-list" class="tools-list"></div>
+                </div>
+            </div>
+            <input type="file" id="tool-upload-input" style="display: none;" accept=".py">
         </div>
 
         <!-- Agent Selection Modal -->

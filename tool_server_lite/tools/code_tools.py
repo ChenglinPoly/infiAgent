@@ -26,6 +26,29 @@ TERMINAL_SESSION_WINDOW_ID = None
 TERMINAL_SESSION_TAB_TITLE = "infiAgent-exec"
 
 
+def has_running_background_processes(task_id: str = None) -> bool:
+    """检查是否存在仍在运行的后台进程。"""
+    stale = []
+    for proc_id, info in BACKGROUND_PROCESSES.items():
+        process = info.get("process_obj")
+        if info.get("mode") == "system_terminal":
+            exit_file = info.get("exit_file")
+            running = not (exit_file and Path(exit_file).exists())
+        else:
+            running = bool(process and process.poll() is None)
+
+        if not running:
+            stale.append(proc_id)
+            continue
+
+        if task_id is None or str(info.get("task_id")) == str(task_id):
+            return True
+
+    for proc_id in stale:
+        BACKGROUND_PROCESSES.pop(proc_id, None)
+    return False
+
+
 class ExecuteCodeTool(BaseTool):
     """代码执行工具（支持虚拟环境）"""
     

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 停止 Web UI 服务器和工具服务器
+# 停止 Web UI 服务器
 
 # 设置 UTF-8 编码（兼容 macOS）
 export LANG=${LANG:-en_US.UTF-8}
@@ -24,18 +24,6 @@ else
             printf "      ⚠️  无法终止进程 %s\n" "$PID"
         fi
     done
-fi
-
-# 停止工具服务器（使用新的 mla-tool-server 命令）
-printf "   🛑 停止工具服务器...\n"
-if command -v mla-tool-server &> /dev/null; then
-    if mla-tool-server stop; then
-        printf "      ✅ 工具服务器已停止\n"
-    else
-        printf "      ℹ️  工具服务器未运行或已停止\n"
-    fi
-else
-    printf "      ⚠️  未找到 mla-tool-server 命令，跳过工具服务器停止\n"
 fi
 
 # 等待一下，然后检查

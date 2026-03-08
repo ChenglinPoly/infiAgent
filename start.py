@@ -65,9 +65,14 @@ if __name__ == "__main__" and not hasattr(sys, '_mla_path_checked'):
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+from utils.user_paths import apply_runtime_env_defaults
+from utils.runtime_control import request_fresh
 from utils.config_loader import ConfigLoader
 from core.hierarchy_manager import get_hierarchy_manager
 from core.agent_executor import AgentExecutor
+
+# 统一运行时默认环境：用户目录配置 / agent_library / skills_library / command_mode
+apply_runtime_env_defaults()
 
 
 def main():
@@ -78,16 +83,9 @@ def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='MLA V3 - Multi-Level Agent System')
     
-    # 子命令
-    subparsers = parser.add_subparsers(dest='command', help='命令')
-    
-    # respond 子命令（HIL 响应）
-    respond_parser = subparsers.add_parser('respond', help='响应 HIL 任务')
-    respond_parser.add_argument('hil_id', type=str, help='HIL 任务 ID')
-    respond_parser.add_argument('response', type=str, help='用户响应内容（可以是任何文本）')
     # 主命令参数
     parser.add_argument('--task_id', type=str, help='任务ID（绝对路径，作为workspace）')
-    parser.add_argument('--agent_system', type=str, default='Default', help='Agent系统名称')
+    parser.add_argument('--agent_system', type=str, default='Researcher', help='Agent系统名称')
     #parser.add_argument('--agent_system', type=str, default='Test_agent', help='Agent系统名称')
     parser.add_argument('--agent_name', type=str, default='alpha_agent', help='启动的Agent名称')
     parser.add_argument('--user_input', type=str, help='用户输入/任务描述')
@@ -99,7 +97,7 @@ def main():
     parser.add_argument('--config-file', type=str, help='使用自定义配置文件路径')
     parser.add_argument('--force-new', action='store_true', help='强制清空所有状态，开始新任务')
     parser.add_argument('--auto-mode', type=str, choices=['true', 'false'], help='工具执行模式：true=自动执行，false=需要确认')
-    parser.add_argument('--direct-tools', action='store_true', help='使用进程内直接调用工具（不依赖 ToolServer HTTP 服务）')
+    parser.add_argument('--direct-tools', action='store_true', help='兼容旧参数；当前后端始终使用进程内 direct-tools 模式')
     
     args = parser.parse_args()
     
@@ -118,37 +116,6 @@ def main():
             # 可选：记录日志用于调试
             # print(f"[调试] 编码修复失败: {e}", file=sys.stderr)
             pass
-    
-    # 处理 respond 命令
-    if args.command == 'respond':
-        import requests
-        import yaml
-        
-        # 读取工具服务器地址
-        config_path = Path(__file__).parent / "config" / "run_env_config" / "tool_config.yaml"
-        with open(config_path, 'r', encoding='utf-8') as f:
-            tool_config = yaml.safe_load(f)
-        server_url = tool_config.get('tools_server', 'http://127.0.0.1:8001').rstrip('/')
-        
-        # 调用 HIL 响应 API
-        try:
-            response = requests.post(
-                f"{server_url}/api/hil/respond/{args.hil_id}",
-                json={"response": args.response},
-                timeout=5
-            )
-            result = response.json()
-            
-            if result.get('success'):
-                print(f"✅ HIL 任务已响应: {args.hil_id}")
-                print(f"   内容: {args.response}")
-                return 0
-            else:
-                print(f"❌ 响应失败: {result.get('error', 'Unknown error')}")
-                return 1 
-        except Exception as e:
-            print(f"❌ 连接工具服务器失败: {e}")
-            return 1
     
     # 处理 CLI 模式
     if args.cli:
@@ -186,12 +153,13 @@ def main():
     # 本进程在 direct-tools 模式下会在同一进程内维护 HIL_TASKS，收到回复后直接 respond_hil_task 即可让 human_in_loop 工具继续执行。
     def _start_stdin_control_thread():
         try:
-            from tool_server_lite.tools.human_tools import respond_hil_task
+            from tool_server_lite.tools.human_tools import respond_hil_task, respond_tool_confirmation
         except Exception:
             respond_hil_task = None
+            respond_tool_confirmation = None
         
         def _worker():
-            if respond_hil_task is None:
+            if respond_hil_task is None and respond_tool_confirmation is None:
                 return
             try:
                 for line in sys.stdin:
@@ -204,16 +172,31 @@ def main():
                         continue
                     if not isinstance(msg, dict):
                         continue
-                    if msg.get("type") != "hil_response":
-                        continue
-                    hil_id = (msg.get("hil_id") or "").strip()
-                    response = msg.get("response")
-                    if not hil_id or response is None:
-                        continue
-                    try:
-                        respond_hil_task(hil_id, str(response))
-                    except Exception:
-                        continue
+                    msg_type = (msg.get("type") or "").strip()
+                    if msg_type == "hil_response" and respond_hil_task is not None:
+                        hil_id = (msg.get("hil_id") or "").strip()
+                        response = msg.get("response")
+                        if not hil_id or response is None:
+                            continue
+                        try:
+                            respond_hil_task(hil_id, str(response))
+                        except Exception:
+                            continue
+                    elif msg_type == "tool_confirmation_response" and respond_tool_confirmation is not None:
+                        confirm_id = (msg.get("confirm_id") or "").strip()
+                        approved = msg.get("approved")
+                        if not confirm_id or approved is None:
+                            continue
+                        try:
+                            respond_tool_confirmation(confirm_id, bool(approved))
+                        except Exception:
+                            continue
+                    elif msg_type == "fresh_request":
+                        reason = msg.get("reason") or ""
+                        try:
+                            request_fresh(str(reason))
+                        except Exception:
+                            continue
             except Exception:
                 # 控制通道异常不应影响主流程
                 return
@@ -393,4 +376,3 @@ def main():
 if __name__ == "__main__":
     exit_code = main()
     sys.exit(exit_code)
-

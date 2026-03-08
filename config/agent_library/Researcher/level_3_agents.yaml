@@ -10,6 +10,8 @@ tools:
       - create_figures_agent
       - human_in_loop
       - load_skill
+      - offload_skill
+      - fresh
       - judge_agent
       - file_read
       - file_write
@@ -20,6 +22,7 @@ tools:
       - reference_add
       - reference_delete
       - final_output
+      - execute_command
     max_turns: 100
     model_type: claude-3-7-sonnet-20250219
     prompts:

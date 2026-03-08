@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from .file_tools import BaseTool, get_abs_path
+from utils.user_paths import ensure_user_llm_config_exists
 
 # NOTE:
 # 以前这里用 `sys.path` hack + `from llm_client_lite import ...`，
@@ -24,7 +25,7 @@ class ImageReadTool(BaseTool):
     1. multimodal 模式：读取图片转 base64，嵌入到主模型 messages 中（主模型直接看图）
     2. text-only 模式：调用 Vision LLM 分析图片，返回文字描述
     
-    mode 由 ToolServer 启动时从 llm_config.yaml 的 multimodal 字段读取决定
+    mode 由运行时从 llm_config.yaml 的 multimodal 字段读取决定
     """
     
     def __init__(self):
@@ -36,11 +37,7 @@ class ImageReadTool(BaseTool):
         """从 llm_config.yaml 读取 multimodal 配置（每次读取，不缓存，确保配置修改后即时生效）"""
         try:
             import yaml
-            env_path = os.environ.get("MLA_LLM_CONFIG_PATH", "").strip()
-            if env_path:
-                config_path = Path(env_path)
-            else:
-                config_path = Path(__file__).parent.parent.parent / "config" / "run_env_config" / "llm_config.yaml"
+            config_path = ensure_user_llm_config_exists()
             if config_path.exists():
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = yaml.safe_load(f)

@@ -1,12 +1,14 @@
 <div align="center">
   <img src="assets/logo.png" alt="infiAgent Logo" width="200">
 
-  <h1>MLA V3 - Build Domain-Specific SOTA-Level AI Agents</h1>
+  <h1>MLA V3 / infiAgent</h1>
+
+  <p>Long-running multi-agent automation for research and real-world computer work.</p>
 
   <p>
     <img src="https://img.shields.io/badge/version-3.0.0-blue.svg" alt="Version">
-    <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
-    <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
+    <img src="https://img.shields.io/badge/python-3.9%2B-green.svg" alt="Python">
+    <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License">
   </p>
 
   <p>
@@ -14,139 +16,74 @@
   </p>
 </div>
 
----
+## Introduction
 
-## 🌟 Introduction
+`infiAgent` (also called `MLA V3`, Multi-Level Agent) is a Python-first agent framework for tasks that do not finish in one short chat turn. It is built around persistent workspace state, resumable execution, hierarchical agent orchestration, and file-based memory rather than a single growing prompt.
 
-**infiAgent Also called MLA (Multi-Level Agent)** is an agent framework designed for **unlimited runtime** without tool calling chaos or system crashes caused by cumulative task resources and conversation history. With MLA, you can build powerful general-purpose and semi-specialized agents simply by writing configuration files.
+The repository now ships more than the original CLI runtime:
 
-### Key Features
+- `Researcher`: the bundled long-horizon research system with multi-level agent orchestration.
+- `OpenCowork`: a flatter workspace assistant for coding, document work, file operations, and tool-heavy tasks.
+- `Desktop app`: Electron client with packaged Python backend support, per-task logs, runtime settings, skills import, MCP settings, and marketplace integration.
+- `Web UI`: browser client with JSONL streaming, HIL handling, system selection, resume support, and task file browser.
+- `Python SDK`: embed the runtime directly from Python with configurable action windows, thinking interval, fresh reload, and MCP servers.
 
-- ✅ **Days-Long Complex Tasks**: Supports continuous execution over days without context accumulation or compression degradation. Any interruption (crash, network error, manual stop) can be fully recovered via Resume — true breakpoint continuation.
-- ✅ **Agent Skills Standard**: Compatible with the [Agent Skills open standard](https://agentskills.io/). Drop skill folders into the skills library and agents will discover, load, and execute them on demand.
-- ✅ **Flexible Agent Architecture**: Supports both **multi-level hierarchy** (tree-structured orchestration for complex domain tasks — e.g., the Default config enables long-running scientific research with paper generation) and **flat architecture** (single agent with one sub-agent + Skills for broad general-purpose tasks — e.g., the OpenCowork config).
-- ✅ **Persistent Memory**: File-directory-based memory system. Launch agents in the same workspace directory and they remember all historical tasks across sessions — no external database required.
+## Current Capabilities
 
-### Update & News🔥
+- Long-running task execution with resume after interruption.
+- Hierarchical or flat agent systems loaded from YAML.
+- File-based memory scoped to the current workspace.
+- Direct in-process tool execution. No standalone tool server is required.
+- Agent Skills support via the [Agent Skills standard](https://agentskills.io/).
+- Runtime tuning for `action_window_steps`, `thinking_interval`, and scheduled/manual `fresh`.
+- Dynamic MCP tool discovery from configured MCP servers.
+- Desktop-side environment controls: PATH mode, extra env vars, command mode, skills root, marketplace URL.
+- Multimodal and text-only model flows.
+- CLI, Web UI, Desktop app, JSONL streaming, and Python SDK integration.
 
-If you pulled the image or code before the latest update date, please refer to the issues that have been fixed and, based on your needs, pull the image and code again.
+## Recent Updates
 
-- [2026/02/07] **Agent Skills Support!** InfiAgent now supports the [Agent Skills open standard](https://agentskills.io/). Skills are folders of instructions, scripts, and resources that agents can dynamically load to improve performance on specialized tasks. Docker users: place skill folders in `~/.mla_v3/skills_library/` (mounted to `/root/mla_v3/skills_library/` inside the container). Local developers: place them in `~/mla_v3/skills_library/`. Windows users: `%USERPROFILE%\mla_v3\skills_library\`. The agent will automatically discover available skills and deploy them to the workspace on demand via `load_skill` tool.
+- 2026-02-09: packaged macOS desktop release published on the repo [Releases](https://github.com/ChenglinPoly/infiAgent/releases).
+- 2026-02-07: Agent Skills support, multi-provider model config, Web UI resume/system selector, and multimodal message split landed on `main`.
+- Current `desktop-app` work adds packaged-backend build scripts, Electron runtime settings, per-task logs, marketplace server integration, Python SDK packaging, MCP runtime support, and configurable execution cadence.
 
-- [2026/02/07] **Multi-Provider Model Support!** You can now use models from different providers in the same configuration. Each model can optionally override `api_key` and `base_url` to use a different provider. Different sub-agents can use different models. See `llm_config.example.yaml` for configuration details.
+## Quick Start
 
-- [2026/02/07] **Web UI Enhancements:** Added Resume button for recovering interrupted tasks (same as CLI `/resume`). Added Agent System selector to freely switch between Default (academic research) and Open Cowork systems. User inputs now automatically include timestamps (consistent with CLI behavior).
+### Option 1: Desktop App
 
-- [2026/02/07] **Multimodal Message Architecture:** Separated multimodal and text-only message logic. For multimodal models, images from `image_read` are embedded directly in the conversation context for native understanding. Text-only models retain the external vision tool approach. Configure via `multimodal` and `compressor_multimodal` in `llm_config.yaml`.
+If you want a packaged client, use the macOS release from the repo Releases page. The desktop source lives in [`desktop_app/`](desktop_app/) and the packaged backend build scripts live in [`backend_build/`](backend_build/).
 
-- [2026/01/17] We introduce a new configuration profile, Open Cowork, which delivers a computer-work assistant similar to Anthropic's Cowork. After entering a user-specified working directory, the assistant can perform a wide range of tasks, including but not limited to: organizing folders, creating PowerPoint presentations, processing and categorizing bills and invoices in multiple formats, conducting in-depth research, and writing project code. The system is built on the InfiAgent architecture, preserving its long-horizon execution capabilities and unbounded, file-system–level memory within the same workspace. Open Cowork supports CLI, Docker-based CLI, and Web UI modes. In Web UI, use the Agent System selector to switch between Default and OpenCowork. A demonstration video is available for more details.
+For source builds:
 
-**Open Cowork Demo Videos:**
+```bash
+cd desktop_app
+npm install
+npm run start
+```
 
+To build a mac app bundle from source:
 
-  [![Desktop Organization & File Management](https://img.youtube.com/vi/IuTVRPIIW-s/hqdefault.jpg)](https://www.youtube.com/watch?v=IuTVRPIIW-s)
+```bash
+cd desktop_app
+npm run build:mac
+```
 
+Notes:
 
-  [![PowerPoint Creation](https://img.youtube.com/vi/uuxAvCLIX9M/hqdefault.jpg)](https://www.youtube.com/watch?v=uuxAvCLIX9M)
+- The desktop client defaults to `OpenCowork`.
+- Runtime settings are stored under `~/mla_v3/config/app_config.json`.
+- User-editable model config is stored at `~/mla_v3/config/llm_config.yaml`.
 
-
-
-
-- [2026/01/13] Supports breakpoint recovery for program errors (the original Ctrl+C resume function is retained). Please access the resume function using your CLI version and type /resume.
-
-- [2026/01/08] Our Paper "[InfiAgent: An Infinite-Horizon Framework for General-Purpose Autonomous Agents](https://arxiv.org/abs/2601.03204)" released
-
-- [2026/01/07] Web UI: This is a temporary fix for the "处理事件异常: 'int' object has no attribute 'get'". It will not affect subsequent agent output or operation, but the error will still be displayed. A full fix is ​​pending.
-
-- [2026/01/06] Web UI: add an entry-agent selector next to Task ID so you can choose the root agent for the conversation, with an agent list and a visual agent tree for the selected root.
-
-- [2026/01/05] Resolves global freeze caused by prolonged unresponsiveness of the primary token. Please update code or pull latest docker image!
-
-- [2026/01/04] Support different Language of Agent output base on user input.
-
-- [2026/01/03] Optimize LiteLLM’s native retry mechanism by enhancing error-aware retry prompts to improve small-model call success rates; add connection timeout detection to reduce task interruption risks.
-
-- [2026/01/02] Install and how use vedio please click <a href="https://www.bilibili.com/video/BV142vQB2EDu/?share_source=copy_web&vd_source=8f099df5d40b73e936381e57d7fc05aa
-">infiagent:全自动写作工具</a>
-
-- [2026/01/02] fix some bugs about reference manage, Please clone latest repo or pull latest docker image: chenglinhku/mlav3.
-
-- [2026/01/01] support web_ui and qwen api. Also fix some problem when using third part oepnai format api. please using latest chenglinhku/mlav3 docker image and see the example configs.
-
-- [2025/12/31] support gemini api key from google ai studio now. Please See the gemini config in dir. 
-
-
-Attention: Current coding task only support python project. Other language may supported later. In old version execute_command only support safe command like cd or grep，now it include every commands including rm. Please try to use it in docker mode if your task may edit system file.
-
-## 🎬 Outputs
-
-complete academic papers generated by MLA:
-
-**Demo 1:**
-
-<p align="center">
-  <img src="assets/paper_generation_demo_1.gif" alt="Paper Generation Demo 1" width="800">
-</p>
-
-**Demo 2:**
-
-<p align="center">
-  <img src="assets/paper1.png" alt="Paper Generation Demo 2" width="800">
-</p>
-
-**Demo 3:**
-
-<p align="center">
-  <img src="assets/paper2.png" alt="Paper Generation Demo 3" width="800">
-</p>
-
-MLA handles the entire research workflow - from literature search and experiment design to code execution, figure generation, and LaTeX paper writing. All automatically orchestrated through multi-level agents.
-
----
-
-## 📚 Table of Contents
-
-- [See It In Action](#-see-it-in-action)
-- [Quick Start](#-quick-start)
-- [How It Works](#-how-it-works)
-- [Interface Screenshots](#-interface-screenshots)
-- [Configuration Guide](#-configuration-guide)
-- [CLI Interface](#-cli-interface)
-- [SDK Integration](#-sdk-integration)
-- [Example Outputs](#-example-outputs)
-
----
-
-## 🚀 Quick Start
-
-### Vedio of Docker Mode:
-
-<a href="https://www.bilibili.com/video/BV142vQB2EDu/?share_source=copy_web&vd_source=8f099df5d40b73e936381e57d7fc05aa
-">infiagent:全自动写作工具</a>
-
-### Option 1: Docker (Recommended - No Python Required)
-
-**1. Install Docker**
-- Mac/Windows: [Docker Desktop](https://www.docker.com/products/docker-desktop)
-- Linux: `curl -fsSL https://get.docker.com | sh`
-
-**2. Pull Image**
+### Option 2: Docker
 
 ```bash
 docker pull chenglinhku/mlav3:latest
 ```
 
-**3. Choose Your Mode**
-
-### Option A: Web UI Mode (Recommended)
-
-Attention：WEB UI does not support Cowork. Please Use CLI Mode.
-
-open localhost:9641 to set keys and base url.
+Web UI mode:
 
 ```bash
 cd /your/workspace
-# XXXX is optional port for agent web development (replace with your port like 5002)
 docker run -d --name mla \
   -e HOST_PWD=$(pwd) \
   -v $(pwd):/workspace$(pwd) \
@@ -159,20 +96,15 @@ docker run -d --name mla \
   chenglinhku/mlav3:latest webui && docker logs -f mla
 ```
 
-Then open browser: `http://localhost:4242`
-default username：user defaultpassword：password
+Then open:
 
-<p align="center">
-  <img src="assets/web_ui.png" alt="Paper Generation Demo 2" width="800">
-</p>
+- Web UI: `http://localhost:4242`
+- Config page: `http://localhost:9641`
 
-📖 **Web UI usage & UI details**: see [web_ui/README.md](web_ui/README.md).
-
-### Option B: CLI Mode
+CLI mode:
 
 ```bash
 cd /your/workspace
-# XXXX is optional port for agent web development (replace with your port like 5002)
 docker run -it --rm \
   -e HOST_PWD=$(pwd) \
   -v $(pwd):/workspace$(pwd) \
@@ -184,826 +116,229 @@ docker run -it --rm \
   chenglinhku/mlav3:latest cli
 ```
 
-**Windows Users:**
+### Option 3: Local Installation
 
-Windows users need to manage conversation IDs manually. Different task IDs maintain different memories.
-
-```powershell
-# CLI Mode (PowerShell)
-docker run -it --rm `
-  -e HOST_PWD="/{your_conversation_id}" `
-  -v "${PWD}:/workspace/{your_conversation_id}" `
-  -v "${HOME}\.mla_v3:/root/mla_v3" `
-  -v mla-config:/mla_config `
-  -p 8002:8002 `
-  -p 9641:9641 `
-  -p 5002:5002 `
-  chenglinhku/mlav3:latest cli
-
-# Web UI Mode (PowerShell)
-docker run -d --name mla-webui `
-  -e HOST_PWD="/{your_conversation_id}" `
-  -v "${PWD}:/workspace/{your_conversation_id}" `
-  -v "${HOME}\.mla_v3:/root/mla_v3" `
-  -v mla-config:/mla_config `
-  -p 8002:8002 `
-  -p 9641:9641 `
-  -p 4242:4242 `
-  -p 5002:5002 `
-  chenglinhku/mlav3:latest webui
-
-# Then open browser: http://localhost:4242
-# View logs: docker logs -f mla-webui
-```
-
-**4. Configure API Key**
-
-Open browser: `http://localhost:9641`
-
-<p align="center">
-  <img src="assets/config_web_screen_shot.png" alt="Configuration Web Interface" width="800">
-</p>
-
-Edit `run_env_config/llm_config.yaml`, fill in your API key, and save.
-
-**🎉 Done!** Start using MLA CLI.
-
-📖 **[Complete Docker Guide](docs/DOCKER_GUIDE.md)**
-
----
-
-### Option 2: Local Installation (Python Required)
-
-**1. Install the package**
+Python `3.9+` is supported. If you need MCP support through the packaged `mcp` dependency, use Python `3.10+`.
 
 ```bash
-# Ensure Python version > 3.10
-cd install_path
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
 git clone https://github.com/ChenglinPoly/infiAgent.git
 cd infiAgent
+python -m venv .venv
+source .venv/bin/activate
 pip install -e .
-```
-
-**2. Install Playwright**
-
-```bash
 playwright install chromium
 ```
 
-**3. Configure API Key**
+Configure your model endpoint:
 
 ```bash
+mla-agent --config-show
 mla-agent --config-set api_key "your-api-key"
 ```
 
-**4. Start Tool Server**
-
-```bash
-mla-tool-server start
-```
-
-**5. Start CLI**
+Start the CLI:
 
 ```bash
 cd /your/workspace
 mla-agent --cli
 ```
 
-📖 **[Complete CLI Guide](docs/CLI_GUIDE.md)**
+Notes:
 
----
+- CLI and Web UI now default to `Researcher`.
+- `llm_config.yaml` is copied into `~/mla_v3/config/` on first run.
+- Built-in agent systems and bundled skills are seeded into the user directories if missing.
 
-## 🎯 How It Works
+## How It Works
 
-MLA's design philosophy is **"Provide short but high-value context for the next step."** To achieve this, the framework implements multiple innovations:
+### Agent Systems
 
-### 1. 🌲 Serial Multi-Agent System
+Bundled systems live under [`config/agent_library/`](config/agent_library/):
 
-MLA deploys agents in a **tree-structured hierarchy** (e.g., Grandparent → Parent → Child). This ensures:
+- `Researcher`: layered agents for literature search, document parsing, coding, experiments, and paper writing.
+- `OpenCowork`: flatter workspace assistant for general computer work.
 
-- ✅ **Single-purpose agents**: Each agent has a focused role
-- ✅ **Minimal tool sets**: Agents only access necessary tools
-- ✅ **Task alignment**: Serial execution prevents parallel conflicts
-- ✅ **Clear delegation**: Parent agents orchestrate child agents
+`ConfigLoader` first checks the user data root, then falls back to the repo copy. That lets the desktop client and marketplace import new agent systems without editing the repo.
 
-**Example Hierarchy:**
-```
-alpha_agent (Level 3)
-  ├── data_collection_agent (Level 2)
-  │   └── web_search_agent (Level 1)
-  ├── coder_agent (Level 2)
-  └── material_to_document_agent (Level 2)
-```
+### Runtime Model
 
-### 2. 🎯 Nested Attention Mechanism
+- `AgentExecutor` keeps persistent action history, full fact history, pending tools, and thinking summaries.
+- `HierarchyManager` stores the call tree so sub-agents can inherit the right context.
+- `ConversationStorage` persists state under the workspace so interrupted runs can resume.
+- Tools execute via the in-process `direct-tools` path; the old standalone tool server path is no longer required for normal runtime use.
 
-Long documents (PDFs, novels, papers) are **never directly loaded into context**. Instead:
+### Runtime Controls
 
-- ✅ Use `answer_from_pdf`, `answer_from_document` tools
-- ✅ Query-driven content extraction
-- ✅ Only relevant excerpts or summaries enter context
-- ✅ **Application-layer attention allocation** through tools
+The runtime now supports explicit cadence and refresh controls:
 
-**Traditional Approach:**
-```
-Load entire 50-page PDF → Agent processes everything → Token overflow
-```
+- `action_window_steps`: how many tool calls stay visible before the short action window is cleared.
+- `thinking_interval`: how often the runtime triggers a new thinking step.
+- `fresh_enabled`: whether scheduled fresh is enabled.
+- `fresh_interval_sec`: interval for scheduled refresh.
 
-**MLA Approach:**
-```
-Agent asks: "What is the methodology?"
-→ Tool extracts relevant sections (2 pages)
-→ Returns concise answer → Minimal token usage
-```
+These values can be set from:
 
-### 3. 📁 File-Centric Architecture
+- `~/mla_v3/config/app_config.json`
+- Desktop settings UI
+- environment variables such as `MLA_ACTION_WINDOW_STEPS`
+- the Python SDK constructor
 
-**"Files are everything."** All outputs and interactions are saved to the file system:
+### User Data Directories
 
-- ✅ Web scraping → Saves as Markdown files
-- ✅ PDF parsing → Extracts to structured documents
-- ✅ Sub-agent results → Stored as files
-- ✅ **No immediate returns** cluttering context
+The runtime standardizes user data under `~/mla_v3` and `~/.agent`:
 
-**Benefits:**
-- Clear audit trail
-- Reusable artifacts
-- Context-free state representation
-
-### 4. ⚡ Ten-Step Strategy (No Context Compression)
-
-A key insight: **The current file system state represents the effect of all historical actions.**
-
-- ✅ A separate **thinking module** updates file space state every 10 steps
-- ✅ Agents only retain **the last 10 actions** (since last state update)
-- ✅ **No need for context compression**
-- ✅ Historical actions are reflected in file system, not conversation history
-
-**Traditional LLM Agents:**
-```
-Step 1: Create file A
-Step 2: Edit file B
-...
-Step 100: Context overflow → Compression needed → Information loss
-```
-
-**MLA Approach:**
-```
-Steps 1-10: Actions recorded
-Step 10: Thinking module updates "Current State: Files A, B, C exist with..."
-Steps 11-20: Only these + Current State kept
-→ No compression, no information loss
-```
-
-### 5. 🔧 Batch File Operations
-
-Inspired by [Claude Code](https://www.anthropic.com/), MLA uses **list-based tool parameters** to save tokens:
-
-- ✅ Read multiple files in one call
-- ✅ Batch operations reduce cumulative overhead
-- ✅ Significant token savings on repeated actions
-
-**Example:**
-```python
-# Traditional: 3 separate calls
-file_read(path="file1.txt")
-file_read(path="file2.txt")
-file_read(path="file3.txt")
-
-# MLA: 1 batch call
-file_read(paths=["file1.txt", "file2.txt", "file3.txt"])
-```
-
-### 6. 💾 Long-Term Memory with Task ID
-
-- ✅ **Task ID = Workspace absolute path** (not user-configurable)
-- ✅ Same task ID allows **unlimited conversation sessions**
-- ✅ Agents remember all historical tasks in the workspace
-- ✅ Persistent memory across interruptions and restarts
-
-**Usage:**
-```bash
-# First session
-mla-agent --task_id ~/research --user_input "Collect papers on Transformers"
-# → Stores conversation in ~/mla_v3/conversations/{hash}_research_*
-
-# Second session (days later)
-mla-agent --task_id ~/research --user_input "Summarize the collected papers"
-# → Agent remembers previous session and accesses collected files
-```
-
-### 7. 📊 Call Graph-Based Shared Context
-
-The `hierarchy_manager` maintains a **dynamic call relationship graph**:
-
-- ✅ Tracks parent-child agent relationships
-- ✅ Injects call graph into shared context
-- ✅ Prevents agents from overstepping boundaries
-- ✅ Maintains task alignment across multi-agent system
-
-**Call Graph Example:**
-```json
-{
-  "current_agent": "coder_agent",
-  "parent": "alpha_agent",
-  "siblings": ["data_collection_agent", "material_to_document_agent"],
-  "allowed_tools": ["python_run", "file_write", "file_read"]
-}
-```
-
-This ensures `coder_agent` won't accidentally call `web_search` (not in its scope) or interfere with sibling agents.
-
----
-
-
-## 📸 Interface Screenshots
-
-### CLI Interface
-
-MLA provides a rich interactive CLI with real-time task monitoring, HIL handling, and agent switching:
-
-**System Selection:**
-<p align="center">
-  <img src="assets/cli_choose_system.png" alt="CLI System Selection" width="800">
-</p>
-
-**Tool Mode Configuration:**
-<p align="center">
-  <img src="assets/cli_choose_tool_mode.png" alt="CLI Tool Mode" width="800">
-</p>
-
-**Starting Tasks:**
-<p align="center">
-  <img src="assets/cli_start_task.png" alt="CLI Task Execution" width="800">
-</p>
-
-*Interactive CLI with prompt_toolkit and rich terminal UI - featuring multi-turn conversations, automatic HIL detection, and tool execution confirmation.*
-
-### VS Code Plugin
-
-Build powerful IDE extensions using MLA's JSONL mode:
-
-<p align="center">
-  <img src="assets/vscode_plugin.png" alt="VS Code Plugin Screenshot" width="800">
-</p>
-
-*VS Code extension powered by MLA - seamless integration with workspace context and real-time streaming output.*
-
----
-
-## ⚙️ Configuration Guide
-
-MLA uses YAML files for agent and tool configuration. Configuration files are located in:
-
-```
-config/
+```text
+~/mla_v3/
 ├── agent_library/
-│   └── Default/                    # Default agent system
-│       ├── general_prompts.yaml    # Shared prompts
-│       ├── level_-1_judge_agent.yaml  # Judge agent
-│       ├── level_0_tools.yaml      # Tool definitions
-│       ├── level_1_agents.yaml     # Low-level agents
-│       ├── level_2_agents.yaml     # Mid-level agents
-│       └── level_3_agents.yaml     # Top-level agents
-└── run_env_config/
-    ├── llm_config.yaml             # LLM settings
-    └── tool_config.yaml            # Tool server settings
+├── config/
+│   ├── app_config.json
+│   └── llm_config.yaml
+├── conversations/
+├── logs/
+└── tools_library/
+
+~/.agent/
+└── skills/
 ```
 
-### Key Configuration Files
+This is what lets CLI, Web UI, Desktop, and packaged backends share the same imported systems, skills, settings, and task history.
 
-#### 1. `llm_config.yaml` - LLM Configuration
+## Skills, MCP, and Marketplace
 
-```yaml
-# Global defaults
-api_key: "your-api-key"
-base_url: "https://openrouter.ai/api/v1"
-temperature: 0
-max_tokens: 0
+### Skills
 
-models:
-  - openai/google/gemini-3-flash-preview     # uses global api_key + base_url
-  - name: openai/qwen-plus                    # override with different provider
-    api_key: "your-dashscope-key"
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+- Bundled skills live under [`skills/`](skills/).
+- User-installed skills live under `~/.agent/skills/`.
+- The runtime discovers `SKILL.md` frontmatter and can load or offload skills dynamically inside a task.
 
-figure_models:
-  - openai/google/gemini-3-flash-preview
-compressor_models:
-  - openai/google/gemini-3-flash-preview
-thinking_models:
-  - openai/google/gemini-3-flash-preview
-read_figure_models:
-  - openai/google/gemini-3-flash-preview
+### MCP
 
-# Multimodal configuration
-multimodal: true              # Enable image embedding in messages for main model
-compressor_multimodal: true   # Enable image embedding for compressor model
-```
+MCP servers can be configured through:
 
-**Note**: Copy `llm_config.example.yaml` to `llm_config.yaml` to get started. Each model can optionally override `api_key` and `base_url` to use a different provider.
+- `~/mla_v3/config/app_config.json`
+- the desktop settings screen
+- `MLA_MCP_CONFIG_JSON`
+- the Python SDK `mcp_servers=` argument
 
-#### 2. Agent Hierarchy
+Supported transports:
 
-MLA organizes agents into levels:
+- `streamable_http`
+- `sse`
+- `stdio`
 
-- **Level 3**: Top-level orchestrators (e.g., `alpha_agent`)
-- **Level 2**: Functional specialists (e.g., `data_collection_agent`, `coder_agent`)
-- **Level 1**: Basic executors (e.g., `web_search_agent`)
-- **Level 0**: Tool definitions
-- **Level -1**: Quality control (e.g., `judge_agent`)
+Discovered MCP tools are exposed to the active agent as synthetic tool definitions and executed through the MCP client at runtime.
 
-#### 3. Creating Custom Agents
+### Marketplace
 
-Edit YAML files to customize agent behavior:
+[`marketplace_server/`](marketplace_server/) contains a small FastAPI service for publishing:
 
-```yaml
-news_agent:
-  type: llm_call_agent
-  level: 1
-  model_type: "advanced"
-  available_tools:
-    - data_collection_agent
-    - coder_agent
-    ...
-  system_prompt: |
-    You are a newspaper agent.
-```
+- skill zip downloads
+- agent system zip downloads
+- lightweight upload/admin endpoints
 
----
+The desktop client can point to a custom marketplace base URL and install skills or agent systems from it.
 
-## 💻 CLI Interface
+## Python SDK
 
-### Interactive Mode
-
-Start the CLI for a conversational experience:
-
-```bash
-mla-agent --cli
-```
-
-**Key Features:**
-
-- 🔄 **Multi-turn conversations** with persistent context
-- 🤖 **Agent switching** with `@agent_name` syntax
-- 🔔 **Automatic HIL detection** with audio alerts
-- ⚠️ **Tool execution confirmation** in manual mode
-- ⏸️ **Interrupt and resume** support (Ctrl+C to pause)
-- 🎨 **Rich terminal UI** powered by `prompt_toolkit` and `rich`
-
-**Usage Examples:**
-
-```bash
-# Direct task input (uses default agent)
-[alpha_agent] > Collect papers on Transformers
-
-# Switch agent and execute task
-[alpha_agent] > @data_collection_agent Search for recent NLP papers
-
-# Switch default agent only
-[alpha_agent] > @coder_agent
-✅ Switched to: coder_agent
-[coder_agent] > 
-```
-
-**CLI Commands:**
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help and available commands |
-| `/agents` | List all available agents |
-| `/resume` | Resume interrupted tasks |
-| `/quit` or `/exit` | Exit CLI mode |
-| `Ctrl+C` | Interrupt current task (stays in CLI) |
-| `Ctrl+D` | Exit CLI immediately |
-
-**Human-in-Loop (HIL) Handling:**
-
-When an agent requests human input, the CLI automatically detects it:
-
-```
-🔔🔔🔔 Detected HIL task! Press Enter to handle... 🔔🔔🔔
-================================================================================
-🔔 Human Interaction Task (HIL)
-================================================================================
-📝 Task ID: upload_file_20250124
-📋 Instruction: Please upload the required dataset files...
-================================================================================
-💡 Enter your response (any text)
-   Type /skip to skip this task
-================================================================================
-
-[alpha_agent] HIL Response > Files uploaded successfully
-✅ HIL task responded
-```
-
-**Tool Confirmation (Manual Mode):**
-
-When `--auto-mode false` is set, each tool execution requires confirmation:
-
-```
-⚠️⚠️⚠️ Detected tool execution request! Press Enter to confirm... ⚠️⚠️⚠️
-================================================================================
-⚠️  Tool Execution Confirmation Request
-================================================================================
-🔧 Tool Name: python_run
-📝 Confirmation ID: confirm_12345
-📋 Parameters:
-     code: import numpy as np...
-     timeout: 300
-================================================================================
-💡 Choose action:
-   yes / y - Approve execution
-   no / n  - Reject execution
-================================================================================
-
-[alpha_agent] Confirm [yes/no] > yes
-✅ Approved tool execution: python_run
-```
-
-**Screenshot:** *(User will provide)*
-
----
-
-### Command-Line Mode
-
-For scripting and automation:
-
-```bash
-mla-agent \
-  --task_id /path/to/workspace \
-  --user_input "Your task description" \
-  --agent_name alpha_agent
-```
-
-**Common Parameters:**
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--task_id` | Workspace path (absolute) | Required |
-| `--user_input` | Task description | Required |
-| `--agent_name` | Agent to invoke | `alpha_agent` |
-| `--agent_system` | Agent library name | `Default` |
-| `--cli` | Interactive CLI mode | `false` |
-| `--jsonl` | JSONL output mode | `false` |
-| `--force-new` | Clear all state and start fresh | `false` |
-| `--auto-mode` | Tool execution mode (`true`/`false`) | Auto-detect |
-
-**Auto-Mode Examples:**
-
-```bash
-# Automatic tool execution (no confirmation needed)
-mla-agent --task_id ~/project --user_input "Task" --auto-mode true
-
-# Manual confirmation for each tool
-mla-agent --task_id ~/project --user_input "Task" --auto-mode false
-```
-
----
-
-### Managing Tool Server
-
-```bash
-# Start server (background)
-mla-tool-server start
-
-# Check status
-mla-tool-server status
-
-# Stop server
-mla-tool-server stop
-
-# Restart server
-mla-tool-server restart
-```
-
----
-
-## 🔌 SDK Integration
-
-MLA provides two SDK options: **Python SDK** for direct integration and **JSONL mode** for IDE plugins.
-
----
-
-### Python SDK
-
-Import and use MLA components directly in your Python code:
+The packaged SDK entry point lives in [`infiagent/sdk.py`](infiagent/sdk.py).
 
 ```python
-from pathlib import Path
-from utils.config_loader import ConfigLoader
-from core.hierarchy_manager import get_hierarchy_manager
-from core.agent_executor import AgentExecutor
+from infiagent import infiagent
 
-# Initialize components
-task_id = str(Path.home() / "my_project")
-agent_system = "Default"
-
-config_loader = ConfigLoader(agent_system)
-hierarchy_manager = get_hierarchy_manager(task_id)
-
-# Get agent configuration
-agent_config = config_loader.get_tool_config("alpha_agent")
-
-# Create and run agent
-agent = AgentExecutor(
-    agent_name="alpha_agent",
-    agent_config=agent_config,
-    config_loader=config_loader,
-    hierarchy_manager=hierarchy_manager
+agent = infiagent(
+    workspace="/path/to/workspace",
+    default_agent_system="Researcher",
+    default_agent_name="alpha_agent",
+    action_window_steps=12,
+    thinking_interval=6,
+    fresh_enabled=True,
+    fresh_interval_sec=300,
+    mcp_servers=[
+        {
+            "name": "github",
+            "transport": "streamable_http",
+            "url": "https://example.com/mcp",
+        }
+    ],
 )
 
-# Execute task
-result = agent.run(
-    task_id=task_id,
-    user_input="Write a survey paper on Transformers"
-)
-
-print(f"Status: {result['status']}")
-print(f"Output: {result['output']}")
+result = agent.run("Analyze this repository and propose a refactor plan")
+print(result["status"], result["output"])
 ```
 
-**Advanced: Custom Agent with Tool Permissions**
+Async wrapper:
 
 ```python
-# Set tool execution mode
-agent.tool_executor.set_task_permission(task_id, auto_mode=True)
-
-# Run with custom configuration
-result = agent.run(task_id, user_input)
-
-if result['status'] == 'success':
-    print("Task completed successfully!")
-else:
-    print(f"Error: {result.get('error_information')}")
+result = await agent.run_async("Write tests for this module")
 ```
 
-**Use Cases for Python SDK:**
-- 🔧 Building custom workflows
-- 🤖 Embedding agents in existing applications
-- 📊 Batch processing multiple tasks
-- 🔬 Research experiments with programmatic control
+## JSONL Integration
 
----
-
-### JSONL Mode for IDE Plugins
-
-MLA provides a JSONL streaming mode for real-time integration with IDEs and editors:
+`mla-agent --jsonl` streams runtime events for editors, plugins, or custom frontends:
 
 ```bash
 mla-agent \
   --task_id $(pwd) \
-  --user_input "Optimize code performance" \
-  --jsonl 2>/dev/null
+  --agent_system Researcher \
+  --user_input "Optimize this code path" \
+  --jsonl
 ```
 
-**Output Format:**
+Typical event types:
 
-```jsonl
-{"type":"start","call_id":"c-1760936557-474c43","project":"~/project","agent":"alpha_agent","task":"Optimize..."}
-{"type":"token","text":"[alpha_agent] Analyzing code..."}
-{"type":"progress","phase":"execution","pct":30}
-{"type":"token","text":"Calling tool: code_analyzer"}
-{"type":"result","ok":true,"summary":"Optimization complete"}
-{"type":"end","status":"ok","duration_ms":5432}
+- `start`
+- `token`
+- `progress`
+- `result`
+- `error`
+- `end`
+
+The desktop client uses the same JSONL channel plus stdin control messages for HIL responses, tool confirmations, and manual fresh requests.
+
+## Repository Layout
+
+```text
+.
+├── core/                    # runtime orchestration
+├── services/                # llm + thinking services
+├── tool_server_lite/tools/  # direct tool implementations
+├── utils/                   # config, runtime, storage, skill helpers
+├── config/agent_library/    # bundled agent systems
+├── skills/                  # bundled skills
+├── infiagent/               # Python SDK package
+├── desktop_app/             # Electron desktop client
+├── backend_build/           # packaged backend build scripts/specs
+├── web_ui/                  # browser client
+├── marketplace_server/      # skills / agent-system market service
+└── docs/                    # CLI and Docker guides
 ```
 
-**Event Types:**
+## Documentation
 
-| Event Type | Description | Key Fields |
-|------------|-------------|------------|
-| `start` | Task begins | `call_id`, `agent`, `task` |
-| `token` | Streaming text output | `text` |
-| `progress` | Progress update | `phase`, `pct` |
-| `result` | Task result | `ok`, `summary` |
-| `end` | Task completed | `status`, `duration_ms` |
-| `error` | Error occurred | `message` |
+- [`docs/CLI_GUIDE.md`](docs/CLI_GUIDE.md)
+- [`docs/DOCKER_GUIDE.md`](docs/DOCKER_GUIDE.md)
+- [`web_ui/README.md`](web_ui/README.md)
+- [`marketplace_server/README.md`](marketplace_server/README.md)
+- [`docs/EVENT_SCHEMA.md`](docs/EVENT_SCHEMA.md)
 
----
+## Demo Outputs
 
-### TypeScript/JavaScript Integration
+<p align="center">
+  <img src="assets/paper_generation_demo_1.gif" alt="Paper Generation Demo 1" width="800">
+</p>
 
-```typescript
-import { spawn } from 'child_process';
+<p align="center">
+  <img src="assets/paper1.png" alt="Paper Output 1" width="800">
+</p>
 
-interface AgentEvent {
-  type: 'start' | 'token' | 'progress' | 'result' | 'end' | 'error';
-  [key: string]: any;
-}
+<p align="center">
+  <img src="assets/paper2.png" alt="Paper Output 2" width="800">
+</p>
 
-function runAgent(
-  workspacePath: string, 
-  userInput: string,
-  onEvent: (event: AgentEvent) => void
-): Promise<AgentEvent> {
-  return new Promise((resolve, reject) => {
-  const child = spawn('mla-agent', [
-    '--task_id', workspacePath,
-    '--user_input', userInput,
-    '--jsonl'
-  ]);
-  
-    let buffer = '';
-    
-  child.stdout.on('data', (data) => {
-      buffer += data.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      
-      lines.forEach(line => {
-      if (!line.trim()) return;
-      
-        try {
-          const event: AgentEvent = JSON.parse(line);
-          onEvent(event);
-          
-          if (event.type === 'end') {
-            resolve(event);
-          } else if (event.type === 'error') {
-            reject(new Error(event.message));
-          }
-        } catch (e) {
-          console.error('Failed to parse event:', line);
-    }
-  });
-});
+## Paper
 
-    child.stderr.on('data', (data) => {
-      // Log errors to stderr
-      console.error(data.toString());
-    });
-    
-    child.on('error', reject);
-  });
-}
+[InfiAgent: An Infinite-Horizon Framework for General-Purpose Autonomous Agents](https://arxiv.org/abs/2601.03204)
 
-// Usage
-await runAgent('/path/to/workspace', 'Write unit tests', (event) => {
-      switch (event.type) {
-        case 'start':
-      console.log(`Task started: ${event.task}`);
-          break;
-        case 'token':
-      process.stdout.write(event.text);
-      break;
-    case 'progress':
-      updateProgressBar(event.pct);
-          break;
-        case 'result':
-      console.log(`\nResult: ${event.summary}`);
-          break;
-      }
-    });
-```
+## License
 
----
-
-### VS Code Extension Example
-
-Build your own Cursor/VS Code extension using MLA:
-
-**Extension Features:**
-- 🤖 Agent commands in command palette
-- 💬 Inline chat with workspace context
-- 📝 Automatic code generation and refactoring
-- 🔍 Literature search within editor
-- 🔔 HIL task handling with UI prompts
-
-**Basic Extension Structure:**
-
-```typescript
-// extension.ts
-import * as vscode from 'vscode';
-import { runAgent } from './mla-client';
-
-export function activate(context: vscode.ExtensionContext) {
-  let disposable = vscode.commands.registerCommand(
-    'mla.executeTask', 
-    async () => {
-      const workspace = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
-      const input = await vscode.window.showInputBox({
-        prompt: 'Enter task description'
-      });
-      
-      if (!workspace || !input) return;
-      
-      // Show progress
-      await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'MLA Agent',
-        cancellable: true
-      }, async (progress, token) => {
-        
-        await runAgent(workspace, input, (event) => {
-          if (event.type === 'token') {
-            vscode.window.showInformationMessage(event.text);
-          } else if (event.type === 'progress') {
-            progress.report({ increment: event.pct });
-          }
-        });
-      });
-    }
-  );
-  
-  context.subscriptions.push(disposable);
-}
-```
-
-**Screenshot:** *(User will provide)*
-
----
-
-## 📊 Example Outputs
-
-### Academic Paper Output
-
-MLA can generate complete research papers with the following structure:
-
-```
-upload/
-├── paper.tex               # Main LaTeX document
-├── references.bib          # Bibliography
-├── figures/
-│   ├── architecture.png
-│   ├── results_comparison.png
-│   └── ablation_study.png
-└── supplementary/
-    └── detailed_results.pdf
-```
-
-**Quality Metrics:**
-- ✅ Passes peer review at EI/IEEE conferences
-- ✅ Proper citation formatting
-- ✅ High-quality figures (300 DPI)
-- ✅ Coherent structure and flow
-
-### Other Capabilities
-
-**1. Scientific Computing**
-- ECM protein composition simulation
-- Logistics company shift scheduling
-- Student assignment grading with feedback
-
-**2. General Tasks**
-- Web scraping and data extraction
-- Code generation and debugging
-- Document conversion and processing
-
----
-
-
-## 📖 Documentation
-
-- [Tool Server API Documentation](tool_server_lite/README.md) - 18 available tools
-- [Human-in-the-Loop API](tool_server_lite/HIL_API.md) - User interaction integration
-- [Configuration Examples](config/agent_library/Default/) - Agent YAML templates
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
----
-
-## 📄 License
-
- see [LICENSE](LICENSE) for details.
-
----
-
-## 📄 Citation
-
-If you use InfiAgent in your research, please cite our paper:
-
-```bibtex
-@article{yu2026infiagent,
-  title={InfiAgent: An Infinite-Horizon Framework for General-Purpose Autonomous Agents},
-  author={Yu, Chenglin and Wang, Yuchen and Wang, Songmiao and Yang, Hongxia and Li, Ming},
-  journal={arXiv preprint arXiv:2601.03204},
-  year={2026}
-}
-```
-
----
-
-## 🙏 Acknowledgments
-
-- Built with [LiteLLM](https://github.com/BerriAI/litellm) for unified LLM access
-- Uses [Crawl4AI](https://github.com/unclecode/crawl4ai) for web scraping
-
----
-
-## 📬 Contact
-
-**Author**: @yuchenglin
-
-**Thanks to Contributors**： @wangyuchen @wangsongmiao @yuyang @lijinjia
-
-**Email**: yuchenglin96@qq.com/cl0415@connect.hku.hk/chenglin.yu@poly.edu.h 
-
-**GitHub**: [MLA V3 Repository](https://github.com/ChenglinPoly/infiAgent)
-
----
+GPL.

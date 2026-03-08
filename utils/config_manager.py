@@ -8,13 +8,15 @@ import yaml
 import json
 from pathlib import Path
 
+from utils.user_paths import ensure_user_llm_config_exists, get_user_llm_config_path
+
 
 def get_config_path(config_name: str = "llm_config") -> Path:
-    """获取配置文件路径（包内）"""
-    # 找到包的位置
-    module_path = Path(__file__).parent.parent
-    config_file = module_path / "config" / "run_env_config" / f"{config_name}.yaml"
-    return config_file
+    """获取配置文件路径（用户目录）。"""
+    if config_name != "llm_config":
+        raise ValueError(f"暂不支持的配置文件类型: {config_name}")
+    ensure_user_llm_config_exists()
+    return get_user_llm_config_path()
 
 
 def show_config(config_name: str = "llm_config"):

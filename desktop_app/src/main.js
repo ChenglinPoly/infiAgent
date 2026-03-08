@@ -110,6 +110,15 @@ function defaultAppConfig() {
       // additional env vars to inject into backend + execute_command
       extra_env: {}
     },
+    runtime: {
+      action_window_steps: 10,
+      thinking_interval: 10,
+      fresh_enabled: false,
+      fresh_interval_sec: 0
+    },
+    mcp: {
+      servers: []
+    },
     market: {
       // Default marketplace (user can change in Settings → Environment)
       base_url: 'http://101.200.231.88'
@@ -143,11 +152,14 @@ function readAppConfig() {
   // shallow merge
   const out = { ...base, ...raw };
   out.env = { ...base.env, ...(raw.env || {}) };
+  out.runtime = { ...base.runtime, ...(raw.runtime || {}) };
+  out.mcp = { ...base.mcp, ...(raw.mcp || {}) };
   out.market = { ...base.market, ...(raw.market || {}) };
   // normalize types
   if (!Array.isArray(out.env.extra_path)) out.env.extra_path = [];
   if (!out.env.extra_env || typeof out.env.extra_env !== 'object') out.env.extra_env = {};
   if (typeof out.env.command_mode !== 'string' || !out.env.command_mode.trim()) out.env.command_mode = 'direct';
+  if (!Array.isArray(out.mcp.servers)) out.mcp.servers = [];
   if (typeof out.market.base_url !== 'string') out.market.base_url = '';
   return out;
 }
@@ -234,6 +246,11 @@ function buildRuntimeEnv() {
   const env = { ...process.env };
   env.PATH = computeEffectivePath(appCfg);
   env.MLA_EXECUTE_COMMAND_MODE = (appCfg?.env?.command_mode === 'system_terminal') ? 'system_terminal' : 'direct';
+  env.MLA_ACTION_WINDOW_STEPS = String(appCfg?.runtime?.action_window_steps || 10);
+  env.MLA_THINKING_INTERVAL = String(appCfg?.runtime?.thinking_interval || appCfg?.runtime?.action_window_steps || 10);
+  env.MLA_FRESH_ENABLED = appCfg?.runtime?.fresh_enabled ? 'true' : 'false';
+  env.MLA_FRESH_INTERVAL_SEC = String(appCfg?.runtime?.fresh_interval_sec || 0);
+  env.MLA_SKILLS_LIBRARY_DIR = getSkillsLibraryPath();
 
   // Encourage consistent unicode behavior
   env.LANG = env.LANG || 'en_US.UTF-8';
@@ -258,6 +275,21 @@ function ensureUserDataRootScaffold() {
   fs.mkdirSync(getUserAgentLibraryPath(), { recursive: true });
   fs.mkdirSync(getConversationsPath(), { recursive: true });
   fs.mkdirSync(getLogsPath(), { recursive: true });
+
+  // Migrate old ~/mla_v3/skills_library -> ~/.agent/skills if needed.
+  try {
+    const oldSkillsRoot = path.join(getUserDataRoot(), 'skills_library');
+    if (fs.existsSync(oldSkillsRoot)) {
+      const entries = fs.readdirSync(oldSkillsRoot, { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith('.')) continue;
+        const src = path.join(oldSkillsRoot, e.name);
+        const dst = path.join(getSkillsLibraryPath(), e.name);
+        if (fs.existsSync(dst)) continue;
+        copyDirSync(src, dst);
+      }
+    }
+  } catch (_) {}
 
   // Seed default bundled skills (best-effort; never overwrite existing ones)
   try {
@@ -331,9 +363,9 @@ function ensureUserLlmConfigExists() {
   return userConfigPath;
 }
 
-// Skills library path: ~/mla_v3/skills_library/
+// Skills library path: ~/.agent/skills
 function getSkillsLibraryPath() {
-  return path.join(getUserDataRoot(), 'skills_library');
+  return path.join(os.homedir(), '.agent', 'skills');
 }
 
 // Agent system library (user import): ~/mla_v3/agent_library/
@@ -439,6 +471,7 @@ function getStackFilePath(taskId) {
 // ==================== Window ====================
 
 function createWindow() {
+  ensureUserDataRootScaffold();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -846,6 +879,7 @@ ipcMain.handle('save-settings', async (event, config) => {
 // List available agent systems (scan config/agent_library/)
 ipcMain.handle('get-agent-systems', async () => {
   try {
+    ensureUserDataRootScaffold();
     const systems = new Set();
 
     // Bundled systems (read-only)
@@ -929,9 +963,24 @@ ipcMain.handle('save-app-config', async (event, config) => {
     const raw = (config && typeof config === 'object') ? config : {};
     const out = { ...base, ...raw };
     out.env = { ...base.env, ...(raw.env || {}) };
+    out.runtime = { ...base.runtime, ...(raw.runtime || {}) };
+    out.mcp = { ...base.mcp, ...(raw.mcp || {}) };
     out.market = { ...base.market, ...(raw.market || {}) };
     fs.writeFileSync(getAppConfigPath(), JSON.stringify(out, null, 2) + '\n', 'utf-8');
     return { success: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+ipcMain.handle('fresh-runtime', async (event, payload) => {
+  try {
+    const reason = String(payload?.reason || '').trim() || 'manual runtime refresh';
+    if (pythonProcess && pythonProcess.stdin && !pythonProcess.killed) {
+      pythonProcess.stdin.write(JSON.stringify({ type: 'fresh_request', reason }) + '\n');
+      return { success: true, running: true };
+    }
+    return { success: true, running: false };
   } catch (e) {
     return { error: e.message };
   }
@@ -1055,7 +1104,7 @@ ipcMain.handle('market-install', async (event, { kind, name, strategy }) => {
 
 // ==================== IPC: Skills Library ====================
 
-// Select skill folder and copy to ~/mla_v3/skills_library/
+// Select skill folder and copy to ~/.agent/skills
 ipcMain.handle('import-skill-folder', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -1068,7 +1117,7 @@ ipcMain.handle('import-skill-folder', async () => {
     const folderName = path.basename(srcDir);
     const destDir = path.join(getSkillsLibraryPath(), folderName);
     
-    // Ensure skills_library exists
+    // Ensure ~/.agent/skills exists
     fs.mkdirSync(getSkillsLibraryPath(), { recursive: true });
     
     // Copy recursively

@@ -22,6 +22,42 @@ let currentAgentBubble = null;
 let currentAgentContentDiv = null;
 let currentStreamText = '';
 
+async function reloadAgentSystems(selectedValue = null) {
+  const systemsResult = await window.api.getAgentSystems();
+  if (!systemsResult?.success) return systemsResult;
+
+  const systems = systemsResult.systems || [];
+  const currentSidebarValue = selectedValue || agentSystemSelect.value || systems[0] || 'OpenCowork';
+
+  const settingSelect = document.getElementById('setting-agent-system');
+  if (settingSelect) settingSelect.innerHTML = '';
+  agentSystemSelect.innerHTML = '';
+
+  for (const sys of systems) {
+    const opt1 = document.createElement('option');
+    opt1.value = sys;
+    opt1.textContent = sys;
+    agentSystemSelect.appendChild(opt1);
+
+    if (settingSelect) {
+      const opt2 = document.createElement('option');
+      opt2.value = sys;
+      opt2.textContent = sys;
+      settingSelect.appendChild(opt2);
+    }
+  }
+
+  if (systems.includes(currentSidebarValue)) {
+    agentSystemSelect.value = currentSidebarValue;
+    if (settingSelect) settingSelect.value = currentSidebarValue;
+  } else if (systems[0]) {
+    agentSystemSelect.value = systems[0];
+    if (settingSelect) settingSelect.value = systems[0];
+  }
+
+  return systemsResult;
+}
+
 // ==================== Markdown Render ====================
 
 function renderMarkdownSafe(mdText) {
@@ -688,6 +724,7 @@ const toggleApiKeyBtn = document.getElementById('toggle-api-key');
 const importAgentSystemBtn = document.getElementById('import-agent-system-btn');
 const deleteAgentSystemBtn = document.getElementById('delete-agent-system-btn');
 const rawYamlTextarea = document.getElementById('setting-raw-yaml');
+const freshRuntimeBtn = document.getElementById('fresh-runtime-btn');
 
 // Open settings
 settingsBtn.addEventListener('click', async () => {
@@ -754,26 +791,16 @@ async function loadSettings() {
   // Config path display
   document.getElementById('config-path-display').textContent = result.path || '—';
   
-  // Load agent systems
-  const systemsResult = await window.api.getAgentSystems();
-  if (systemsResult.success) {
-    const select = document.getElementById('setting-agent-system');
-    select.innerHTML = '';
-    for (const sys of systemsResult.systems) {
-      const opt = document.createElement('option');
-      opt.value = sys;
-      opt.textContent = sys;
-      select.appendChild(opt);
-    }
-    // Set current value from sidebar
-    select.value = agentSystemSelect.value;
-  }
+  // Load agent systems for both sidebar + settings
+  await reloadAgentSystems(agentSystemSelect.value);
 
   // Load app config (env + market)
   const appCfgRes = await window.api.getAppConfig();
   if (appCfgRes?.success) {
     const cfg = appCfgRes.config || {};
     const env = cfg.env || {};
+    const runtime = cfg.runtime || {};
+    const mcp = cfg.mcp || {};
     const market = cfg.market || {};
     const pathModeEl = document.getElementById('setting-path-mode');
     const commandModeEl = document.getElementById('setting-command-mode');
@@ -789,6 +816,19 @@ async function loadSettings() {
       extraEnvEl.value = lines.join('\n');
     }
     if (marketUrlEl) marketUrlEl.value = market.base_url || '';
+    const actionWindowEl = document.getElementById('setting-action-window-steps');
+    const thinkingIntervalEl = document.getElementById('setting-thinking-interval');
+    const freshEnabledEl = document.getElementById('setting-fresh-enabled');
+    const freshIntervalEl = document.getElementById('setting-fresh-interval-sec');
+    const mcpServersEl = document.getElementById('setting-mcp-servers');
+    if (actionWindowEl) actionWindowEl.value = runtime.action_window_steps ?? 10;
+    if (thinkingIntervalEl) thinkingIntervalEl.value = runtime.thinking_interval ?? runtime.action_window_steps ?? 10;
+    if (freshEnabledEl) freshEnabledEl.checked = !!runtime.fresh_enabled;
+    if (freshIntervalEl) freshIntervalEl.value = runtime.fresh_interval_sec ?? 0;
+    if (mcpServersEl) {
+      const lines = Array.isArray(mcp.servers) ? mcp.servers.map(item => JSON.stringify(item)) : [];
+      mcpServersEl.value = lines.join('\n');
+    }
   }
   
   settingsStatus.textContent = '';
@@ -807,29 +847,7 @@ if (importAgentSystemBtn) {
     settingsStatus.textContent = `Imported Agent System: ${result.name}`;
     settingsStatus.style.color = '#5a9a6a';
 
-    // Reload agent systems in both settings select and sidebar select
-    const systemsResult = await window.api.getAgentSystems();
-    if (systemsResult.success) {
-      const select = document.getElementById('setting-agent-system');
-      select.innerHTML = '';
-      for (const sys of systemsResult.systems) {
-        const opt = document.createElement('option');
-        opt.value = sys;
-        opt.textContent = sys;
-        select.appendChild(opt);
-      }
-      if (result?.name) select.value = result.name;
-
-      // Sidebar select
-      agentSystemSelect.innerHTML = '';
-      for (const sys of systemsResult.systems) {
-        const opt = document.createElement('option');
-        opt.value = sys;
-        opt.textContent = sys;
-        agentSystemSelect.appendChild(opt);
-      }
-      if (result?.name) agentSystemSelect.value = result.name;
-    }
+    await reloadAgentSystems(result?.name || null);
 
     setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
   });
@@ -850,26 +868,24 @@ if (deleteAgentSystemBtn) {
     }
     settingsStatus.textContent = `Deleted Agent System: ${sys}`;
     settingsStatus.style.color = '#5a9a6a';
-    // Refresh selects
-    const systemsResult = await window.api.getAgentSystems();
-    if (systemsResult.success) {
-      const select2 = document.getElementById('setting-agent-system');
-      select2.innerHTML = '';
-      for (const s of systemsResult.systems) {
-        const opt = document.createElement('option');
-        opt.value = s;
-        opt.textContent = s;
-        select2.appendChild(opt);
-      }
-      // Sidebar select
-      agentSystemSelect.innerHTML = '';
-      for (const s of systemsResult.systems) {
-        const opt = document.createElement('option');
-        opt.value = s;
-        opt.textContent = s;
-        agentSystemSelect.appendChild(opt);
-      }
+    await reloadAgentSystems();
+    setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+  });
+}
+
+if (freshRuntimeBtn) {
+  freshRuntimeBtn.addEventListener('click', async () => {
+    const res = await window.api.freshRuntime({ reason: 'manual fresh from desktop settings' });
+    if (res?.error) {
+      settingsStatus.textContent = `Error: ${res.error}`;
+      settingsStatus.style.color = '#c75450';
+      return;
     }
+    await reloadAgentSystems(agentSystemSelect.value);
+    settingsStatus.textContent = res?.running
+      ? 'Fresh request sent to running task'
+      : 'Runtime config updated. New tasks will use fresh settings';
+    settingsStatus.style.color = '#5a9a6a';
     setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
   });
 }
@@ -912,8 +928,37 @@ settingsSaveBtn.addEventListener('click', async () => {
       if (k) extra_env[k] = v;
     }
 
+    const mcpServersText = document.getElementById('setting-mcp-servers')?.value || '';
+    const mcpServers = [];
+    for (const rawLine of mcpServersText.split('\n')) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      if (line.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === 'object') mcpServers.push(parsed);
+        } catch (_) {}
+        continue;
+      }
+      const idx = line.indexOf('=');
+      if (idx > 0) {
+        const name = line.slice(0, idx).trim();
+        const url = line.slice(idx + 1).trim();
+        if (name && url) mcpServers.push({ name, transport: 'streamable_http', url });
+      } else {
+        mcpServers.push({ transport: 'streamable_http', url: line });
+      }
+    }
+
     const appCfg = {
       env: { shell_mode: mode, command_mode: commandMode, extra_path, extra_env },
+      runtime: {
+        action_window_steps: Number(document.getElementById('setting-action-window-steps')?.value) || 10,
+        thinking_interval: Number(document.getElementById('setting-thinking-interval')?.value) || 10,
+        fresh_enabled: !!document.getElementById('setting-fresh-enabled')?.checked,
+        fresh_interval_sec: Number(document.getElementById('setting-fresh-interval-sec')?.value) || 0
+      },
+      mcp: { servers: mcpServers },
       market: { base_url: String(marketUrl || '').trim() }
     };
 
@@ -1087,18 +1132,7 @@ async function installFromMarket(kind, name) {
     if (res2?.success) {
       setMarketStatus(`Installed: ${res2.installed_name}`, false);
       // refresh agent systems if installed
-      if (kind !== 'skill') {
-        const systemsResult = await window.api.getAgentSystems();
-        if (systemsResult.success) {
-          agentSystemSelect.innerHTML = '';
-          for (const sys of systemsResult.systems) {
-            const opt = document.createElement('option');
-            opt.value = sys;
-            opt.textContent = sys;
-            agentSystemSelect.appendChild(opt);
-          }
-        }
-      }
+      if (kind !== 'skill') await reloadAgentSystems();
       return;
     }
     setMarketStatus(res2?.error || 'Install failed', true);
@@ -1106,18 +1140,7 @@ async function installFromMarket(kind, name) {
   }
   if (res1?.success) {
     setMarketStatus(`Installed: ${res1.installed_name}`, false);
-    if (kind !== 'skill') {
-      const systemsResult = await window.api.getAgentSystems();
-      if (systemsResult.success) {
-        agentSystemSelect.innerHTML = '';
-        for (const sys of systemsResult.systems) {
-          const opt = document.createElement('option');
-          opt.value = sys;
-          opt.textContent = sys;
-          agentSystemSelect.appendChild(opt);
-        }
-      }
-    }
+    if (kind !== 'skill') await reloadAgentSystems();
     return;
   }
   setMarketStatus(res1?.error || 'Install failed', true);
@@ -1166,6 +1189,9 @@ skillsCloseBtn.addEventListener('click', () => {
 skillsModal.addEventListener('click', (e) => {
   if (e.target === skillsModal) skillsModal.style.display = 'none';
 });
+
+// Initial sidebar agent-system refresh on app startup, even before opening Settings.
+reloadAgentSystems().catch(() => {});
 
 // Import skill folder
 importSkillBtn.addEventListener('click', async () => {

@@ -50,6 +50,13 @@ config/run_env_config/llm_config.yaml
 desktop_app/node_modules/
 desktop_app/dist/
 desktop_app/out/
+desktop_app/backend_dist/
+
+# Packaging/build artifacts
+backend_build/.pyi_work/
+backend_build/.venv_arm64/
+backend_build/.venv_x64/
+backend_build/__pycache__/
 
 # Local test/debug artifacts
 model_tool_calling_test_results.json

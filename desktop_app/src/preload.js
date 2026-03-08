@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
   // App config (app_config.json)
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   saveAppConfig: (config) => ipcRenderer.invoke('save-app-config', config),
+  freshRuntime: (payload) => ipcRenderer.invoke('fresh-runtime', payload || {}),
 
   // Marketplace
   marketGetIndex: () => ipcRenderer.invoke('market-get-index'),

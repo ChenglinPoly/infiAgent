@@ -227,7 +227,8 @@ class HierarchyManager:
                 "start_time": datetime.now().isoformat(),
                 "parent_id": parent_id,
                 "level": level,
-                "latest_thinking": ""  # 只保留最新的thinking
+                "latest_thinking": "",  # 只保留最新的thinking
+                "loaded_skills": []     # 当前上下文中已注入的 skills
             }
             
             # 记录时间历史
@@ -297,6 +298,42 @@ class HierarchyManager:
                 context["current"]["agents_status"][agent_id]["latest_thinking"] = thinking
                 context["current"]["agents_status"][agent_id]["thinking_updated_at"] = datetime.now().isoformat()
                 self._save_context(context)
+
+    def get_loaded_skills(self, agent_id: str) -> List[Dict]:
+        """获取当前 agent 已加载到上下文中的 skills。"""
+        context = self._load_context()
+        agent_info = context.get("current", {}).get("agents_status", {}).get(agent_id, {})
+        skills = agent_info.get("loaded_skills", [])
+        return skills if isinstance(skills, list) else []
+
+    def add_loaded_skill(self, agent_id: str, skill_info: Dict):
+        """向当前 agent 的上下文挂载一个 skill。"""
+        with self.lock:
+            context = self._load_context()
+            agent_info = context.get("current", {}).get("agents_status", {}).get(agent_id)
+            if not agent_info:
+                return
+            loaded = agent_info.get("loaded_skills", [])
+            if not isinstance(loaded, list):
+                loaded = []
+            skill_name = skill_info.get("name")
+            loaded = [s for s in loaded if s.get("name") != skill_name]
+            loaded.append(skill_info)
+            agent_info["loaded_skills"] = loaded
+            self._save_context(context)
+
+    def remove_loaded_skill(self, agent_id: str, skill_name: str):
+        """从当前 agent 的上下文卸载一个 skill。"""
+        with self.lock:
+            context = self._load_context()
+            agent_info = context.get("current", {}).get("agents_status", {}).get(agent_id)
+            if not agent_info:
+                return
+            loaded = agent_info.get("loaded_skills", [])
+            if not isinstance(loaded, list):
+                loaded = []
+            agent_info["loaded_skills"] = [s for s in loaded if s.get("name") != skill_name]
+            self._save_context(context)
     
     def add_action(self, agent_id: str, action: Dict):
         """
