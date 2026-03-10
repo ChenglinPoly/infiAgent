@@ -9,7 +9,7 @@ import yaml
 from typing import Dict, List, Any
 from pathlib import Path
 
-from utils.user_paths import get_user_data_root
+from utils.user_paths import get_project_root, get_user_data_root
 
 
 class ConfigLoader:
@@ -39,10 +39,8 @@ class ConfigLoader:
         
     def _find_config_root(self) -> str:
         """查找配置根目录"""
-        # 使用MLA_V3自己的config目录
-        current_dir = Path(__file__).parent.parent
-        mla_v3_config = current_dir / "config"
-        
+        mla_v3_config = get_project_root() / "config"
+
         if not mla_v3_config.exists():
             raise FileNotFoundError(f"配置目录不存在: {mla_v3_config}")
         
@@ -160,4 +158,3 @@ if __name__ == "__main__":
     print(f"🔧 总共加载 {len(loader.all_tools)} 个工具/Agent")
     print(f"\nLevel 0 工具数量: {len(loader.get_available_tools_by_level(0))}")
     print(f"Level 1 Agent数量: {len(loader.get_available_tools_by_level(1))}")
-
