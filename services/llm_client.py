@@ -385,12 +385,27 @@ class SimpleLLMClient:
                     kwargs["extra_body"].update(model_extra_params["extra_body"])
 
             # 发起流式请求（LiteLLM 会根据 timeout 和 stream_timeout 自动管理超时）
-            def _is_tool_required_thinking_incompatible(msg: str) -> bool:
+            def _should_retry_without_required_tool_choice(msg: str) -> bool:
                 m = (msg or "").lower()
-                return ("tool_choice" in m and "required" in m and "thinking" in m and "incompat" in m)
+                if "tool_choice" not in m:
+                    return False
+                incompat_markers = [
+                    "thinking",
+                    "thinking mode",
+                    "reasoning",
+                    "does not support",
+                    "unsupported",
+                    "invalidparameter",
+                    "required or object",
+                    "required",
+                    "object",
+                ]
+                return any(marker in m for marker in incompat_markers)
 
             # 有些 OpenAI-compatible（如月之暗面/Kimi）会拒绝 tool_choice=required + thinking。
             # 这里做一次“就地兼容重试”：第一次失败则移除 tool_choice，保持 tools 但不强制 required。
+            # 这类报错文案在不同 provider/router 上差异很大，因此只要是 tool_choice=required
+            # 且首轮失败信息明确指向 tool_choice 不兼容，就降级为 auto 重试一次。
             for _compat_try in range(2):
                 safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
                 safe_print(f"   📨 请求模型: {model}")
@@ -596,9 +611,9 @@ class SimpleLLMClient:
                         _compat_try == 0
                         and kwargs.get("tool_choice") == "required"
                         and tools_definition
-                        and _is_tool_required_thinking_incompatible(_compat_msg)
+                        and _should_retry_without_required_tool_choice(_compat_msg)
                     ):
-                        safe_print("⚠️ 当前模型不支持 tool_choice=required + thinking，自动降级为 tool_choice=auto 重试一次...")
+                        safe_print("⚠️ 当前模型/路由不兼容 tool_choice=required，自动降级为 tool_choice=auto 重试一次...")
                         kwargs.pop("tool_choice", None)
                         continue
                     raise
