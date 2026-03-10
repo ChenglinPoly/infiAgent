@@ -7,8 +7,11 @@ from utils.windows_compat import safe_print
 
 from typing import Dict, List, Optional
 import json
+import os
+from pathlib import Path
 
-from utils.user_paths import get_user_skills_library_root
+from utils.context_hooks import apply_context_hooks
+from utils.user_paths import get_context_settings, get_user_conversations_dir, get_user_skills_library_root
 
 
 class ContextBuilder:
@@ -45,6 +48,14 @@ class ContextBuilder:
             self.encoding = tiktoken.get_encoding("cl100k_base")
         except ImportError:
             self.encoding = None
+
+    def _count_tokens(self, text: str) -> int:
+        text = str(text or "")
+        if self.encoding:
+            return len(self.encoding.encode(text))
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        other_chars = len(text) - chinese_chars
+        return int(chinese_chars / 1.5 + other_chars / 4)
     
     def build_context(self, task_id: str, agent_id: str, agent_name: str, task_input: str, 
                      action_history: List[Dict] = None,
@@ -83,12 +94,27 @@ class ContextBuilder:
         current_thinking = self._build_current_thinking(task_id, agent_id, current)
         workspace_abs_path = task_id
         skills_root_abs_path = str(get_user_skills_library_root())
+        runtime_meta = context_data.get("runtime", {})
+        visible_skills = None
+        if isinstance(runtime_meta, dict):
+            raw_visible = runtime_meta.get("visible_skills")
+            if isinstance(raw_visible, list):
+                visible_skills = [str(item).strip() for item in raw_visible if str(item).strip()]
+        if visible_skills is None:
+            env_json = os.environ.get("MLA_VISIBLE_SKILLS_JSON", "").strip()
+            if env_json:
+                try:
+                    parsed = json.loads(env_json)
+                    if isinstance(parsed, list):
+                        visible_skills = [str(item).strip() for item in parsed if str(item).strip()]
+                except Exception:
+                    visible_skills = None
         
         # 2.5️⃣ 构建可用 skills 列表（如果有）
         available_skills_xml = ""
         if self.skill_loader:
             try:
-                available_skills_xml = self.skill_loader.build_available_skills_xml()
+                available_skills_xml = self.skill_loader.build_available_skills_xml(visible_skill_names=visible_skills)
             except Exception:
                 pass
 
@@ -146,7 +172,15 @@ class ContextBuilder:
 </历史动作>
 """
         
-        return full_context
+        return apply_context_hooks(
+            stage="after_build",
+            task_id=task_id,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            task_input=task_input,
+            context_data=context_data,
+            context_text=full_context,
+        )
 
     def _build_loaded_skills_xml(self, agent_id: str) -> str:
         """构建当前已加载 skill 的注入内容。"""
@@ -220,7 +254,8 @@ class ContextBuilder:
         for i, instr in enumerate(instructions, 1):
             instruction_text = instr.get("instruction", "")
             start_time = instr.get("start_time", "")
-            result.append(f"{i}. {instruction_text} (开始时间: {start_time})")
+            source = str(instr.get("source") or "user").strip()
+            result.append(f"{i}. [{source}] {instruction_text} (开始时间: {start_time})")
         
         return "\n".join(result)
     
@@ -250,8 +285,11 @@ class ContextBuilder:
             safe_print("使用已有的压缩历史交互")
             return compressed_history
         
+        settings = get_context_settings()
+        history_tokens = self._count_tokens(json.dumps(history, ensure_ascii=False))
+        threshold_tokens = settings.get("user_history_compress_threshold_tokens", 1500)
         safe_print("未到历史交互压缩阈值")
-        if len(str(history)) < 5000:
+        if history_tokens < threshold_tokens:
             return str(history)
         
         # 提取当前任务的用户输入
@@ -407,9 +445,12 @@ class ContextBuilder:
         # 转换为易读的JSON字符串
         call_tree_json = json.dumps(call_tree, indent=2, ensure_ascii=False)
         
-        # 检查是否需要压缩（agent数量超过10个，或JSON长度超过8000字符）
+        settings = get_context_settings()
+        compress_agent_threshold = settings.get("structured_call_info_compress_threshold_agents", 10)
+        compress_token_threshold = settings.get("structured_call_info_compress_threshold_tokens", 2200)
+        # 检查是否需要压缩
         agent_count = len(agents_status)
-        if agent_count > 10 or len(call_tree_json) > 8000:  # 测试用：原值 agent_count > 10 or len > 8000
+        if agent_count > compress_agent_threshold or self._count_tokens(call_tree_json) > compress_token_threshold:
             safe_print(f"检测到较大的结构化调用信息（{agent_count}个agents，{len(call_tree_json)}字符），启动压缩...")
             compressed_result = self._compress_structured_call_info_with_llm(
                 call_tree, current_agent_id
@@ -637,7 +678,7 @@ Agent调用树数据：
         import os
         
         # 使用与ConversationStorage相同的路径生成逻辑
-        conversations_dir = Path.home() / "mla_v3" / "conversations"
+        conversations_dir = get_user_conversations_dir()
         task_hash = hashlib.md5(task_id.encode()).hexdigest()[:8]
         task_folder = Path(task_id).name if (os.sep in task_id or '/' in task_id or '\\' in task_id) else task_id
         task_name = f"{task_hash}_{task_folder}"
@@ -675,7 +716,7 @@ Agent调用树数据：
             import os
             
             # 使用与ConversationStorage相同的路径生成逻辑
-            conversations_dir = Path.home() / "mla_v3" / "conversations"
+            conversations_dir = get_user_conversations_dir()
             task_hash = hashlib.md5(task_id.encode()).hexdigest()[:8]
             task_folder = Path(task_id).name if (os.sep in task_id or '/' in task_id or '\\' in task_id) else task_id
             task_name = f"{task_hash}_{task_folder}"
@@ -755,4 +796,3 @@ if __name__ == "__main__":
     safe_print("生成的上下文:")
     safe_print("=" * 80)
     safe_print(context)
-

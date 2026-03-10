@@ -65,8 +65,8 @@ if __name__ == "__main__" and not hasattr(sys, '_mla_path_checked'):
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from utils.user_paths import apply_runtime_env_defaults
-from utils.runtime_control import request_fresh
+from utils.user_paths import apply_runtime_env_defaults, get_user_data_root
+from utils.runtime_control import get_running_task, request_fresh
 from utils.config_loader import ConfigLoader
 from core.hierarchy_manager import get_hierarchy_manager
 from core.agent_executor import AgentExecutor
@@ -193,8 +193,12 @@ def main():
                             continue
                     elif msg_type == "fresh_request":
                         reason = msg.get("reason") or ""
+                        target_task_id = msg.get("task_id") or args.task_id
                         try:
-                            request_fresh(str(reason))
+                            request_fresh(
+                                reason=str(reason),
+                                task_id=str(target_task_id) if target_task_id else None
+                            )
                         except Exception:
                             continue
             except Exception:
@@ -212,7 +216,7 @@ def main():
         if not args.jsonl:
             print("🧪 使用默认测试模式")
         # 跨平台默认task_id：使用用户主目录下的测试目录
-        default_task_dir = Path.home() / "mla_v3" / "task_test"
+        default_task_dir = get_user_data_root() / "task_test"
         default_task_dir.mkdir(parents=True, exist_ok=True)
         args.task_id = args.task_id or str(default_task_dir)
         args.user_input = args.user_input or "刚才完成了什么任务？"
@@ -221,6 +225,11 @@ def main():
     if not args.task_id or not args.user_input:
         parser.error("需要提供 --task_id 和 --user_input，或使用 --test 运行默认测试")
         return 1
+
+    running_meta = get_running_task(args.task_id)
+    if running_meta:
+        print(f"❌ 任务已在运行: {args.task_id} (pid={running_meta.get('pid')})")
+        return 2
     
     # 生成 call_id
     call_id = f"c-{int(time.time())}-{uuid.uuid4().hex[:6]}"

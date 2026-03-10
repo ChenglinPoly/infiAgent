@@ -681,61 +681,109 @@ MLA provides two SDK options: **Python SDK** for direct integration and **JSONL 
 
 ### Python SDK
 
-Import and use MLA components directly in your Python code:
+Use the bundled `infiagent` SDK. The current SDK model is:
+
+- instantiate `infiagent(...)` once to describe runtime defaults
+- pass a concrete `task_id` to `run(...)` and other task APIs
+- optionally point the whole runtime at a dedicated `user_data_root`
+
+Minimal example:
 
 ```python
-from pathlib import Path
-from utils.config_loader import ConfigLoader
-from core.hierarchy_manager import get_hierarchy_manager
-from core.agent_executor import AgentExecutor
+from infiagent import infiagent
 
-# Initialize components
-task_id = str(Path.home() / "my_project")
-agent_system = "Researcher"
-
-config_loader = ConfigLoader(agent_system)
-hierarchy_manager = get_hierarchy_manager(task_id)
-
-# Get agent configuration
-agent_config = config_loader.get_tool_config("alpha_agent")
-
-# Create and run agent
-agent = AgentExecutor(
-    agent_name="alpha_agent",
-    agent_config=agent_config,
-    config_loader=config_loader,
-    hierarchy_manager=hierarchy_manager
+agent = infiagent(
+    user_data_root="/abs/path/to/my_root",
+    default_agent_system="Researcher",
+    default_agent_name="alpha_agent",
+    action_window_steps=20,
+    thinking_interval=20,
+    fresh_enabled=True,
+    fresh_interval_sec=300,
 )
 
-# Execute task
 result = agent.run(
-    task_id=task_id,
-    user_input="Write a survey paper on Transformers"
+    "Write a survey paper on Transformers",
+    task_id="/abs/path/to/tasks/transformer_survey",
 )
 
 print(f"Status: {result['status']}")
 print(f"Output: {result['output']}")
 ```
 
-**Advanced: Custom Agent with Tool Permissions**
+If your `user_data_root` already contains:
+
+- `config/llm_config.yaml`
+- `config/app_config.json`
+- `agent_library/...`
+- `tools_library/...`
+
+you usually do not need to pass `llm_config_path`, `agent_library_dir`, or `tools_dir` again.
+
+Common task APIs:
 
 ```python
-# Set tool execution mode
-agent.tool_executor.set_task_permission(task_id, auto_mode=True)
+# Ask a running or stopped task to refresh runtime config.
+agent.fresh(
+    task_id="/abs/path/to/tasks/transformer_survey",
+    reason="reload runtime config",
+)
 
-# Run with custom configuration
-result = agent.run(task_id, user_input)
+# Append a new instruction to the same task.
+agent.add_message(
+    "Keep the existing outline and only revise section 3.",
+    task_id="/abs/path/to/tasks/transformer_survey",
+    source="user",
+    resume_if_needed=True,
+)
 
-if result['status'] == 'success':
-    print("Task completed successfully!")
-else:
-    print(f"Error: {result.get('error_information')}")
+# Launch a separate background task in another Python process.
+agent.start_background_task(
+    task_id="/abs/path/to/tasks/subtask_eval",
+    user_input="Run the evaluation pipeline and summarize results",
+    force_new=True,
+)
+
+# Inspect task state for dashboards or lightweight watchdogs.
+snapshot = agent.task_snapshot(
+    task_id="/abs/path/to/tasks/transformer_survey",
+)
+
+# Reset a broken task loop while optionally preserving history.
+agent.reset_task(
+    task_id="/abs/path/to/tasks/transformer_survey",
+    reason="clear broken loop",
+    preserve_history=True,
+)
 ```
+
+Runtime introspection:
+
+```python
+runtime = agent.describe_runtime()
+print(runtime["user_data_root"])
+print(runtime["agent_library_dir"])
+print(runtime["tools_dir"])
+
+systems = agent.list_agent_systems()
+print(systems["systems"])
+```
+
+Advanced runtime features supported by the SDK:
+
+- task-scoped background execution and resume/fresh control
+- `user_data_root`-scoped conversations, logs, runtime state, and config
+- tool hooks before/after tool execution
+- context hooks that can inspect or rewrite the final prompt before the LLM call
+- per-instance MCP server injection through `mcp_servers=[...]`
+
+See the full guide: [docs/SDK_GUIDE.md](/Users/chenglin/Desktop/research/agent_framwork/vscode_version/MLA_V3/docs/SDK_GUIDE.md)
 
 **Use Cases for Python SDK:**
 - 🔧 Building custom workflows
 - 🤖 Embedding agents in existing applications
 - 📊 Batch processing multiple tasks
+- 🧭 Building external dashboards, watchdogs, and orchestration layers
 - 🔬 Research experiments with programmatic control
 
 ---
@@ -786,7 +834,7 @@ interface AgentEvent {
 }
 
 function runAgent(
-  workspacePath: string, 
+  workspacePath: string,
   userInput: string,
   onEvent: (event: AgentEvent) => void
 ): Promise<AgentEvent> {

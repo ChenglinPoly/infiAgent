@@ -58,6 +58,10 @@ def _build_builtin_factories() -> Dict[str, ToolFactory]:
         LoadSkillTool,
         OffloadSkillTool,
         FreshTool,
+        AddMessageTool,
+        StartBackgroundTaskTool,
+        TaskShareContextPathTool,
+        ListTaskIdsTool,
     )
 
     factories: Dict[str, ToolFactory] = {
@@ -91,6 +95,10 @@ def _build_builtin_factories() -> Dict[str, ToolFactory]:
         "load_skill": LoadSkillTool,
         "offload_skill": OffloadSkillTool,
         "fresh": FreshTool,
+        "add_message": AddMessageTool,
+        "start_background_task": StartBackgroundTaskTool,
+        "task_share_context_path": TaskShareContextPathTool,
+        "list_task_ids": ListTaskIdsTool,
     }
 
     try:

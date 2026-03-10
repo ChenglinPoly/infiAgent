@@ -668,61 +668,109 @@ MLA 提供两种 SDK 选项：**Python SDK** 用于直接集成，**JSONL 模式
 
 ### Python SDK
 
-在你的 Python 代码中直接导入和使用 MLA 组件：
+当前推荐直接使用内置的 `infiagent` SDK。现在的 SDK 语义是：
+
+- `infiagent(...)` 负责描述运行时默认配置
+- `run(...)`、`fresh(...)`、`add_message(...)` 等方法负责绑定具体 `task_id`
+- 可以通过 `user_data_root` 切换整套运行时目录
+
+最小示例：
 
 ```python
-from pathlib import Path
-from utils.config_loader import ConfigLoader
-from core.hierarchy_manager import get_hierarchy_manager
-from core.agent_executor import AgentExecutor
+from infiagent import infiagent
 
-# 初始化组件
-task_id = str(Path.home() / "my_project")
-agent_system = "Researcher"
-
-config_loader = ConfigLoader(agent_system)
-hierarchy_manager = get_hierarchy_manager(task_id)
-
-# 获取智能体配置
-agent_config = config_loader.get_tool_config("alpha_agent")
-
-# 创建并运行智能体
-agent = AgentExecutor(
-    agent_name="alpha_agent",
-    agent_config=agent_config,
-    config_loader=config_loader,
-    hierarchy_manager=hierarchy_manager
+agent = infiagent(
+    user_data_root="/abs/path/to/my_root",
+    default_agent_system="Researcher",
+    default_agent_name="alpha_agent",
+    action_window_steps=20,
+    thinking_interval=20,
+    fresh_enabled=True,
+    fresh_interval_sec=300,
 )
 
-# 执行任务
 result = agent.run(
-    task_id=task_id,
-    user_input="写一篇关于 Transformer 的综述论文"
+    "写一篇关于 Transformer 的综述论文",
+    task_id="/abs/path/to/tasks/transformer_survey",
 )
 
 print(f"状态：{result['status']}")
 print(f"输出：{result['output']}")
 ```
 
-**高级：自定义智能体与工具权限**
+如果你的 `user_data_root` 已经包含：
+
+- `config/llm_config.yaml`
+- `config/app_config.json`
+- `agent_library/...`
+- `tools_library/...`
+
+通常不需要再重复传入 `llm_config_path`、`agent_library_dir`、`tools_dir`。
+
+常用任务接口：
 
 ```python
-# 设置工具执行模式
-agent.tool_executor.set_task_permission(task_id, auto_mode=True)
+# 对运行中或已停止的 task 发起 fresh / resume。
+agent.fresh(
+    task_id="/abs/path/to/tasks/transformer_survey",
+    reason="reload runtime config",
+)
 
-# 使用自定义配置运行
-result = agent.run(task_id, user_input)
+# 向同一个 task 追加新指令。
+agent.add_message(
+    "保留已有大纲，只修改第三节。",
+    task_id="/abs/path/to/tasks/transformer_survey",
+    source="user",
+    resume_if_needed=True,
+)
 
-if result['status'] == 'success':
-    print("任务成功完成！")
-else:
-    print(f"错误：{result.get('error_information')}")
+# 启动新的后台 Python 进程执行另一个 task。
+agent.start_background_task(
+    task_id="/abs/path/to/tasks/subtask_eval",
+    user_input="后台运行评测流程并总结结果",
+    force_new=True,
+)
+
+# 获取 task 快照，适合面板和轻量 watchdog。
+snapshot = agent.task_snapshot(
+    task_id="/abs/path/to/tasks/transformer_survey",
+)
+
+# 重置损坏的 task 状态，可选保留 history。
+agent.reset_task(
+    task_id="/abs/path/to/tasks/transformer_survey",
+    reason="clear broken loop",
+    preserve_history=True,
+)
 ```
+
+运行时自省：
+
+```python
+runtime = agent.describe_runtime()
+print(runtime["user_data_root"])
+print(runtime["agent_library_dir"])
+print(runtime["tools_dir"])
+
+systems = agent.list_agent_systems()
+print(systems["systems"])
+```
+
+SDK 目前支持的高级能力：
+
+- 基于 `task_id` 的后台启动、resume 和 fresh
+- 基于 `user_data_root` 的 conversations、logs、runtime、config 隔离
+- 工具调用前后 hook
+- LLM 调用前的 context hook，可读取并改写最终 prompt
+- 通过 `mcp_servers=[...]` 为实例注入 MCP 运行时配置
+
+完整说明见：[docs/SDK_GUIDE.md](/Users/chenglin/Desktop/research/agent_framwork/vscode_version/MLA_V3/docs/SDK_GUIDE.md)
 
 **Python SDK 使用场景：**
 - 🔧 构建自定义工作流
 - 🤖 在现有应用中嵌入智能体
 - 📊 批量处理多个任务
+- 🧭 构建外部面板、watchdog 和调度层
 - 🔬 程序化控制的研究实验
 
 ---

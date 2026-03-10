@@ -5,6 +5,8 @@
 支持：文本、图片、音频等多模态输入
 """
 
+from __future__ import annotations
+
 import os
 import yaml
 import base64
@@ -779,4 +781,3 @@ if __name__ == "__main__":
         print(f"\n❌ 测试失败: {e}")
         import traceback
         traceback.print_exc()
-

@@ -14,6 +14,7 @@ from typing import Dict, Any
 
 from tool_server_lite.registry import get_runtime_registry, get_runtime_registry_failures
 from utils.mcp_manager import call_mcp_tool
+from utils.tool_hooks import trigger_tool_hooks
 
 class ToolExecutor:
     """工具执行器 - 统一使用进程内 direct-tools 模式"""
@@ -41,6 +42,20 @@ class ToolExecutor:
         
         # 权限管理：task_id → auto_mode 映射
         self.task_permissions = {}  # {task_id: {"auto_mode": True/False}}
+        self.agent_id = ""
+        self.agent_name = ""
+
+    def set_agent_context(self, *, agent_id: str = "", agent_name: str = ""):
+        self.agent_id = str(agent_id or "")
+        self.agent_name = str(agent_name or "")
+
+    def _agent_level(self) -> int:
+        try:
+            context = self.hierarchy_manager.get_context()
+            hierarchy = ((context or {}).get("current") or {}).get("hierarchy") or {}
+            return int(((hierarchy.get(self.agent_id) or {}).get("level")) or 0)
+        except Exception:
+            return 0
     
     def _init_tools_registry(self):
         """
@@ -212,58 +227,76 @@ class ToolExecutor:
             执行结果字典
         """
         try:
+            trigger_tool_hooks(
+                when="before",
+                tool_name=tool_name,
+                task_id=task_id,
+                arguments=arguments,
+                agent_id=self.agent_id,
+                agent_name=self.agent_name,
+                agent_level=self._agent_level(),
+            )
+        except Exception:
+            pass
+
+        try:
             # 获取工具配置
             tool_config = self.config_loader.get_tool_config(tool_name)
             tool_type = tool_config.get("type")
             
             # 特殊处理final_output
             if tool_name == "final_output":
-                return {
+                result = {
                     "status": arguments.get("status", "success"),
                     "output": arguments.get("output", ""),
                     "error_information": arguments.get("error_information", "")
                 }
-            
-            # 判断是普通工具还是子Agent
-            if tool_type == "tool_call_agent":
-                # 检查是否为危险工具且需要确认
+            elif tool_type == "tool_call_agent":
                 if tool_name in self.DANGEROUS_TOOLS and not self.is_auto_mode(task_id):
-                    # 请求用户确认
                     approved = self._request_tool_confirmation(tool_name, arguments, task_id)
-                    
                     if not approved:
-                        # 用户拒绝执行
-                        return {
+                        result = {
                             "status": "error",
                             "output": "",
                             "error_information": f"工具执行被用户拒绝: {tool_name}"
                         }
-                
-                # MCP 动态工具：由 MCP 客户端路由执行
-                if tool_config.get("_mcp"):
-                    return call_mcp_tool(tool_config, arguments)
-
-                # 普通工具 - 统一 direct-tools 调用
-                return self._call_direct(tool_name, arguments, task_id)
-            
+                    elif tool_config.get("_mcp"):
+                        result = call_mcp_tool(tool_config, arguments)
+                    else:
+                        result = self._call_direct(tool_name, arguments, task_id)
+                elif tool_config.get("_mcp"):
+                    result = call_mcp_tool(tool_config, arguments)
+                else:
+                    result = self._call_direct(tool_name, arguments, task_id)
             elif tool_type == "llm_call_agent":
-                # 子Agent - 递归调用
-                # 注意：uuid 已在 agent_executor 中添加（仅对 level != 0）
-                return self._execute_sub_agent(tool_name, tool_config, arguments, task_id)
-            
+                result = self._execute_sub_agent(tool_name, tool_config, arguments, task_id)
             else:
-                return {
+                result = {
                     "status": "error",
                     "output": "",
                     "error_information": f"不支持的工具类型: {tool_type}"
                 }
-        
         except Exception as e:
-            return {
+            result = {
                 "status": "error",
                 "output": "",
                 "error_information": f"工具执行失败: {str(e)}"
             }
+
+        try:
+            trigger_tool_hooks(
+                when="after",
+                tool_name=tool_name,
+                task_id=task_id,
+                arguments=arguments,
+                result=result,
+                agent_id=self.agent_id,
+                agent_name=self.agent_name,
+                agent_level=self._agent_level(),
+            )
+        except Exception:
+            pass
+        return result
     
     def _execute_sub_agent(
         self,

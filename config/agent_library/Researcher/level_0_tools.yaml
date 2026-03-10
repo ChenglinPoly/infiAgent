@@ -4,7 +4,7 @@ tools:
     level: 0
     type: tool_call_agent
     name: "file_read"
-    description: "读取指定文件的内容。可以读取单个或多个文件。可以读取整个文件或指定起始和结束行。默认返回带行号的 JSON 格式。警告：不要读取二进制文件（如 pdf,docx、图片等）。"
+    description: "读取指定文本文件的内容。路径参数必须是相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。可以读取单个或多个文件，也可以指定起始和结束行。默认返回带行号的 JSON 格式。警告：不要读取二进制文件（如 pdf、docx、图片等）。"
     parameters:
       type: "object"
       properties:
@@ -12,7 +12,7 @@ tools:
           type: "array"
           items:
             type: "string"
-          description: "文件路径数组。单个文件传 ['file.txt']，多个文件传 ['file1.txt', 'file2.txt']。只允许读取文本文件，不要读取二进制文件。"
+          description: "文件相对路径数组，基于当前 workspace/task 根目录解析。单个文件传 ['file.txt']，多个文件传 ['file1.txt', 'file2.txt']。不要传绝对路径；只允许读取文本文件，不要读取二进制文件。"
         start_line:
           type: "integer"
           description: "读取起始行号（从1开始），可选。多文件模式下应用于所有文件。"
@@ -32,13 +32,13 @@ tools:
     level: 0
     type: tool_call_agent
     name: "file_write"
-    description: "向指定文件写入内容。如果文件不存在会自动创建；如果存在可以选择覆盖或追加。也支持替换指定行。注意：禁止写入 reference.bib 文件，请使用专门的参考文献管理工具（reference_add/reference_delete）。"
+    description: "向指定文本文件写入内容。path 必须是相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。如果文件不存在会自动创建；如果存在可以选择覆盖或追加，也支持替换指定行。注意：禁止写入 reference.bib 文件，请使用专门的参考文献管理工具（reference_add/reference_delete）。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
-          description: "文件的相对路径，例如 'src/main.py'。写入前建议使用目录列表工具检查是否有同名文件，避免覆盖他人文件。禁止路径为 'reference.bib'。"
+          description: "文件的相对路径，例如 'src/main.py'，相对于当前 workspace/task 根目录解析。不要传绝对路径。写入前建议使用目录列表工具检查是否有同名文件，避免覆盖他人文件。禁止路径为 'reference.bib'。"
         content:
           type: "string"
           description: "要写入的文本内容。"
@@ -59,14 +59,14 @@ tools:
     level: 0
     type: tool_call_agent
     name: "dir_list"
-    description: "列出指定目录的内容。可以递归列出所有子目录和文件（自动排除 code_env 目录）。"
+    description: "列出指定目录的内容。path 必须是相对于当前 workspace/task 根目录的相对路径；不传时默认列出任务根目录。可以递归列出所有子目录和文件（自动排除 code_env 目录）。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
           default: "."
-          description: "要列出的目录路径。不指定时列出任务根目录。"
+          description: "要列出的目录相对路径，相对于当前 workspace/task 根目录解析。不指定时列出任务根目录。"
         recursive:
           type: "boolean"
           default: false
@@ -77,20 +77,20 @@ tools:
     level: 0
     type: tool_call_agent
     name: "dir_create"
-    description: "创建新目录。如果父目录不存在会自动创建。"
+    description: "创建新目录。path 必须是相对于当前 workspace/task 根目录的相对路径。如果父目录不存在会自动创建。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
-          description: "要创建的目录路径。"
+          description: "要创建的目录相对路径，相对于当前 workspace/task 根目录解析。"
       required: ["path"]
 
   file_move:
     level: 0
     type: tool_call_agent
     name: "file_move"
-    description: "移动或复制文件/目录。可以选择是移动还是复制（保留原文件）。"
+    description: "移动或复制文件/目录。source 和 destination 都应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。"
     parameters:
       type: "object"
       properties:
@@ -101,10 +101,10 @@ tools:
           type: "array"
           items:
             type: "string"
-          description: "源文件或目录的相对路径组，可以单个或多个"
+          description: "源文件或目录的相对路径组，相对于当前 workspace/task 根目录解析。可以单个或多个。"
         destination:
           type: "string"
-          description: "目标路径。"
+          description: "目标相对路径，相对于当前 workspace/task 根目录解析。"
         copy:
           type: "boolean"
           default: false
@@ -115,13 +115,13 @@ tools:
     level: 0
     type: tool_call_agent
     name: "file_delete"
-    description: "删除指定的文件或目录。"
+    description: "删除指定的文件或目录。path 应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
-          description: "要删除的文件或目录的相对路径。"
+          description: "要删除的文件或目录的相对路径，相对于当前 workspace/task 根目录解析。"
       required: ["path"]
 
   # ==================== 网络工具 ====================
@@ -1038,13 +1038,99 @@ tools:
     level: 0
     type: tool_call_agent
     name: "fresh"
-    description: "在安全点刷新运行时配置、工具注册、skills 与提示词缓存。仅当你刚创建/安装了新工具或新 skills 时才使用。"
+    description: "在安全点刷新运行时配置、工具注册、skills 与提示词缓存。默认刷新当前 task；若指定 task_id，则刷新对应 task。这里的 task_id 应为绝对路径。仅当你刚创建/安装了新工具或新 skills 时才使用。"
     parameters:
       type: "object"
       properties:
         reason:
           type: "string"
           description: "触发 fresh 的原因说明，例如“刚安装了新工具”或“刚安装了新 skill”。"
+        task_id:
+          type: "string"
+          description: "可选。目标任务的 task_id，必须是绝对路径。省略时 fresh 当前任务；指定后会 fresh 对应任务，若该任务未在运行则会重载配置并后台 resume。"
+
+  add_message:
+    level: 0
+    type: tool_call_agent
+    name: "add_message"
+    description: "向指定 task 的 current.instructions 追加一条新消息。若目标 task 正在运行，它会在下一轮看到这条消息；若未运行，可选择后台 resume。task_id 应为绝对路径；省略时默认当前 task。适合对同一任务做需求补充或变更。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "可选。目标任务的 task_id，必须是绝对路径。省略时默认当前 task。"
+        message:
+          type: "string"
+          description: "要追加给该 task 的消息内容。"
+        source:
+          type: "string"
+          description: "消息来源标记，例如 agent / user / system。默认 agent。"
+        resume_if_needed:
+          type: "boolean"
+          default: false
+          description: "当目标 task 当前未运行时，是否在追加消息后后台 resume。默认 false。"
+      required: ["message"]
+
+  start_background_task:
+    level: 0
+    type: tool_call_agent
+    name: "start_background_task"
+    description: "后台启动一个新的 task 进程。适合把独立子任务交给另一个 workspace/task 在后台异步运行。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "必需。新任务的 task_id，建议使用绝对路径作为 workspace。"
+        user_input:
+          type: "string"
+          description: "必需。新任务的需求描述。"
+        agent_system:
+          type: "string"
+          description: "可选。Agent system，默认 OpenCowork。"
+        agent_name:
+          type: "string"
+          description: "可选。启动的 agent 名称，默认 alpha_agent。"
+        force_new:
+          type: "boolean"
+          default: false
+          description: "是否强制清空该 task 的旧状态后再启动。"
+        direct_tools:
+          type: "boolean"
+          default: true
+          description: "是否启用 direct-tools。默认 true。"
+        config:
+          type: "object"
+          description: "可选。类似 SDK 的运行配置。当前支持 llm_config_path、user_data_root、agent_library_dir/library_dir、skills_dir、tools_dir、action_window_steps、thinking_interval、fresh_enabled、fresh_interval_sec、mcp_servers、auto_mode、force_new、direct_tools。"
+      required: ["task_id", "user_input"]
+
+  task_share_context_path:
+    level: 0
+    type: tool_call_agent
+    name: "task_share_context_path"
+    description: "返回指定 task 的 share_context 和 stack 文件路径，不直接返回内容。task_id 应为绝对路径；拿到路径后，如有需要请再自行读取。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "可选。目标任务的 task_id，必须是绝对路径。省略时默认当前 task。"
+      required: []
+
+  list_task_ids:
+    level: 0
+    type: tool_call_agent
+    name: "list_task_ids"
+    description: "列出当前已知的 task_id 列表，来源于 share_context 持久化记录。可选只返回当前运行中的 task。"
+    parameters:
+      type: "object"
+      properties:
+        only_running:
+          type: "boolean"
+          default: false
+          description: "是否只返回当前运行中的 task。默认 false。"
+      required: []
 
   # ==================== 框架必需工具 ====================
 

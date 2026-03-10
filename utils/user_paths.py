@@ -14,8 +14,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Optional
 
 import yaml
 
@@ -79,6 +80,18 @@ def get_user_logs_dir() -> Path:
     return get_user_data_root() / "logs"
 
 
+def get_user_runtime_dir() -> Path:
+    return get_user_data_root() / "runtime"
+
+
+def get_user_runtime_logs_dir() -> Path:
+    return get_user_runtime_dir() / "launched_tasks"
+
+
+def get_user_runtime_events_dir() -> Path:
+    return get_user_runtime_dir() / "task_events"
+
+
 def ensure_user_data_root_scaffold() -> None:
     """确保用户目录结构存在。"""
     for path in [
@@ -90,6 +103,8 @@ def ensure_user_data_root_scaffold() -> None:
         get_user_tools_library_root(),
         get_user_conversations_dir(),
         get_user_logs_dir(),
+        get_user_runtime_dir(),
+        get_user_runtime_events_dir(),
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -182,6 +197,35 @@ def ensure_user_llm_config_exists() -> Path:
     return config_path
 
 
+def ensure_user_app_config_exists() -> Path:
+    """确保用户目录中的 app_config.json 存在。"""
+    ensure_user_data_root_scaffold()
+    config_path = get_user_app_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if config_path.exists():
+        return config_path
+
+    default_payload = {
+        "runtime": {
+            "action_window_steps": 10,
+            "thinking_interval": 10,
+            "fresh_enabled": False,
+            "fresh_interval_sec": 0,
+        },
+        "env": {
+            "command_mode": "direct",
+            "seed_builtin_resources": True,
+        },
+        "context": {
+            "user_history_compress_threshold_tokens": 1500,
+            "structured_call_info_compress_threshold_agents": 10,
+            "structured_call_info_compress_threshold_tokens": 2200,
+        },
+    }
+    config_path.write_text(json.dumps(default_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return config_path
+
+
 def load_user_app_config() -> Dict[str, Any]:
     """读取用户 app_config.json；不存在或解析失败时返回空 dict。"""
     path = get_user_app_config_path()
@@ -244,6 +288,18 @@ def get_runtime_settings() -> Dict[str, Any]:
     }
 
 
+def get_context_settings() -> Dict[str, Any]:
+    """读取上下文构建相关配置。"""
+    cfg = load_user_app_config()
+    context = cfg.get("context", {}) if isinstance(cfg, dict) else {}
+    return {
+        "user_history_compress_threshold_tokens": max(0, int(context.get("user_history_compress_threshold_tokens", 1500) or 1500)),
+        "structured_call_info_compress_threshold_agents": max(1, int(context.get("structured_call_info_compress_threshold_agents", 10) or 10)),
+        "structured_call_info_compress_threshold_tokens": max(0, int(context.get("structured_call_info_compress_threshold_tokens", 2200) or 2200)),
+    }
+
+
+
 def get_default_command_mode() -> str:
     """
     获取 execute_command 默认模式。
@@ -261,18 +317,34 @@ def get_default_command_mode() -> str:
     return mode or "direct"
 
 
+def get_seed_builtin_resources_enabled() -> bool:
+    env_value = os.environ.get("MLA_SEED_BUILTIN_RESOURCES", "").strip().lower()
+    if env_value:
+        return env_value in {"1", "true", "yes", "on"}
+    cfg = load_user_app_config()
+    return bool(cfg.get("env", {}).get("seed_builtin_resources", True))
+
+
 def apply_runtime_env_defaults() -> None:
     """
     为 Python 运行时补齐统一环境变量。
     让 CLI / Desktop / 打包后端都默认指向用户目录，而非仓库本地目录。
     """
     ensure_user_data_root_scaffold()
-    seed_user_resources_if_missing()
+    ensure_user_app_config_exists()
+    if get_seed_builtin_resources_enabled():
+        seed_user_resources_if_missing()
+    os.environ["MLA_USER_DATA_ROOT"] = str(get_user_data_root())
     os.environ["MLA_LLM_CONFIG_PATH"] = str(ensure_user_llm_config_exists())
-    os.environ["MLA_AGENT_LIBRARY_DIR"] = str(get_user_data_root())
+    agent_library_root = os.environ.get("MLA_AGENT_LIBRARY_DIR", "").strip()
+    if agent_library_root:
+        os.environ["MLA_AGENT_LIBRARY_DIR"] = str(Path(agent_library_root).expanduser().resolve())
+    else:
+        os.environ["MLA_AGENT_LIBRARY_DIR"] = str(get_user_data_root())
     os.environ["MLA_SKILLS_LIBRARY_DIR"] = str(get_user_skills_library_root())
     os.environ["MLA_TOOLS_LIBRARY_DIR"] = str(get_user_tools_library_root())
     os.environ["MLA_EXECUTE_COMMAND_MODE"] = get_default_command_mode()
+    os.environ["MLA_SEED_BUILTIN_RESOURCES"] = "true" if get_seed_builtin_resources_enabled() else "false"
     runtime = get_runtime_settings()
     os.environ["MLA_ACTION_WINDOW_STEPS"] = str(runtime["action_window_steps"])
     os.environ["MLA_THINKING_INTERVAL"] = str(runtime["thinking_interval"])
@@ -281,3 +353,46 @@ def apply_runtime_env_defaults() -> None:
     mcp = get_mcp_settings()
     if mcp:
         os.environ["MLA_MCP_CONFIG_JSON"] = json.dumps(mcp, ensure_ascii=False)
+
+
+@contextmanager
+def runtime_env_scope(overrides: Optional[Dict[str, Any]] = None) -> Iterator[None]:
+    """
+    在一个受控作用域内切换运行时环境变量，并自动恢复现场。
+
+    适用于 SDK 多实例场景，避免一个实例污染另一个实例的 user_data_root / 配置路径。
+    """
+    overrides = overrides or {}
+    tracked_keys = {
+        "MLA_USER_DATA_ROOT",
+        "MLA_LLM_CONFIG_PATH",
+        "MLA_AGENT_LIBRARY_DIR",
+        "MLA_SKILLS_LIBRARY_DIR",
+        "MLA_TOOLS_LIBRARY_DIR",
+        "MLA_ACTION_WINDOW_STEPS",
+        "MLA_THINKING_INTERVAL",
+        "MLA_FRESH_ENABLED",
+        "MLA_FRESH_INTERVAL_SEC",
+        "MLA_MCP_CONFIG_JSON",
+        "MLA_EXECUTE_COMMAND_MODE",
+        "MLA_SEED_BUILTIN_RESOURCES",
+        "MLA_CONTEXT_HOOKS_JSON",
+        "MLA_VISIBLE_SKILLS_JSON",
+    }
+    tracked_keys.update(str(key) for key in overrides.keys())
+    previous = {key: os.environ.get(key) for key in tracked_keys}
+
+    try:
+        for key, value in overrides.items():
+            if value is None:
+                os.environ.pop(str(key), None)
+            else:
+                os.environ[str(key)] = str(value)
+        apply_runtime_env_defaults()
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

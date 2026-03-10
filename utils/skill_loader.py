@@ -10,6 +10,8 @@ Skill 加载器 - 遵循 Agent Skills 开放标准 (agentskills.io)
 """
 
 import yaml
+import json
+import os
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -119,7 +121,7 @@ class SkillLoader:
         except Exception:
             return None
     
-    def build_available_skills_xml(self) -> str:
+    def build_available_skills_xml(self, visible_skill_names: Optional[List[str]] = None) -> str:
         """
         生成 <available_skills> XML 片段，用于注入 system prompt
         
@@ -129,6 +131,18 @@ class SkillLoader:
             XML 字符串，如果没有 skills 则返回空字符串
         """
         skills = self.discover_skills()
+        if visible_skill_names is None:
+            env_json = os.environ.get("MLA_VISIBLE_SKILLS_JSON", "").strip()
+            if env_json:
+                try:
+                    parsed = json.loads(env_json)
+                    if isinstance(parsed, list):
+                        visible_skill_names = [str(item).strip() for item in parsed if str(item).strip()]
+                except Exception:
+                    visible_skill_names = None
+        if visible_skill_names is not None:
+            allowed = {str(name).strip() for name in visible_skill_names if str(name).strip()}
+            skills = [skill for skill in skills if skill.get("name") in allowed]
         
         if not skills:
             return ""
