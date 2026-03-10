@@ -976,8 +976,13 @@ ipcMain.handle('save-app-config', async (event, config) => {
 ipcMain.handle('fresh-runtime', async (event, payload) => {
   try {
     const reason = String(payload?.reason || '').trim() || 'manual runtime refresh';
+    const taskId = String(payload?.task_id || '').trim();
     if (pythonProcess && pythonProcess.stdin && !pythonProcess.killed) {
-      pythonProcess.stdin.write(JSON.stringify({ type: 'fresh_request', reason }) + '\n');
+      pythonProcess.stdin.write(JSON.stringify({
+        type: 'fresh_request',
+        reason,
+        ...(taskId ? { task_id: taskId } : {})
+      }) + '\n');
       return { success: true, running: true };
     }
     return { success: true, running: false };

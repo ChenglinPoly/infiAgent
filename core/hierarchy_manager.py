@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
 
+from utils.user_paths import get_user_conversations_dir
+
 
 class HierarchyManager:
     """Agent层级管理器"""
@@ -28,7 +30,7 @@ class HierarchyManager:
         self.lock = threading.Lock()
         
         # 文件路径 - 使用用户主目录（跨平台）
-        conversations_dir = Path.home() / "mla_v3" / "conversations"
+        conversations_dir = get_user_conversations_dir()
         conversations_dir.mkdir(parents=True, exist_ok=True)
         
         # 生成文件名：hash + 最后文件夹名
@@ -59,6 +61,7 @@ class HierarchyManager:
             with open(self.context_file, 'w', encoding='utf-8') as f:
                 json.dump({
                     "task_id": self.task_id,
+                    "runtime": {},
                     "current": {
                         "instructions": [],
                         "hierarchy": {},
@@ -110,7 +113,7 @@ class HierarchyManager:
                 "agent_time_history": {},
                 "history": []
             }
-    
+
     def _save_context(self, context: Dict):
         """保存共享上下文"""
         try:
@@ -130,37 +133,70 @@ class HierarchyManager:
         Returns:
             指令ID
         """
+        return self.append_instruction(instruction, dedupe=True, source="user")
+
+    def append_instruction(self, instruction: str, dedupe: bool = False, source: str = "user") -> str:
+        """
+        向 current.instructions 追加一条消息/指令。
+
+        Args:
+            instruction: 消息内容
+            dedupe: 是否按完全相同文本去重
+            source: 来源标记，例如 user / agent / system
+        """
         with self.lock:
             import hashlib
             context = self._load_context()
-            
-            # ✅ 检查是否已存在相同指令（避免重复）
+
             existing_instructions = context["current"].get("instructions", [])
-            for existing in existing_instructions:
-                if existing.get("instruction") == instruction:
-                    safe_print(f"ℹ️ 指令已存在，跳过添加: {instruction[:50]}...")
-                    return existing.get("instruction_id", "")
-            
-            # 生成指令ID
+            if dedupe:
+                for existing in existing_instructions:
+                    if existing.get("instruction") == instruction:
+                        safe_print(f"ℹ️ 指令已存在，跳过添加: {instruction[:50]}...")
+                        return existing.get("instruction_id", "")
+
             content_for_hash = f"{self.task_id}|{instruction}"
             hash_object = hashlib.md5(content_for_hash.encode())
             instruction_hash = hash_object.hexdigest()[:12]
             instruction_id = f"instruction_{instruction_hash}"
-            
-            # 添加到current指令列表
+
             instruction_entry = {
                 "instruction": instruction,
                 "instruction_id": instruction_id,
-                "start_time": datetime.now().isoformat()
+                "start_time": datetime.now().isoformat(),
+                "source": source
             }
-            
+
             context["current"]["instructions"].append(instruction_entry)
             self._save_context(context)
-            
+
             safe_print(f"📝 新指令已添加: {instruction_id} -> {instruction[:50]}...")
-            
+
             return instruction_id
-    
+
+    def get_runtime_metadata(self) -> Dict:
+        """读取 task 级运行时元数据。"""
+        context = self._load_context()
+        runtime = context.get("runtime", {})
+        return runtime if isinstance(runtime, dict) else {}
+
+    def set_runtime_metadata(self, **metadata):
+        """写入 task 级运行时元数据（如 agent_system / agent_name / user_input）。"""
+        with self.lock:
+            context = self._load_context()
+            runtime = context.get("runtime", {})
+            if not isinstance(runtime, dict):
+                runtime = {}
+
+            for key, value in metadata.items():
+                if value is None:
+                    continue
+                runtime[key] = value
+
+            runtime["last_updated"] = datetime.now().isoformat()
+            context["runtime"] = runtime
+            self._save_context(context)
+
     def push_agent(self, agent_name: str, user_input: str) -> str:
         """
         Agent入栈操作
@@ -425,9 +461,10 @@ def get_hierarchy_manager(task_id: str) -> HierarchyManager:
         HierarchyManager实例
     """
     with _cache_lock:
-        if task_id not in _managers_cache:
-            _managers_cache[task_id] = HierarchyManager(task_id)
-        return _managers_cache[task_id]
+        cache_key = (str(task_id), str(get_user_conversations_dir()))
+        if cache_key not in _managers_cache:
+            _managers_cache[cache_key] = HierarchyManager(task_id)
+        return _managers_cache[cache_key]
 
 
 if __name__ == "__main__":
@@ -454,4 +491,3 @@ if __name__ == "__main__":
         "result": {"status": "success"}
     })
     safe_print("✅ 动作记录成功")
-

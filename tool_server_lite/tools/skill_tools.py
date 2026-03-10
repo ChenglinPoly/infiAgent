@@ -141,16 +141,26 @@ class OffloadSkillTool(BaseTool):
 class FreshTool(BaseTool):
     """
     Fresh 工具 - 请求在安全点刷新运行时配置/工具注册/提示词缓存。
+    支持可选 task_id：
+    - 不传：fresh 当前 task
+    - 传入 task_id：fresh 对应 task；若不在运行则后台 resume
     """
 
     name = "fresh"
 
     def execute(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         reason = str(parameters.get("reason") or "").strip()
+        target_task_id = str(parameters.get("task_id") or "").strip()
+        effective_task_id = target_task_id or task_id
+        if effective_task_id == task_id:
+            output = "已请求 fresh，系统将在安全点重载配置并续跑当前任务。"
+        else:
+            output = f"已请求 fresh task: {effective_task_id}。若该任务未在运行，将重载配置后后台 resume。"
         return {
             "status": "success",
-            "output": "已请求 fresh，系统将在安全点重载配置并续跑当前任务。",
+            "output": output,
             "error": "",
             "_fresh_requested": True,
-            "_fresh_reason": reason
+            "_fresh_reason": reason,
+            "_fresh_task_id": effective_task_id
         }

@@ -25,7 +25,14 @@ from utils.conversation_storage import ConversationStorage
 from utils.event_emitter import get_event_emitter as get_jsonl_emitter
 from utils.skill_loader import reset_skill_loader
 from utils.user_paths import apply_runtime_env_defaults, get_runtime_settings
-from utils.runtime_control import pop_fresh_request
+from utils.runtime_control import (
+    is_task_running,
+    pop_fresh_request,
+    register_running_task,
+    request_fresh,
+    unregister_running_task,
+)
+from utils.task_runtime import resume_task_with_fresh
 from tool_server_lite.registry import reload_runtime_registry
 from tool_server_lite.tools.code_tools import has_running_background_processes
 from utils.mcp_manager import get_mcp_tools, reload_mcp_tools
@@ -34,7 +41,6 @@ from .agent_event_emitter import AgentEventEmitter
 from .event_handlers import ConsoleLogHandler, JsonlStreamHandler
 from .events import *
 from utils.windows_compat import safe_print
-from utils.user_paths import get_runtime_settings
 
 
 class AgentExecutor:
@@ -145,170 +151,189 @@ class AgentExecutor:
         ))        
         # 存储 task_input 供压缩器使用
         self.current_task_input = user_input
-
-        # Agent入栈
-        self.agent_id = self.hierarchy_manager.push_agent(self.agent_name, user_input)
-
-        # 尝试加载已有的对话历史
-        start_turn = self._load_state_from_storage(task_id)
-        
         try:
-            # 首次thinking（初始规划）
-            if start_turn == 0 and not self.first_thinking_done:
-                thinking_result = self._trigger_thinking(
-                    task_id, 
-                    user_input, 
-                    is_initial=True
+            try:
+                self.hierarchy_manager.set_runtime_metadata(
+                    agent_system=self.config_loader.agent_system_name,
+                    agent_name=self.agent_name,
+                    user_input=user_input,
                 )
-                if thinking_result:
-                    self.latest_thinking = thinking_result
-                    self.first_thinking_done = True
-                    self.hierarchy_manager.update_thinking(self.agent_id, thinking_result)
-                    self._save_state(task_id, user_input, 0)
-        except Exception as e:
-            self._handle_execution_error(e)
-            # sys.exit(1) is called inside, so we don't need to return
-        
-        # 强制工具调用计数器
-        max_tool_try = 0
+            except Exception:
+                pass
 
-        # 执行循环
-        for turn in range(start_turn, self.max_turns):
-            self.event_emitter.dispatch(CliDisplayEvent(
-                message=f"\n--- 第 {turn + 1}/{self.max_turns} 轮执行 ---", 
-                style='separator'
-            ))
+            register_running_task(
+                task_id=task_id,
+                agent_name=self.agent_name,
+                user_input=user_input,
+                agent_system=self.config_loader.agent_system_name,
+            )
+
+            # Agent入栈
+            self.agent_id = self.hierarchy_manager.push_agent(self.agent_name, user_input)
+            self.tool_executor.set_agent_context(agent_id=self.agent_id, agent_name=self.agent_name)
+
+            # 尝试加载已有的对话历史
+            start_turn = self._load_state_from_storage(task_id)
             
             try:
-                self._maybe_run_scheduled_fresh(task_id, user_input, turn)
+                # 首次thinking（初始规划）
+                if start_turn == 0 and not self.first_thinking_done:
+                    thinking_result = self._trigger_thinking(
+                        task_id, 
+                        user_input, 
+                        is_initial=True
+                    )
+                    if thinking_result:
+                        self.latest_thinking = thinking_result
+                        self.first_thinking_done = True
+                        self.hierarchy_manager.update_thinking(self.agent_id, thinking_result)
+                        self._save_state(task_id, user_input, 0)
+            except Exception as e:
+                self._handle_execution_error(e)
+                # sys.exit(1) is called inside, so we don't need to return
+            
+            # 强制工具调用计数器
+            max_tool_try = 0
 
-                # 每轮开始前保存状态
-                self._save_state(task_id, user_input, turn)
-
-                # 检查并压缩历史动作（如果超过限制）
-                self._compress_action_history_if_needed()
-
-                # 构建系统提示词（不含历史动作，历史动作改由 messages 承载）
-                full_system_prompt = self.context_builder.build_context(
-                    task_id,
-                    self.agent_id,
-                    self.agent_name,
-                    user_input,
-                    action_history=self.action_history,
-                    include_action_history=False  # 历史动作通过 messages 传递
-                )
+            # 执行循环
+            for turn in range(start_turn, self.max_turns):
+                self.event_emitter.dispatch(CliDisplayEvent(
+                    message=f"\n--- 第 {turn + 1}/{self.max_turns} 轮执行 ---", 
+                    style='separator'
+                ))
                 
-                # 从 action_history 构建标准 messages 数组
-                messages = self._build_messages_from_action_history()
-                
-                # 调用LLM（使用标准 messages 格式）
-                llm_response = self._execute_llm_call(full_system_prompt, messages)
-                
-                if llm_response.status != "success":
-                    error_result = {
-                        "status": "error",
-                        "output": "LLM调用失败",
-                        "error_information": llm_response.error_information
-                    }
-                    self.hierarchy_manager.pop_agent(self.agent_id, str(error_result))
-                    self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
-                    return error_result
+                try:
+                    self._maybe_run_scheduled_fresh(task_id, user_input, turn)
 
-                if not llm_response.tool_calls:
-                    # 强制工具调用机制
+                    # 每轮开始前保存状态
+                    self._save_state(task_id, user_input, turn)
 
-                    if max_tool_try < 5:
-                        max_tool_try += 1
-                        self.event_emitter.dispatch(CliDisplayEvent(
-                            message=f"⚠️ LLM未调用工具，第{max_tool_try}/5次提醒", 
-                            style='warning'
-                        ))
-                        self.action_history.append({
-                            "_turn": self.llm_turn_counter,
-                            "tool_name": "_no_tool_call",
-                            "arguments": {},
-                            "result": {
-                                "status": "error",
-                                "output": f"第{max_tool_try}次：LLM未调用工具，请在下一轮中必须调用工具"
-                            },
-                            "assistant_content": llm_response.output or ""
-                        })
-                        self.llm_turn_counter += 1
-                        self._save_state(task_id, user_input, turn)
-                        continue
-                    else:
-                        # 5次后仍不调用，触发thinking并报错
-                        thinking_result = self._trigger_thinking(
-                            task_id, 
-                            user_input, 
-                            is_initial=False, 
-                            is_forced=True
-                        )
-                        error_output = thinking_result or "多次未调用工具"
+                    # 检查并压缩历史动作（如果超过限制）
+                    self._compress_action_history_if_needed()
+
+                    # 构建系统提示词（不含历史动作，历史动作改由 messages 承载）
+                    full_system_prompt = self.context_builder.build_context(
+                        task_id,
+                        self.agent_id,
+                        self.agent_name,
+                        user_input,
+                        action_history=self.action_history,
+                        include_action_history=False  # 历史动作通过 messages 传递
+                    )
+                    
+                    # 从 action_history 构建标准 messages 数组
+                    messages = self._build_messages_from_action_history()
+                    
+                    # 调用LLM（使用标准 messages 格式）
+                    llm_response = self._execute_llm_call(full_system_prompt, messages)
+                    
+                    if llm_response.status != "success":
                         error_result = {
                             "status": "error",
-                            "output": error_output,
-                            "error_information": "Agent拒绝调用工具"
+                            "output": "LLM调用失败",
+                            "error_information": llm_response.error_information
                         }
                         self.hierarchy_manager.pop_agent(self.agent_id, str(error_result))
                         self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
-                        self.event_emitter.dispatch(ThinkingFailEvent(agent_name=self.agent_name, error_message=f"[{self.agent_name}] 强制thinking: {thinking_result if thinking_result else '分析失败'}"))
                         return error_result
-                # 重置计数器（成功调用了工具）
-                max_tool_try = 0
 
-                # 提取本轮 LLM 输出的文本内容和推理内容（所有 tool_call 共享）
-                current_assistant_content = llm_response.output or ""
-                current_reasoning_content = llm_response.reasoning_content or ""
-                current_llm_turn = self.llm_turn_counter
+                    if not llm_response.tool_calls:
+                        # 强制工具调用机制
 
-                # 执行所有工具调用
-                for tool_call in llm_response.tool_calls:
-                    final_output_result = self._execute_tool_call(
-                        tool_call, task_id, user_input, turn,
-                        assistant_content=current_assistant_content,
-                        reasoning_content=current_reasoning_content,
-                        llm_turn=current_llm_turn
-                    )
-                    if final_output_result:
-                        self.event_emitter.dispatch(AgentEndEvent(status='success', result=final_output_result))
-                        self.hierarchy_manager.pop_agent(self.agent_id, final_output_result.get("output", ""))
-                        return final_output_result
+                        if max_tool_try < 5:
+                            max_tool_try += 1
+                            self.event_emitter.dispatch(CliDisplayEvent(
+                                message=f"⚠️ LLM未调用工具，第{max_tool_try}/5次提醒", 
+                                style='warning'
+                            ))
+                            self.action_history.append({
+                                "_turn": self.llm_turn_counter,
+                                "tool_name": "_no_tool_call",
+                                "arguments": {},
+                                "result": {
+                                    "status": "error",
+                                    "output": f"第{max_tool_try}次：LLM未调用工具，请在下一轮中必须调用工具"
+                                },
+                                "assistant_content": llm_response.output or ""
+                            })
+                            self.llm_turn_counter += 1
+                            self._save_state(task_id, user_input, turn)
+                            continue
+                        else:
+                            # 5次后仍不调用，触发thinking并报错
+                            thinking_result = self._trigger_thinking(
+                                task_id, 
+                                user_input, 
+                                is_initial=False, 
+                                is_forced=True
+                            )
+                            error_output = thinking_result or "多次未调用工具"
+                            error_result = {
+                                "status": "error",
+                                "output": error_output,
+                                "error_information": "Agent拒绝调用工具"
+                            }
+                            self.hierarchy_manager.pop_agent(self.agent_id, str(error_result))
+                            self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
+                            self.event_emitter.dispatch(ThinkingFailEvent(agent_name=self.agent_name, error_message=f"[{self.agent_name}] 强制thinking: {thinking_result if thinking_result else '分析失败'}"))
+                            return error_result
+                    # 重置计数器（成功调用了工具）
+                    max_tool_try = 0
+
+                    # 提取本轮 LLM 输出的文本内容和推理内容（所有 tool_call 共享）
+                    current_assistant_content = llm_response.output or ""
+                    current_reasoning_content = llm_response.reasoning_content or ""
+                    current_llm_turn = self.llm_turn_counter
+
+                    # 执行所有工具调用
+                    for tool_call in llm_response.tool_calls:
+                        final_output_result = self._execute_tool_call(
+                            tool_call, task_id, user_input, turn,
+                            assistant_content=current_assistant_content,
+                            reasoning_content=current_reasoning_content,
+                            llm_turn=current_llm_turn
+                        )
+                        if final_output_result:
+                            self.event_emitter.dispatch(AgentEndEvent(status='success', result=final_output_result))
+                            self.hierarchy_manager.pop_agent(self.agent_id, final_output_result.get("output", ""))
+                            return final_output_result
+                    
+                    self.llm_turn_counter += 1
+                    
+                    counter_before = self.tool_call_counter - len(llm_response.tool_calls)
+
+                    # 检查是否该触发thinking（每 N 轮工具调用）
+                    # 用整除判断是否跨过了 thinking_interval 边界（避免多 tool_call 跳过边界值）
+                    crossed_boundary = (counter_before // self.thinking_interval) < (self.tool_call_counter // self.thinking_interval)
+                    if self.tool_call_counter > 0 and crossed_boundary:
+                        thinking_result = self._trigger_thinking(task_id, user_input, is_initial=False)
+                        if thinking_result:
+                            self.latest_thinking = thinking_result
+                            self.hierarchy_manager.update_thinking(self.agent_id, thinking_result)
+                            self._save_state(task_id, user_input, turn)
+
+                    # 检查动作窗口是否跨过边界：thinking 完成后再清空当前可见动作窗口
+                    crossed_action_window = (counter_before // self.action_window_steps) < (self.tool_call_counter // self.action_window_steps)
+                    if self.tool_call_counter > 0 and crossed_action_window:
+                        self.action_history = []
+                        self.llm_turn_counter = 0
                 
-                self.llm_turn_counter += 1
-                
-                counter_before = self.tool_call_counter - len(llm_response.tool_calls)
-
-                # 检查是否该触发thinking（每 N 轮工具调用）
-                # 用整除判断是否跨过了 thinking_interval 边界（避免多 tool_call 跳过边界值）
-                crossed_boundary = (counter_before // self.thinking_interval) < (self.tool_call_counter // self.thinking_interval)
-                if self.tool_call_counter > 0 and crossed_boundary:
-                    thinking_result = self._trigger_thinking(task_id, user_input, is_initial=False)
-                    if thinking_result:
-                        self.latest_thinking = thinking_result
-                        self.hierarchy_manager.update_thinking(self.agent_id, thinking_result)
-                        self._save_state(task_id, user_input, turn)
-
-                # 检查动作窗口是否跨过边界：thinking 完成后再清空当前可见动作窗口
-                crossed_action_window = (counter_before // self.action_window_steps) < (self.tool_call_counter // self.action_window_steps)
-                if self.tool_call_counter > 0 and crossed_action_window:
-                    self.action_history = []
-                    self.llm_turn_counter = 0
+                except Exception as e:
+                    self._handle_execution_error(e)
+            timeout_result = {
+                "status": "error",
+                "output": f"执行超过最大轮次限制: {self.max_turns}",
+                "error_information": f"Max turns {self.max_turns} exceeded"
+            }
+            self.hierarchy_manager.pop_agent(self.agent_id, str(timeout_result))
+            self.event_emitter.dispatch(AgentEndEvent(status='error', result=timeout_result))
+            self.event_emitter.dispatch(CliDisplayEvent(
+                message="\n⚠️ 达到最大轮次限制: {self.max_turns}"
+            ))
             
-            except Exception as e:
-                self._handle_execution_error(e)
-        timeout_result = {
-            "status": "error",
-            "output": f"执行超过最大轮次限制: {self.max_turns}",
-            "error_information": f"Max turns {self.max_turns} exceeded"
-        }
-        self.hierarchy_manager.pop_agent(self.agent_id, str(timeout_result))
-        self.event_emitter.dispatch(AgentEndEvent(status='error', result=timeout_result))
-        self.event_emitter.dispatch(CliDisplayEvent(
-            message="\n⚠️ 达到最大轮次限制: {self.max_turns}"
-        ))
-        
-        return timeout_result
+            return timeout_result
+        finally:
+            unregister_running_task(task_id)
 
     def _load_state_from_storage(self, task_id: str) -> int:
         """从存储加载状态, 返回起始轮次."""
@@ -683,7 +708,20 @@ class AgentExecutor:
 
         elif tool_name == "fresh" and tool_result.get("_fresh_requested"):
             reason = tool_result.get("_fresh_reason") or "manual fresh requested"
-            ok, msg = self._perform_fresh(task_id, user_input, turn, reason)
+            target_task_id = str(tool_result.get("_fresh_task_id") or "").strip() or task_id
+            if target_task_id == task_id:
+                ok, msg = self._perform_fresh(task_id, user_input, turn, reason)
+            elif is_task_running(target_task_id):
+                request_fresh(reason=reason, task_id=target_task_id)
+                ok = True
+                msg = f"已向运行中的任务发送 fresh 请求: {target_task_id}"
+            else:
+                ok, msg = resume_task_with_fresh(
+                    task_id=target_task_id,
+                    reason=reason,
+                    fallback_agent_system=self.config_loader.agent_system_name,
+                    direct_tools=self.direct_tools,
+                )
             if ok:
                 tool_result["output"] = f"{tool_result.get('output', '').strip()}\n\n{msg}".strip()
             else:
@@ -692,9 +730,10 @@ class AgentExecutor:
                 tool_result["output"] = ""
             tool_result.pop("_fresh_requested", None)
             tool_result.pop("_fresh_reason", None)
+            tool_result.pop("_fresh_task_id", None)
 
     def _maybe_run_scheduled_fresh(self, task_id: str, user_input: str, turn: int):
-        external_reason = pop_fresh_request()
+        external_reason = pop_fresh_request(task_id)
         if external_reason:
             self._perform_fresh(task_id, user_input, turn, external_reason)
             return
@@ -749,7 +788,8 @@ class AgentExecutor:
             llm_client=self.llm_client,
             max_context_window=self.llm_client.max_context_window
         )
-        self.tool_executor = ToolExecutor(self.config_loader, self.hierarchy_manager, direct_mode=True)
+        self.tool_executor = ToolExecutor(self.config_loader, self.hierarchy_manager, direct_mode=self.direct_tools)
+        self.tool_executor.set_agent_context(agent_id=self.agent_id, agent_name=self.agent_name)
 
         self._save_state(task_id, user_input, turn)
         self.event_emitter.dispatch(CliDisplayEvent(
