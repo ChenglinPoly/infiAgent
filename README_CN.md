@@ -33,7 +33,10 @@
 
 如果你在最新更新日期前拉取镜像或者代码，请参考修复的问题，重新拉取镜像和代码。
 - [2026/03/08] **桌面端分支同步更新：** 当前 `desktop-app` 分支已经加入打包 Python 后端构建脚本、内置 `infiagent` Python SDK、可配置运行时节奏（`action_window_steps`、`thinking_interval`、定时/手动 `fresh`）、MCP 运行时接入、单任务日志、桌面端环境设置和 marketplace 集成。旧的独立 `tool-server` 工作流已被进程内 `direct-tools` 替代，内置科研系统名称也统一为 `Researcher`。
-- [2026/02/09] **mac系统桌面端发布！**  [点击此处跳转下载页面](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0)。支持 skills的外部库导入，支持不同智能体共享记忆接力工作，支持本地模型完全本地化运行。
+
+ [点击此处跳转下载页面](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0).
+
+- [2026/02/09] **mac系统桌面端发布！**  [点击此处跳转下载页面](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0)。支持 skills的外部库导入，支持不同智能体共享记忆接力工作，支持本地模型完全本地化运行。
 
 <img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/bae36a54-7c70-4ba5-a2cf-3d53856ca461" />
 
@@ -716,7 +719,7 @@ agent.fresh(
     reason="reload runtime config",
 )
 
-# 向同一个 task 追加新指令。
+# 向同一个 task（不是 task_id正在运行中的智能体） 追加新指令。
 agent.add_message(
     "保留已有大纲，只修改第三节。",
     task_id="/abs/path/to/tasks/transformer_survey",
@@ -724,7 +727,7 @@ agent.add_message(
     resume_if_needed=True,
 )
 
-# 启动新的后台 Python 进程执行另一个 task。
+# 启动新的后台 Python 进程执行另一个 task。（可以是相同 task_id，将获得此 id下之前 task的所有记忆）
 agent.start_background_task(
     task_id="/abs/path/to/tasks/subtask_eval",
     user_input="后台运行评测流程并总结结果",

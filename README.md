@@ -33,7 +33,9 @@ If you pulled the image or code before the latest update date, please refer to t
 
 - [2026/03/08] **Desktop branch sync update:** The current desktop branch now includes packaged Python backend build scripts, the bundled `infiagent` Python SDK, configurable runtime cadence (`action_window_steps`, `thinking_interval`, scheduled/manual `fresh`), MCP runtime integration, per-task logs, desktop environment settings, and marketplace integration. The legacy standalone tool-server workflow has been replaced by in-process `direct-tools`, and the built-in research system is now named `Researcher`.
 
-- [2026/02/09] **Mac desktop version released!** [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.0.0). Support download skills from offical market. It supports any API that is allowed to be called by tools, and runs fully locally with the support of the localization model.
+  [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0).
+
+- [2026/02/09] **Mac desktop version released!** [Click here to download!](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0). Support download skills from offical market. It supports any API that is allowed to be called by tools, and runs fully locally with the support of the localization model.
   <img width="1198" height="798" alt="image" src="https://github.com/user-attachments/assets/435c5bd9-ace1-46a8-9814-883d3ce507d4" />
 
 
