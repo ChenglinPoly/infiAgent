@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -23,16 +22,8 @@ import yaml
 
 
 def get_project_root() -> Path:
-    """获取当前 Python 后端项目根目录或安装后的资源根目录。"""
-    source_root = Path(__file__).resolve().parent.parent
-    if (source_root / "config").exists() or (source_root / "skills").exists():
-        return source_root
-
-    install_root = Path(sys.prefix).resolve()
-    if (install_root / "config").exists() or (install_root / "skills").exists():
-        return install_root
-
-    return source_root
+    """获取当前 Python 后端项目根目录。"""
+    return Path(__file__).resolve().parent.parent
 
 
 def get_user_data_root() -> Path:

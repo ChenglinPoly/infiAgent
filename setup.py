@@ -15,77 +15,37 @@ long_description = readme_file.read_text(encoding='utf-8') if readme_file.exists
 # 读取依赖
 requirements_file = Path(__file__).parent / "requirements.txt"
 if requirements_file.exists():
-    raw_requirements = [
+    requirements = [
         line.strip() for line in requirements_file.read_text(encoding='utf-8').strip().split('\n')
         if line.strip() and not line.strip().startswith('#')
     ]
 else:
-    raw_requirements = []
-
-requirements = []
-seen = set()
-for req in raw_requirements:
-    normalized = req.split(";")[0].strip().lower()
-    if normalized.startswith("pytest"):
-        continue
-    if normalized in seen:
-        continue
-    seen.add(normalized)
-    requirements.append(req)
-
-
-def _collect_data_files(base_dir: Path, install_prefix: str):
-    files = []
-    if not base_dir.exists():
-        return files
-    project_root = Path(__file__).parent
-    for path in base_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        relative_parent = path.parent.relative_to(base_dir)
-        target_dir = Path(install_prefix) / relative_parent
-        files.append((str(target_dir), [str(path.relative_to(project_root))]))
-    return files
-
-
-data_files = []
-project_root = Path(__file__).parent
-data_files.extend(_collect_data_files(project_root / "config", "config"))
-data_files.extend(_collect_data_files(project_root / "skills", "skills"))
+    requirements = []
 
 setup(
-    name="infiagent",
-    version="3.0.1",
+    name="mla-agent",
+    version="3.0.0",
     author="Chenglin Yu",
     author_email="yuchenglin96@qq.com",
-    license="MIT",
-    description="InfiAgent multi-agent framework for long-running task automation",
+    description="Multi-Level Agent System for complex task automation",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/ChenglinPoly/Multi-Level-Agent",
-    packages=find_packages(
-        include=[
-            'core',
-            'infiagent',
-            'services',
-            'tool_server_lite',
-            'tool_server_lite.tools',
-            'utils',
-        ],
-    ),
+    packages=find_packages(exclude=['test*', 'task_*', 'conversations']),
     py_modules=['start'],
     include_package_data=True,
     package_data={
-        'tool_server_lite': ['requirements.txt'],
-        'tool_server_lite.tools': ['*.md', '*.txt'],
+        'MLA_V3': [
+            'config/**/*.yaml',
+            'tool_server_lite/**/*.py',
+            'tool_server_lite/**/*.md',
+            'tool_server_lite/requirements.txt',
+        ],
     },
-    data_files=data_files,
-    license_files=(),
     install_requires=requirements,
     python_requires='>=3.9',
     entry_points={
         'console_scripts': [
-            'infiagent=start:main',
             'mla-agent=start:main',
         ],
     },

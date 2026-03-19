@@ -13,14 +13,13 @@ import zipfile
 import tempfile
 import shutil
 from .file_tools import BaseTool, get_abs_path
-from utils.user_paths import get_project_root
 
 
 def load_convert_api_config() -> str:
     """读取文档转换 API 配置"""
     try:
         # 查找配置文件
-        config_path = get_project_root() / "config" / "run_env_config" / "document_convert_api.yaml"
+        config_path = Path(__file__).parent.parent.parent / "config" / "run_env_config" / "document_convert_api.yaml"
         
         if not config_path.exists():
             return "如果有的话:8000/"  # 默认地址
@@ -303,3 +302,4 @@ class MarkdownToDocxTool(BaseTool):
                 "output": "",
                 "error": str(e)
             }
+
