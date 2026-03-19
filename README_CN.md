@@ -6,7 +6,7 @@
   <h1>MLA V3 - 打造专属领域的 SOTA 级智能体</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.0-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.0.3-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
     <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
   </p>
@@ -32,6 +32,10 @@
 ### 更新 & 新闻🔥
 
 如果你在最新更新日期前拉取镜像或者代码，请参考修复的问题，重新拉取镜像和代码。
+- [2026/03/19] **基于 `infiagent` SDK 推出 CheapClaw：** CheapClaw 现在作为基于 SDK 的应用层发布，在保留 OpenCowork 大部分实用能力的基础上，支持自定义 bot、多 bot 协作、对接各种 IM 软件以及 Skills，同时完整继承 `infiagent` 的能力模型：单个 bot 背后可挂多智能体系统、支持低成本长程任务，并在单个 bot 内实现按 task 隔离上下文。同一个 bot 下，不同 task 的历史上下文彼此隔离，而同一个 task 会持续复用同一份长程上下文，而不是共享单一 bot session。[点击这里查看 CheapClaw](https://github.com/polyuiislab/CheapClaw)。
+
+- [2026/03/19] **子智能体模型配置更加细粒度：** 现在单个子智能体可以独立配置 `execution_model`、`thinking_model`、`compressor_model`、`image_generation_model` 和 `read_figure_model`，从而在单个 agent loop 中把执行、思考、压缩以及多模态/读图工作拆分给不同模型，在应用层层面上最细粒度地控制成本。与此同时，可以在 `llm_config.example.yaml` 中为每个模型配置 `tool_choice` 选项。可参考默认 `OpenCowork` 配置中 Level 3 的 `alpha_agent` 写法。
+
 - [2026/03/08] **桌面端分支同步更新：** 当前 `desktop-app` 分支已经加入打包 Python 后端构建脚本、内置 `infiagent` Python SDK、可配置运行时节奏（`action_window_steps`、`thinking_interval`、定时/手动 `fresh`）、MCP 运行时接入、单任务日志、桌面端环境设置和 marketplace 集成。旧的独立 `tool-server` 工作流已被进程内 `direct-tools` 替代，内置科研系统名称也统一为 `Researcher`。
 
  [点击此处跳转下载页面](https://github.com/polyuiislab/infiAgent/releases/tag/MAC_OS_V1.1.0).
