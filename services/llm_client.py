@@ -9,14 +9,21 @@ import os
 import yaml
 import time
 import json
+import copy
 import concurrent.futures
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from litellm import completion  # 直接导入completion函数
 import litellm
 
-from utils.user_paths import ensure_user_llm_config_exists
+from utils.user_paths import (
+    ensure_user_llm_config_exists,
+    get_task_file_prefix,
+    get_user_conversations_dir,
+    get_user_runtime_dir,
+)
 
 
 @dataclass
@@ -86,16 +93,26 @@ class SimpleLLMClient:
         self.figure_models = []
         self.compressor_models = []
         self.model_configs = {}  # 模型名称 -> 配置字典
-        
-        self._parse_models_config(self.config.get("models", []), self.models)
-        self._parse_models_config(self.config.get("figure_models", []), self.figure_models)
-        self._parse_models_config(self.config.get("compressor_models", []), self.compressor_models)
+        self.default_models = {}
+
+        self._parse_models_config(self.config.get("models", []), self.models, "execution")
+        self._parse_models_config(self.config.get("figure_models", []), self.figure_models, "image_generation")
+        self._parse_models_config(self.config.get("compressor_models", []), self.compressor_models, "compressor")
         self.thinking_models = []
-        self._parse_models_config(self.config.get("thinking_models", []), self.thinking_models)
+        self._parse_models_config(self.config.get("thinking_models", []), self.thinking_models, "thinking")
         # 如果没有配置 thinking_models，回退到 models
         if not self.thinking_models:
             self.thinking_models = list(self.models)
-
+        self.default_models.setdefault("thinking", self.thinking_models[0] if self.thinking_models else "")
+        self.read_figure_models = []
+        self._parse_models_config(self.config.get("read_figure_models", []), self.read_figure_models, "read_figure")
+        if not self.read_figure_models:
+            self.read_figure_models = list(self.models)
+        self.default_models.setdefault("read_figure", self.read_figure_models[0] if self.read_figure_models else "")
+        self.default_models.setdefault("execution", self.models[0] if self.models else "")
+        self.default_models.setdefault("image_generation", self.figure_models[0] if self.figure_models else "")
+        self.default_models.setdefault("compressor", self.compressor_models[0] if self.compressor_models else "")
+        self.default_tool_choice = self._load_default_tool_choice()
         # 多模态配置
         self.multimodal = self.config.get("multimodal", False)
         self.compressor_multimodal = self.config.get("compressor_multimodal", False)
@@ -126,7 +143,7 @@ class SimpleLLMClient:
         safe_print(f"   超时配置: timeout={self.timeout}s, stream_timeout={self.stream_timeout}s, first_chunk_timeout={self.first_chunk_timeout}s")
         safe_print(f"   多模态: multimodal={self.multimodal}, compressor_multimodal={self.compressor_multimodal}")
     
-    def _parse_models_config(self, models_config: List, target_list: List):
+    def _parse_models_config(self, models_config: List, target_list: List, category: str):
         """
         解析模型配置，支持两种格式：
         1. 字符串格式：直接是模型名称
@@ -136,11 +153,14 @@ class SimpleLLMClient:
             models_config: 原始模型配置列表
             target_list: 目标列表（self.models, self.figure_models 等）
         """
+        default_name = ""
         for model_item in models_config:
             if isinstance(model_item, str):
                 # 简单格式：直接是模型名称
                 target_list.append(model_item)
                 self.model_configs[model_item] = {}
+                if not default_name:
+                    default_name = model_item
             elif isinstance(model_item, dict):
                 # 对象格式：包含额外参数
                 model_name = model_item.get("name")
@@ -152,11 +172,129 @@ class SimpleLLMClient:
                 # 保存除 name 外的所有参数
                 extra_params = {k: v for k, v in model_item.items() if k != "name"}
                 self.model_configs[model_name] = extra_params
-                
+                if extra_params.get("default") is True:
+                    default_name = model_name
+                elif not default_name:
+                    default_name = model_name
+
                 if extra_params:
                     safe_print(f"   📝 模型 {model_name} 配置了额外参数: {list(extra_params.keys())}")
             else:
                 safe_print(f"⚠️ 不支持的模型配置格式，跳过: {model_item}")
+        if default_name:
+            self.default_models[category] = default_name
+
+    def _load_default_tool_choice(self) -> Dict[str, str]:
+        raw = self.config.get("tool_choice", {}) or {}
+        defaults = {
+            "execution": "required",
+            "thinking": "none",
+            "compressor": "none",
+            "image_generation": "none",
+            "read_figure": "none",
+        }
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                normalized = str(value or "").strip().lower()
+                if normalized in {"required", "auto", "none"}:
+                    defaults[str(key)] = normalized
+        elif isinstance(raw, str):
+            normalized = str(raw).strip().lower()
+            if normalized in {"required", "auto", "none"}:
+                defaults["execution"] = normalized
+        return defaults
+
+    def get_default_tool_choice(self, category: str = "execution") -> str:
+        return self.default_tool_choice.get(category, "required")
+
+    def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
+        debug_msgs = copy.deepcopy(messages)
+        for debug_msg in debug_msgs:
+            content = debug_msg.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        image_url = part.get("image_url", {}).get("url", "")
+                        if len(image_url) > 120:
+                            part["image_url"]["url"] = image_url[:80] + f"...({len(image_url)} chars)"
+            elif isinstance(content, str) and len(content) > 2000:
+                if (debug_msg.get("role") or "").lower() != "system":
+                    debug_msg["content"] = content[:2000] + f"\n...({len(content)} chars total)"
+        return debug_msgs
+
+    def _resolve_debug_output_path(self, debug_task_id: Optional[str]) -> Path:
+        debug_task_id = str(debug_task_id or "").strip()
+        if debug_task_id:
+            conversations_dir = get_user_conversations_dir()
+            conversations_dir.mkdir(parents=True, exist_ok=True)
+            return conversations_dir / f"{get_task_file_prefix(debug_task_id)}_llm_debug.jsonl"
+
+        debug_dir = get_user_runtime_dir() / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        return debug_dir / "llm_debug.jsonl"
+
+    def _append_debug_record(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        debug_task_id: Optional[str] = None,
+        debug_label: str = "execution",
+        tool_choice: Optional[str] = None,
+        tool_count: int = 0,
+        emit_tokens: Optional[str] = None,
+    ) -> None:
+        debug_file = self._resolve_debug_output_path(debug_task_id)
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "pid": os.getpid(),
+            "task_id": str(debug_task_id or "").strip() or None,
+            "debug_label": str(debug_label or "execution").strip() or "execution",
+            "model": model,
+            "message_count": len(messages),
+            "tool_count": tool_count,
+            "tool_choice": tool_choice,
+            "emit_tokens": emit_tokens,
+            "messages": self._build_debug_messages_snapshot(messages),
+        }
+        with open(debug_file, "a", encoding="utf-8") as debug_handle:
+            debug_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        safe_print(f"📋 DEBUG: messages JSONL 已追加到 {debug_file}")
+
+    def resolve_model(self, category: str = "execution", preferred: Optional[str] = None) -> str:
+        model_groups = {
+            "execution": self.models,
+            "thinking": self.thinking_models or self.models,
+            "compressor": self.compressor_models or self.models,
+            "image_generation": self.figure_models or self.models,
+            "read_figure": self.read_figure_models or self.models,
+        }
+        candidates = model_groups.get(category, self.models) or self.models
+        preferred_name = str(preferred or "").strip()
+        if preferred_name and preferred_name in candidates:
+            return preferred_name
+        default_name = str(self.default_models.get(category) or "").strip()
+        if default_name and default_name in candidates:
+            return default_name
+        return candidates[0] if candidates else preferred_name
+
+    def resolve_tool_choice(
+        self,
+        category: str = "execution",
+        model: Optional[str] = None,
+        requested: Optional[str] = None,
+    ) -> str:
+        normalized_requested = str(requested or "").strip().lower()
+        if normalized_requested in {"required", "auto", "none"}:
+            return normalized_requested
+
+        normalized_model = str(model or "").strip()
+        if normalized_model:
+            model_choice = str(self.model_configs.get(normalized_model, {}).get("tool_choice", "")).strip().lower()
+            if model_choice in {"required", "auto", "none"}:
+                return model_choice
+
+        return self.get_default_tool_choice(category)
     
     def chat(
         self,
@@ -164,11 +302,14 @@ class SimpleLLMClient:
         model: str,
         system_prompt: str,
         tool_list: List[str],
-        tool_choice: str = "required",
+        tool_choice: Optional[str] = None,
         temperature: float = None,
         max_tokens: int = None,
         max_retries: int = 3,
-        emit_tokens: str = None
+        emit_tokens: str = None,
+        debug_task_id: Optional[str] = None,
+        debug_label: str = "execution",
+        stream_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> LLMResponse:
         """
         调用LLM进行对话 (增强版：支持流式监控、自动重试、参数修复)
@@ -180,10 +321,12 @@ class SimpleLLMClient:
             model: 模型名称
             system_prompt: 系统提示词
             tool_list: 可用工具列表
-            tool_choice: 工具选择策略
+            tool_choice: 工具选择策略；None 表示由调用方或模型配置决定
             temperature: 温度参数（None则使用配置文件默认值）
             max_tokens: 最大token数（None则使用配置文件默认值）
             max_retries: 最大重试次数（默认3次，即总共最多4次尝试）
+            debug_task_id: 可选 task_id；传入后调试请求会按 task 追加到 conversations 目录
+            debug_label: 调试记录标签，用于区分 execution / thinking / compressor 等来源
             
         Returns:
             LLMResponse对象
@@ -214,7 +357,7 @@ class SimpleLLMClient:
             # 调用内部实现
             response = self._chat_internal(
                 history, model, fixed_system_prompt, tool_list, 
-                tool_choice, temperature, max_tokens, emit_tokens
+                tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
             )
             
             # 如果成功，直接返回
@@ -238,7 +381,7 @@ class SimpleLLMClient:
                     # 立即重试，不计入retry_count
                     response = self._chat_internal(
                         history, model, fixed_system_prompt, tool_list, 
-                        tool_choice, temperature, max_tokens, emit_tokens
+                        tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
                     )
                     
                     if response.status == "success":
@@ -276,7 +419,10 @@ class SimpleLLMClient:
         tool_choice: str,
         temperature: float,
         max_tokens: int,
-        emit_tokens: str = None
+        emit_tokens: str = None,
+        debug_task_id: Optional[str] = None,
+        debug_label: str = "execution",
+        stream_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> LLMResponse:
         """
         LLM调用的内部实现（使用 LiteLLM 原生超时机制）
@@ -286,8 +432,23 @@ class SimpleLLMClient:
                 None - 不发送（默认，用于 compressor 等辅助调用）
                 "token" - 发送 content delta 为 token 事件（主 Agent 调用）
                 "thinking" - 发送 content delta 为 thinking_token 事件（Thinking Agent 调用）
+            debug_task_id: 可选 task_id；传入后调试请求会按 task 追加到 conversations 目录
+            debug_label: 调试记录标签，用于区分不同类型的 LLM 调用
         """
         try:
+            def _emit_stream_chunk(kind: str, text: str, current_model: str):
+                if not stream_callback or not text:
+                    return
+                try:
+                    stream_callback({
+                        "kind": str(kind or "content"),
+                        "text": text,
+                        "model": current_model,
+                        "debug_label": debug_label,
+                    })
+                except Exception:
+                    pass
+
             # 构建工具定义（OpenAI格式）
             tools_definition = self._build_tools_definition(tool_list)
             
@@ -303,36 +464,6 @@ class SimpleLLMClient:
                 else:
                     # 尝试 duck typing
                     messages.append({"role": msg.role, "content": msg.content})
-            
-            # === DEBUG: 将完整 messages 结构写入文件（base64 截断） ===
-            try:
-                import copy as _copy
-                from datetime import datetime as _dt
-                _debug_msgs = _copy.deepcopy(messages)
-                for _dm in _debug_msgs:
-                    _c = _dm.get("content")
-                    if isinstance(_c, list):
-                        for _part in _c:
-                            if isinstance(_part, dict) and _part.get("type") == "image_url":
-                                _url = _part.get("image_url", {}).get("url", "")
-                                if len(_url) > 120:
-                                    _part["image_url"]["url"] = _url[:80] + f"...({len(_url)} chars)"
-                    elif isinstance(_c, str) and len(_c) > 2000:
-                        # 不截断 system prompt（用于排查真实传参），其余消息仍做截断避免 debug 文件过大
-                        if (_dm.get("role") or "").lower() != "system":
-                            _dm["content"] = _c[:2000] + f"\n...({len(_c)} chars total)"
-                _debug_file = Path(__file__).parent.parent / "tests" / "debug_messages.json"
-                with open(_debug_file, 'w', encoding='utf-8') as _f:
-                    json.dump({
-                        "timestamp": _dt.now().isoformat(),
-                        "model": model,
-                        "message_count": len(messages),
-                        "messages": _debug_msgs
-                    }, _f, indent=2, ensure_ascii=False)
-                safe_print(f"📋 DEBUG: messages JSON 已写入 {_debug_file}")
-            except Exception as _e:
-                safe_print(f"⚠️ DEBUG 写入失败: {_e}")
-            # === END DEBUG ===
             
             # 获取模型级别的配置（可覆盖全局 api_key 和 base_url）
             model_extra_params = self.model_configs.get(model, {})
@@ -368,6 +499,21 @@ class SimpleLLMClient:
                 kwargs["parallel_tool_calls"] = False
             # 注意：当 tools_definition 为空时，即使 tool_choice="none" 也不添加任何参数
             # 这避免了 API 错误：When using `tool_choice`, `tools` must be set
+
+            # === DEBUG: 将完整 messages 结构追加写入 task 级 JSONL ===
+            try:
+                self._append_debug_record(
+                    messages=messages,
+                    model=model,
+                    debug_task_id=debug_task_id,
+                    debug_label=debug_label,
+                    tool_choice=tool_choice,
+                    tool_count=len(tools_definition),
+                    emit_tokens=emit_tokens,
+                )
+            except Exception as debug_error:
+                safe_print(f"⚠️ DEBUG 写入失败: {debug_error}")
+            # === END DEBUG ===
             
             # 添加模型特定的额外参数（api_key 和 base_url 已在上面处理）
             if model_extra_params:
@@ -452,6 +598,7 @@ class SimpleLLMClient:
                                     delta = first_chunk.choices[0].delta
                                     if hasattr(delta, 'content') and delta.content:
                                         accumulated_content += delta.content
+                                        _emit_stream_chunk("content", delta.content, response_model)
                                         # 关键修复：首包的 delta.content 不能只累积不发送，否则前端会丢失首 token
                                         try:
                                             safe_print(delta.content, end="", flush=True)
@@ -469,6 +616,7 @@ class SimpleLLMClient:
                                     # 累积 reasoning_content（thinking/reasoning 模型）
                                     if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                                         accumulated_reasoning_content += delta.reasoning_content
+                                        _emit_stream_chunk("reasoning", delta.reasoning_content, response_model)
                                         # 关键修复：首包的 reasoning_content 同样需要发出（否则 reasoning/thinking 首段缺失）
                                         try:
                                             if emit_tokens:
@@ -523,6 +671,7 @@ class SimpleLLMClient:
                         # A. 累积文本内容
                         if hasattr(delta, 'content') and delta.content:
                             accumulated_content += delta.content
+                            _emit_stream_chunk("content", delta.content, response_model)
                             try:
                                 safe_print(delta.content, end="", flush=True)
                                 if emit_tokens:
@@ -539,6 +688,7 @@ class SimpleLLMClient:
                         # A2. 累积 reasoning_content（thinking/reasoning 模型）
                         if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                             accumulated_reasoning_content += delta.reasoning_content
+                            _emit_stream_chunk("reasoning", delta.reasoning_content, response_model)
                             try:
                                 if emit_tokens:
                                     from utils.event_emitter import get_event_emitter as _get_ee2

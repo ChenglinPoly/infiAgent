@@ -245,6 +245,16 @@ class SDKRuntimePathTests(unittest.TestCase):
         self.assertEqual(launch_config["context_hooks"], hooks)
         self.assertTrue(launch_config["seed_builtin_resources"])
 
+    def test_max_turns_is_exposed_in_launch_config(self):
+        agent = infiagent(
+            user_data_root=str((self.base / "max_turns_root").resolve()),
+            max_turns=321,
+        )
+        launch_config = agent._build_launch_config()
+        self.assertEqual(launch_config["max_turns"], 321)
+        runtime = agent.describe_runtime()
+        self.assertEqual(runtime["max_turns"], 321)
+
 
 if __name__ == "__main__":
     unittest.main()

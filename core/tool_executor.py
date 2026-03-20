@@ -25,7 +25,16 @@ class ToolExecutor:
         "execute_command", # 执行命令
     ]
     
-    def __init__(self, config_loader, hierarchy_manager, direct_mode=False):
+    def __init__(
+        self,
+        config_loader,
+        hierarchy_manager,
+        direct_mode=False,
+        extra_event_handlers=None,
+        exit_on_error: bool = True,
+        raise_on_error: bool = False,
+        stream_llm_tokens: bool = False,
+    ):
         """
         初始化工具执行器
         
@@ -37,6 +46,10 @@ class ToolExecutor:
         self.config_loader = config_loader
         self.hierarchy_manager = hierarchy_manager
         self.direct_mode = True
+        self.extra_event_handlers = list(extra_event_handlers or [])
+        self.exit_on_error = bool(exit_on_error)
+        self.raise_on_error = bool(raise_on_error)
+        self.stream_llm_tokens = bool(stream_llm_tokens)
         self._tools_registry = None  # 懒加载
         safe_print("🔧 工具执行器: 进程内直接调用模式（无需 ToolServer）")
         
@@ -319,7 +332,11 @@ class ToolExecutor:
                 agent_config=agent_config,
                 config_loader=self.config_loader,
                 hierarchy_manager=self.hierarchy_manager,
-                direct_tools=self.direct_mode
+                direct_tools=self.direct_mode,
+                extra_event_handlers=self.extra_event_handlers,
+                exit_on_error=self.exit_on_error,
+                raise_on_error=self.raise_on_error,
+                stream_llm_tokens=self.stream_llm_tokens,
             )
             
             # 执行子Agent

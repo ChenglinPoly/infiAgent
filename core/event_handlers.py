@@ -4,11 +4,70 @@
 实现具体的事件处理器 (Event Handlers) - v2 (事件分类规范化)
 """
 
-from gc import is_finalized
-import json
+from __future__ import annotations
+
+from dataclasses import asdict, is_dataclass
+from typing import Any, Callable, Dict, List, Optional
+
 from .events import *
 from utils.windows_compat import safe_print
 from utils.event_emitter import get_event_emitter as get_jsonl_emitter
+
+
+def _normalize_event_value(value: Any) -> Any:
+    if is_dataclass(value):
+        return {key: _normalize_event_value(item) for key, item in asdict(value).items()}
+    if isinstance(value, dict):
+        return {str(key): _normalize_event_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_event_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_event_value(item) for item in value]
+    return value
+
+
+def serialize_agent_event(event: AgentEvent) -> Dict[str, Any]:
+    event_type = str(getattr(event, "event_type", "") or "")
+    parts = event_type.split(".", 2)
+    phase = parts[0] if len(parts) > 0 else ""
+    domain = parts[1] if len(parts) > 1 else ""
+    action = parts[2] if len(parts) > 2 else ""
+
+    if is_dataclass(event):
+        payload = _normalize_event_value(asdict(event))
+    else:
+        payload = {}
+
+    return {
+        "event_type": event_type,
+        "phase": phase,
+        "domain": domain,
+        "action": action,
+        "payload": payload,
+    }
+
+
+class StructuredEventHandler:
+    """将内部 AgentEvent 规范化为 SDK 友好的结构化字典。"""
+
+    def __init__(
+        self,
+        *,
+        callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        collector: Optional[List[Dict[str, Any]]] = None,
+    ):
+        self.callback = callback
+        self.collector = collector
+
+    def handle(self, event: AgentEvent):
+        normalized = serialize_agent_event(event)
+        self.emit(normalized)
+
+    def emit(self, normalized: Dict[str, Any]):
+        if self.collector is not None:
+            self.collector.append(normalized)
+        if self.callback is not None:
+            self.callback(normalized)
 
 class ConsoleLogHandler:
     """

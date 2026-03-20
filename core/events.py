@@ -68,6 +68,10 @@ class ThinkingEndEvent(AgentEvent):
     agent_name: str
     is_initial: bool
     result: str
+    model: str = ""
+    raw_output: str = ""
+    raw_reasoning_content: str = ""
+    finish_reason: str = ""
     # Default arguments last
     is_forced: bool = False 
     timestamp: float = field(default_factory=time.time)
@@ -100,6 +104,9 @@ class LlmCallEndEvent(AgentEvent):
     
     llm_output: str
     tool_calls: List[Dict]
+    model: str = ""
+    reasoning_content: str = ""
+    finish_reason: str = ""
     # Default arguments last
     timestamp: float = field(default_factory=time.time)
 

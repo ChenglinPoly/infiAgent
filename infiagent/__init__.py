@@ -2,5 +2,6 @@
 # -*- coding: utf-8 -*-
 
 from .sdk import InfiAgent, infiagent
+from core.runtime_exceptions import InfiAgentRunError
 
-__all__ = ["InfiAgent", "infiagent"]
+__all__ = ["InfiAgent", "InfiAgentRunError", "infiagent"]

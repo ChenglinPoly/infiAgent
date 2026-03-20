@@ -4,7 +4,7 @@
   <h1>MLA V3 - Build Domain-Specific SOTA-Level AI Agents</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.3-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.0.7-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
     <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
   </p>
@@ -342,7 +342,7 @@ Agent asks: "What is the methodology?"
 
 A key insight: **The current file system state represents the effect of all historical actions.**
 
-- ✅ A separate **thinking module** updates file space state every 10 steps
+- ✅ A separate **thinking module** updates file space state every 30 steps
 - ✅ Agents only retain **the last 10 actions** (since last state update)
 - ✅ **No need for context compression**
 - ✅ Historical actions are reflected in file system, not conversation history
@@ -702,8 +702,9 @@ agent = infiagent(
     user_data_root="/abs/path/to/my_root",
     default_agent_system="Researcher",
     default_agent_name="alpha_agent",
-    action_window_steps=20,
-    thinking_interval=20,
+    action_window_steps=30,
+    thinking_interval=30,
+    max_turns=100000,
     fresh_enabled=True,
     fresh_interval_sec=300,
 )
