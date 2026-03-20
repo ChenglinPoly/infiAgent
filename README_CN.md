@@ -6,7 +6,7 @@
   <h1>MLA V3 - 打造专属领域的 SOTA 级智能体</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.3-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.0.7-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
     <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
   </p>
@@ -344,7 +344,7 @@ alpha_agent（Level 3）
 
 一个关键洞察：**当前文件系统状态代表了所有历史操作的效果。**
 
-- ✅ 一个独立的 **thinking 模块**每 10 步更新一次文件空间状态
+- ✅ 一个独立的 **thinking 模块**每 30 步更新一次文件空间状态
 - ✅ 智能体仅保留**最近 10 个操作**（自上次状态更新以来）
 - ✅ **无需上下文压缩**
 - ✅ 历史操作反映在文件系统中，而非对话历史
@@ -690,8 +690,9 @@ agent = infiagent(
     user_data_root="/abs/path/to/my_root",
     default_agent_system="Researcher",
     default_agent_name="alpha_agent",
-    action_window_steps=20,
-    thinking_interval=20,
+    action_window_steps=30,
+    thinking_interval=30,
+    max_turns=100000,
     fresh_enabled=True,
     fresh_interval_sec=300,
 )

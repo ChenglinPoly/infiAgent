@@ -4,9 +4,10 @@
 Agent执行器 - 使用标准消息格式的核心执行逻辑
 历史动作通过 messages 数组传递（而非 system_prompt），支持多模态图片嵌入
 """
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 import sys
 import json
+import os
 import time
 import traceback
 from collections import OrderedDict
@@ -40,6 +41,7 @@ from utils.mcp_manager import get_mcp_tools, reload_mcp_tools
 from .agent_event_emitter import AgentEventEmitter
 from .event_handlers import ConsoleLogHandler, JsonlStreamHandler
 from .events import *
+from .runtime_exceptions import InfiAgentRunError
 from utils.windows_compat import safe_print
 
 
@@ -52,7 +54,11 @@ class AgentExecutor:
         agent_config: Dict,
         config_loader,
         hierarchy_manager,
-        direct_tools: bool = False
+        direct_tools: bool = False,
+        extra_event_handlers: Optional[List[Any]] = None,
+        exit_on_error: bool = True,
+        raise_on_error: bool = False,
+        stream_llm_tokens: bool = False,
     ):
         """初始化Agent执行器"""
         self.agent_name = agent_name
@@ -60,13 +66,17 @@ class AgentExecutor:
         self.config_loader = config_loader
         self.hierarchy_manager = hierarchy_manager
         self.direct_tools = direct_tools
+        self.extra_event_handlers = list(extra_event_handlers or [])
+        self.exit_on_error = bool(exit_on_error)
+        self.raise_on_error = bool(raise_on_error)
+        self.stream_llm_tokens = bool(stream_llm_tokens)
         
         self._setup_event_emitter()
 
         # 从配置中提取信息
         self.available_tools = list(agent_config.get("available_tools", []))
-        self.max_turns = 10000000
-        requested_model = agent_config.get("model_type", "claude-3-7-sonnet-20250219")
+        self.max_turns = self._resolve_max_turns()
+        requested_model = self._get_agent_model_preference("execution")
         self._inject_mcp_tools()
         
         # 初始化LLM客户端
@@ -75,11 +85,11 @@ class AgentExecutor:
         
         # 验证并调整模型
         available_models = self.llm_client.models
-        final_model = requested_model
+        final_model = self.llm_client.resolve_model("execution", requested_model)
         is_fallback = False
-        if requested_model not in available_models:
-            final_model = available_models[0]
+        if requested_model and requested_model not in available_models:
             is_fallback = True
+        self.execution_model = final_model
         self.model_type = final_model
         
         # 发送模型选择事件
@@ -99,7 +109,15 @@ class AgentExecutor:
         )
         
         # 初始化工具执行器
-        self.tool_executor = ToolExecutor(config_loader, hierarchy_manager, direct_mode=direct_tools)
+        self.tool_executor = ToolExecutor(
+            config_loader,
+            hierarchy_manager,
+            direct_mode=direct_tools,
+            extra_event_handlers=self.extra_event_handlers,
+            exit_on_error=self.exit_on_error,
+            raise_on_error=self.raise_on_error,
+            stream_llm_tokens=self.stream_llm_tokens,
+        )
         
         # 初始化对话存储
         self.conversation_storage = ConversationStorage()
@@ -108,17 +126,43 @@ class AgentExecutor:
         self.agent_id = None
         self.action_history = []  # 渲染用（会压缩）
         self.action_history_fact = []  # 完整轨迹（不压缩）
+        self.execution_traces = []  # execution LLM 原生输出轨迹
+        self.thinking_traces = []  # thinking LLM 原生输出轨迹
         self.pending_tools = []  # 待执行的工具（用于恢复）
         self.latest_thinking = ""
         self.first_thinking_done = False
         runtime = get_runtime_settings()
-        self.action_window_steps = runtime.get("action_window_steps", 10)
-        self.thinking_interval = runtime.get("thinking_interval", self.action_window_steps)
+        self.action_window_steps = int(self.agent_config.get("action_window_steps") or runtime.get("action_window_steps", 30))
+        self.thinking_interval = int(self.agent_config.get("thinking_interval") or runtime.get("thinking_interval", self.action_window_steps))
         self.fresh_enabled = runtime.get("fresh_enabled", False)
         self.fresh_interval_sec = runtime.get("fresh_interval_sec", 0)
         self.last_fresh_at = time.time()
         self.tool_call_counter = 0
         self.llm_turn_counter = 0  # LLM调用轮次计数器（用于消息分组）
+        self.current_task_id = None
+
+    def _get_agent_model_preference(self, category: str) -> Optional[str]:
+        field_map = {
+            "execution": "execution_model",
+            "thinking": "thinking_model",
+            "compressor": "compressor_model",
+            "image_generation": "image_generation_model",
+            "read_figure": "read_figure_model",
+        }
+        field = field_map.get(category, "execution_model")
+        value = self.agent_config.get(field)
+        if category == "execution" and not value:
+            value = self.agent_config.get("model_type")
+        return str(value or "").strip() or None
+
+    def _resolve_max_turns(self) -> int:
+        env_value = str(os.environ.get("MLA_MAX_TURNS", "") or "").strip()
+        if env_value:
+            try:
+                return max(1, int(env_value))
+            except Exception:
+                pass
+        return 100000
 
     def _inject_mcp_tools(self):
         """将 MCP 动态工具并入当前 Agent 的工具配置与可见工具列表。"""
@@ -137,10 +181,30 @@ class AgentExecutor:
         """初始化事件发射器并注册处理器"""
         self.event_emitter = AgentEventEmitter()
         self.event_emitter.register(ConsoleLogHandler())
+        for handler in self.extra_event_handlers:
+            self.event_emitter.register(handler)
         
         jsonl_emitter = get_jsonl_emitter()
         if jsonl_emitter.enabled:
             self.event_emitter.register(JsonlStreamHandler(enabled=True))
+
+    def _emit_sdk_stream_event(self, event_type: str, payload: Dict[str, Any]):
+        parts = str(event_type or "").split(".", 2)
+        normalized = {
+            "event_type": str(event_type or ""),
+            "phase": parts[0] if len(parts) > 0 else "",
+            "domain": parts[1] if len(parts) > 1 else "",
+            "action": parts[2] if len(parts) > 2 else "",
+            "payload": payload,
+        }
+        for handler in self.extra_event_handlers:
+            emitter = getattr(handler, "emit", None)
+            if not callable(emitter):
+                continue
+            try:
+                emitter(normalized)
+            except Exception:
+                pass
     
     def run(self, task_id: str, user_input: str) -> Dict:
         """执行Agent任务"""
@@ -150,6 +214,7 @@ class AgentExecutor:
             task_input=user_input
         ))        
         # 存储 task_input 供压缩器使用
+        self.current_task_id = task_id
         self.current_task_input = user_input
         try:
             try:
@@ -189,8 +254,7 @@ class AgentExecutor:
                         self.hierarchy_manager.update_thinking(self.agent_id, thinking_result)
                         self._save_state(task_id, user_input, 0)
             except Exception as e:
-                self._handle_execution_error(e)
-                # sys.exit(1) is called inside, so we don't need to return
+                return self._handle_execution_error(e)
             
             # 强制工具调用计数器
             max_tool_try = 0
@@ -225,7 +289,7 @@ class AgentExecutor:
                     messages = self._build_messages_from_action_history()
                     
                     # 调用LLM（使用标准 messages 格式）
-                    llm_response = self._execute_llm_call(full_system_prompt, messages)
+                    llm_response = self._execute_llm_call(full_system_prompt, messages, task_id=task_id)
                     
                     if llm_response.status != "success":
                         error_result = {
@@ -233,6 +297,7 @@ class AgentExecutor:
                             "output": "LLM调用失败",
                             "error_information": llm_response.error_information
                         }
+                        error_result = self._with_model_outputs(error_result)
                         self.hierarchy_manager.pop_agent(self.agent_id, str(error_result))
                         self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
                         return error_result
@@ -273,6 +338,7 @@ class AgentExecutor:
                                 "output": error_output,
                                 "error_information": "Agent拒绝调用工具"
                             }
+                            error_result = self._with_model_outputs(error_result)
                             self.hierarchy_manager.pop_agent(self.agent_id, str(error_result))
                             self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
                             self.event_emitter.dispatch(ThinkingFailEvent(agent_name=self.agent_name, error_message=f"[{self.agent_name}] 强制thinking: {thinking_result if thinking_result else '分析失败'}"))
@@ -294,6 +360,7 @@ class AgentExecutor:
                             llm_turn=current_llm_turn
                         )
                         if final_output_result:
+                            final_output_result = self._with_model_outputs(final_output_result)
                             self.event_emitter.dispatch(AgentEndEvent(status='success', result=final_output_result))
                             self.hierarchy_manager.pop_agent(self.agent_id, final_output_result.get("output", ""))
                             return final_output_result
@@ -319,12 +386,13 @@ class AgentExecutor:
                         self.llm_turn_counter = 0
                 
                 except Exception as e:
-                    self._handle_execution_error(e)
+                    return self._handle_execution_error(e)
             timeout_result = {
                 "status": "error",
                 "output": f"执行超过最大轮次限制: {self.max_turns}",
                 "error_information": f"Max turns {self.max_turns} exceeded"
             }
+            timeout_result = self._with_model_outputs(timeout_result)
             self.hierarchy_manager.pop_agent(self.agent_id, str(timeout_result))
             self.event_emitter.dispatch(AgentEndEvent(status='error', result=timeout_result))
             self.event_emitter.dispatch(CliDisplayEvent(
@@ -510,7 +578,7 @@ class AgentExecutor:
         
         return messages
 
-    def _execute_llm_call(self, system_prompt: str, messages: List[Dict] = None):
+    def _execute_llm_call(self, system_prompt: str, messages: List[Dict] = None, task_id: Optional[str] = None):
         """
         执行LLM调用并分发事件
         
@@ -524,23 +592,57 @@ class AgentExecutor:
         
         # 发送LLM调用开始事件
         self.event_emitter.dispatch(LlmCallStartEvent(
-            model=self.model_type, 
+            model=self.execution_model, 
             system_prompt=system_prompt
         ))
         
+        execution_tool_choice = self.llm_client.resolve_tool_choice(
+            category="execution",
+            model=self.execution_model,
+        )
+        max_tokens_override = self.agent_config.get("max_tokens")
         # 调用LLM（重试机制已在 llm_client 内部实现）
         llm_response = self.llm_client.chat(
             history=messages,
-            model=self.model_type,
+            model=self.execution_model,
             system_prompt=system_prompt,
             tool_list=self.available_tools,
-            tool_choice="required",  # 强制工具调用
-            emit_tokens="token"  # 主 Agent 调用：流式发送 content token
+            tool_choice=execution_tool_choice,
+            max_tokens=max_tokens_override,
+            emit_tokens="token",  # 主 Agent 调用：流式发送 content token
+            debug_task_id=task_id,
+            debug_label="execution",
+            stream_callback=self._build_llm_stream_callback(
+                stream_group="llm",
+                agent_name=self.agent_name,
+                model=self.execution_model,
+            ) if self.stream_llm_tokens else None,
         )
+
+        llm_record = {
+            "turn_index": self.llm_turn_counter,
+            "model": llm_response.model or self.execution_model,
+            "content": llm_response.output or "",
+            "reasoning_content": llm_response.reasoning_content or "",
+            "finish_reason": llm_response.finish_reason or "",
+            "tool_calls": [
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                }
+                for tool_call in (llm_response.tool_calls or [])
+            ],
+            "status": llm_response.status,
+        }
+        self.execution_traces.append(llm_record)
         
         self.event_emitter.dispatch(LlmCallEndEvent(
             llm_output=llm_response.output, 
-            tool_calls=llm_response.tool_calls
+            tool_calls=llm_record["tool_calls"],
+            model=llm_record["model"],
+            reasoning_content=llm_record["reasoning_content"],
+            finish_reason=llm_record["finish_reason"],
         ))
         return llm_response
 
@@ -762,8 +864,8 @@ class AgentExecutor:
 
         # 重新读取运行时参数
         runtime = get_runtime_settings()
-        self.action_window_steps = runtime.get("action_window_steps", 10)
-        self.thinking_interval = runtime.get("thinking_interval", self.action_window_steps)
+        self.action_window_steps = int(self.agent_config.get("action_window_steps") or runtime.get("action_window_steps", 30))
+        self.thinking_interval = int(self.agent_config.get("thinking_interval") or runtime.get("thinking_interval", self.action_window_steps))
         self.fresh_enabled = runtime.get("fresh_enabled", False)
         self.fresh_interval_sec = runtime.get("fresh_interval_sec", 0)
         self.last_fresh_at = time.time()
@@ -777,9 +879,9 @@ class AgentExecutor:
 
         self.llm_client = SimpleLLMClient()
         self.llm_client.set_tools_config(self.config_loader.all_tools)
-        requested_model = self.agent_config.get("model_type", self.model_type)
-        available_models = self.llm_client.models
-        self.model_type = requested_model if requested_model in available_models else available_models[0]
+        requested_model = self._get_agent_model_preference("execution")
+        self.execution_model = self.llm_client.resolve_model("execution", requested_model)
+        self.model_type = self.execution_model
 
         self.context_builder = ContextBuilder(
             self.hierarchy_manager,
@@ -788,8 +890,17 @@ class AgentExecutor:
             llm_client=self.llm_client,
             max_context_window=self.llm_client.max_context_window
         )
-        self.tool_executor = ToolExecutor(self.config_loader, self.hierarchy_manager, direct_mode=self.direct_tools)
+        self.tool_executor = ToolExecutor(
+            self.config_loader,
+            self.hierarchy_manager,
+            direct_mode=self.direct_tools,
+            extra_event_handlers=self.extra_event_handlers,
+            exit_on_error=self.exit_on_error,
+            raise_on_error=self.raise_on_error,
+        )
         self.tool_executor.set_agent_context(agent_id=self.agent_id, agent_name=self.agent_name)
+        if hasattr(self, "action_compressor"):
+            delattr(self, "action_compressor")
 
         self._save_state(task_id, user_input, turn)
         self.event_emitter.dispatch(CliDisplayEvent(
@@ -798,7 +909,7 @@ class AgentExecutor:
         ))
         return True, "Fresh 完成，已重载配置/工具注册/skills 缓存，并继续当前任务。"
 
-    def _handle_execution_error(self, e: Exception):
+    def _handle_execution_error(self, e: Exception) -> Dict:
         """统一处理执行过程中的异常"""
         # 获取详细错误信息
         error_type = type(e).__name__
@@ -828,10 +939,30 @@ class AgentExecutor:
    2. 重新启动 CLI 并输入 /resume 命令恢复任务
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+        error_result = {
+            "status": "error",
+            "task_id": self.current_task_id,
+            "agent_name": self.agent_name,
+            "output": "",
+            "error_type": error_type,
+            "error_message": error_msg,
+            "error_information": error_display,
+            "latest_thinking": self.latest_thinking,
+        }
+        error_result = self._with_model_outputs(error_result)
         # 通过事件发送错误
         self.event_emitter.dispatch(ErrorEvent(error_display=error_display))
-        # 直接退出程序
-        sys.exit(1)
+        self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
+        if self.raise_on_error:
+            raise InfiAgentRunError.from_result(
+                error_result,
+                task_id=self.current_task_id or "",
+                agent_name=self.agent_name,
+                stage="run",
+            )
+        if self.exit_on_error:
+            sys.exit(1)
+        return error_result
 
     def _add_uuid_if_needed(
             self, 
@@ -900,7 +1031,10 @@ class AgentExecutor:
         try:
             from services.thinking_agent import ThinkingAgent
 
-            thinking_agent = ThinkingAgent()
+            thinking_agent = ThinkingAgent(
+                preferred_model=self._get_agent_model_preference("thinking"),
+                max_tokens=self.agent_config.get("max_tokens"),
+            )
 
             # 构建完整的系统提示词（包含历史动作XML，供 thinking agent 分析）
             full_system_prompt = self.context_builder.build_context(
@@ -911,18 +1045,42 @@ class AgentExecutor:
                 action_history=self.action_history,
                 include_action_history=True  # thinking agent 需要看到历史动作
             )
-            result = thinking_agent.analyze_first_thinking(
+            thinking_payload = thinking_agent.analyze_first_thinking_detail(
                 task_description=task_input,
                 agent_system_prompt=full_system_prompt,
                 available_tools=self.available_tools,
                 tools_config=self.config_loader.all_tools,
                 action_history=self.action_history,  # 传递 action_history（含图片数据）
-                multimodal=self.llm_client.multimodal  # 传递多模态标志
+                multimodal=self.llm_client.multimodal,  # 传递多模态标志
+                debug_task_id=task_id,
+                stream_callback=self._build_llm_stream_callback(
+                    stream_group="thinking",
+                    agent_name=self.agent_name,
+                    model=thinking_agent.llm_client.resolve_model("thinking", thinking_agent.preferred_model),
+                    is_initial=is_initial,
+                    is_forced=is_forced,
+                ) if self.stream_llm_tokens else None,
             )
+            result = thinking_payload["formatted_result"]
+            thinking_record = {
+                "model": thinking_payload.get("model", ""),
+                "content": thinking_payload.get("raw_output", ""),
+                "reasoning_content": thinking_payload.get("raw_reasoning_content", ""),
+                "formatted_result": result,
+                "finish_reason": thinking_payload.get("finish_reason", ""),
+                "status": thinking_payload.get("status", "success"),
+                "is_initial": bool(is_initial),
+                "is_forced": bool(is_forced),
+            }
+            self.thinking_traces.append(thinking_record)
             # 发送 thinking 事件（完整内容）
             self.event_emitter.dispatch(ThinkingEndEvent(
                 agent_name=self.agent_name, 
                 result=result,
+                model=thinking_record["model"],
+                raw_output=thinking_record["content"],
+                raw_reasoning_content=thinking_record["reasoning_content"],
+                finish_reason=thinking_record["finish_reason"],
                 is_initial=is_initial,
                 is_forced=is_forced
             ))
@@ -936,6 +1094,71 @@ class AgentExecutor:
             ))
             raise Exception(str(e))
 
+    def _build_llm_stream_callback(
+        self,
+        *,
+        stream_group: str,
+        agent_name: str,
+        model: str,
+        is_initial: bool = False,
+        is_forced: bool = False,
+    ):
+        def _callback(chunk: Dict[str, Any]):
+            kind = str((chunk or {}).get("kind") or "content").strip().lower()
+            text = str((chunk or {}).get("text") or "")
+            if not text:
+                return
+            current_model = str((chunk or {}).get("model") or model or "")
+            if stream_group == "thinking":
+                event_type = "run.thinking.reasoning_token" if kind == "reasoning" else "run.thinking.token"
+                payload = {
+                    "agent_name": agent_name,
+                    "model": current_model,
+                    "text": text,
+                    "token_kind": kind,
+                    "is_initial": bool(is_initial),
+                    "is_forced": bool(is_forced),
+                }
+            else:
+                event_type = "run.llm.reasoning_token" if kind == "reasoning" else "run.llm.token"
+                payload = {
+                    "agent_name": agent_name,
+                    "model": current_model,
+                    "text": text,
+                    "token_kind": kind,
+                }
+            self._emit_sdk_stream_event(event_type, payload)
+
+        return _callback
+
+    def _build_model_outputs_payload(self) -> Dict[str, Any]:
+        execution_traces = list(getattr(self, "execution_traces", []) or [])
+        thinking_traces = list(getattr(self, "thinking_traces", []) or [])
+        last_execution = execution_traces[-1] if execution_traces else None
+        last_thinking = thinking_traces[-1] if thinking_traces else None
+        return {
+            "execution_turns": execution_traces,
+            "thinking_turns": thinking_traces,
+            "last_execution": last_execution,
+            "last_thinking": last_thinking,
+        }
+
+    def _with_model_outputs(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(result or {})
+        model_outputs = self._build_model_outputs_payload()
+        payload["model_outputs"] = model_outputs
+
+        last_execution = model_outputs.get("last_execution") or {}
+        last_thinking = model_outputs.get("last_thinking") or {}
+
+        payload["last_execution_output"] = str(last_execution.get("content") or "")
+        payload["last_execution_reasoning_content"] = str(last_execution.get("reasoning_content") or "")
+        payload["last_execution_model"] = str(last_execution.get("model") or "")
+        payload["last_thinking_output"] = str(last_thinking.get("content") or "")
+        payload["last_thinking_reasoning_content"] = str(last_thinking.get("reasoning_content") or "")
+        payload["last_thinking_model"] = str(last_thinking.get("model") or "")
+        return payload
+
     def _compress_action_history_if_needed(self):
         """检查并压缩历史动作（如果超过上下文窗口限制）"""
         if not self.action_history:
@@ -946,7 +1169,14 @@ class AgentExecutor:
 
             # 初始化压缩器（如果还没有）
             if not hasattr(self, 'action_compressor'):
-                self.action_compressor = ActionCompressor(self.llm_client)
+                self.action_compressor = ActionCompressor(
+                    self.llm_client,
+                    preferred_model=self._get_agent_model_preference("compressor"),
+                    max_tokens=self.agent_config.get("max_tokens"),
+                    debug_task_id=self.current_task_id,
+                )
+            else:
+                self.action_compressor.debug_task_id = self.current_task_id
             
             # 使用新的压缩策略（传入 thinking 和 task_input）
             original_len = len(self.action_history)

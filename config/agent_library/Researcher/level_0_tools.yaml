@@ -1102,7 +1102,7 @@ tools:
           description: "是否启用 direct-tools。默认 true。"
         config:
           type: "object"
-          description: "可选。类似 SDK 的运行配置。当前支持 llm_config_path、user_data_root、agent_library_dir/library_dir、skills_dir、tools_dir、action_window_steps、thinking_interval、fresh_enabled、fresh_interval_sec、mcp_servers、auto_mode、force_new、direct_tools。"
+          description: "可选。类似 SDK 的运行配置。当前支持 llm_config_path、user_data_root、agent_library_dir/library_dir、skills_dir、tools_dir、action_window_steps、thinking_interval、max_turns、fresh_enabled、fresh_interval_sec、mcp_servers、auto_mode、force_new、direct_tools。"
       required: ["task_id", "user_input"]
 
   task_share_context_path:

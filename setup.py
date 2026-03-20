@@ -55,7 +55,7 @@ data_files.extend(_collect_data_files(project_root / "skills", "skills"))
 
 setup(
     name="infiagent",
-    version="3.0.1",
+    version="3.0.7",
     author="Chenglin Yu",
     author_email="yuchenglin96@qq.com",
     license="MIT",
