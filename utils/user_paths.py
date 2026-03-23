@@ -229,6 +229,7 @@ def ensure_user_app_config_exists() -> Path:
         "runtime": {
             "action_window_steps": 30,
             "thinking_interval": 30,
+            "max_turns": 100000,
             "fresh_enabled": False,
             "fresh_interval_sec": 0,
         },
@@ -293,16 +294,19 @@ def get_runtime_settings() -> Dict[str, Any]:
 
     env_action_window = os.environ.get("MLA_ACTION_WINDOW_STEPS", "").strip()
     env_thinking_interval = os.environ.get("MLA_THINKING_INTERVAL", "").strip()
+    env_max_turns = os.environ.get("MLA_MAX_TURNS", "").strip()
     env_fresh_enabled = os.environ.get("MLA_FRESH_ENABLED", "").strip().lower()
     env_fresh_interval = os.environ.get("MLA_FRESH_INTERVAL_SEC", "").strip()
 
     action_window_steps = int(env_action_window or runtime.get("action_window_steps", 30) or 30)
     thinking_interval = int(env_thinking_interval or runtime.get("thinking_interval", action_window_steps) or action_window_steps)
+    max_turns = int(env_max_turns or runtime.get("max_turns", 100000) or 100000)
     fresh_enabled = (env_fresh_enabled in {"1", "true", "yes", "on"}) if env_fresh_enabled else bool(runtime.get("fresh_enabled", False))
     fresh_interval_sec = int(env_fresh_interval or runtime.get("fresh_interval_sec", 0) or 0)
     return {
         "action_window_steps": max(1, action_window_steps),
         "thinking_interval": max(1, thinking_interval),
+        "max_turns": max(1, max_turns),
         "fresh_enabled": fresh_enabled,
         "fresh_interval_sec": max(0, fresh_interval_sec),
     }
@@ -368,6 +372,7 @@ def apply_runtime_env_defaults() -> None:
     runtime = get_runtime_settings()
     os.environ["MLA_ACTION_WINDOW_STEPS"] = str(runtime["action_window_steps"])
     os.environ["MLA_THINKING_INTERVAL"] = str(runtime["thinking_interval"])
+    os.environ["MLA_MAX_TURNS"] = str(runtime["max_turns"])
     os.environ["MLA_FRESH_ENABLED"] = "true" if runtime["fresh_enabled"] else "false"
     os.environ["MLA_FRESH_INTERVAL_SEC"] = str(runtime["fresh_interval_sec"])
     mcp = get_mcp_settings()

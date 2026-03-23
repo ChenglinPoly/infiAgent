@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - MLA-V3</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260322-thinking-fix-2">
     <style>
         * {
             margin: 0;
@@ -86,6 +86,32 @@
             display: flex;
             flex-direction: column;
             gap: 24px;
+        }
+        .auth-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        .auth-tab {
+            flex: 1;
+            background: rgba(20, 30, 50, 0.55);
+            border: 1px solid rgba(0, 212, 255, 0.18);
+            color: #c8d2de;
+            border-radius: 8px;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .auth-tab.active {
+            color: #00d4ff;
+            border-color: rgba(0, 212, 255, 0.5);
+            box-shadow: 0 0 12px rgba(0, 212, 255, 0.18);
+        }
+        .auth-panel {
+            display: none;
+        }
+        .auth-panel.active {
+            display: block;
         }
         .form-group {
             display: flex;
@@ -180,25 +206,66 @@
     <div class="login-container">
         <div class="login-box">
             <h1>MLA-V3</h1>
-            <form class="login-form" id="login-form">
-                <div class="form-group">
-                    <label for="username">Username</label>
-                    <input type="text" id="username" name="username" required autocomplete="username">
-                </div>
-                <div class="form-group">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" required autocomplete="current-password">
-                </div>
-                <button type="submit" class="login-btn" id="login-btn">Login</button>
-                <div id="error-message" class="error-message" style="display: none;"></div>
-            </form>
+            <div class="auth-tabs">
+                <button type="button" class="auth-tab active" id="tab-login-btn">Login</button>
+                <button type="button" class="auth-tab" id="tab-register-btn">Register</button>
+            </div>
+            <div class="auth-panel active" id="login-panel">
+                <form class="login-form" id="login-form">
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" name="username" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" name="password" required autocomplete="current-password">
+                    </div>
+                    <button type="submit" class="login-btn" id="login-btn">Login</button>
+                </form>
+            </div>
+            <div class="auth-panel" id="register-panel">
+                <form class="login-form" id="register-form">
+                    <div class="form-group">
+                        <label for="register-username">Username</label>
+                        <input type="text" id="register-username" name="register-username" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label for="register-password">Password</label>
+                        <input type="password" id="register-password" name="register-password" required autocomplete="new-password">
+                    </div>
+                    <div class="form-group">
+                        <label for="register-password-confirm">Confirm Password</label>
+                        <input type="password" id="register-password-confirm" name="register-password-confirm" required autocomplete="new-password">
+                    </div>
+                    <button type="submit" class="login-btn" id="register-btn">Create Account</button>
+                </form>
+            </div>
+            <div id="error-message" class="error-message" style="display: none;"></div>
         </div>
     </div>
 
     <script>
         const loginForm = document.getElementById('login-form');
         const loginBtn = document.getElementById('login-btn');
+        const registerForm = document.getElementById('register-form');
+        const registerBtn = document.getElementById('register-btn');
         const errorMessage = document.getElementById('error-message');
+        const tabLoginBtn = document.getElementById('tab-login-btn');
+        const tabRegisterBtn = document.getElementById('tab-register-btn');
+        const loginPanel = document.getElementById('login-panel');
+        const registerPanel = document.getElementById('register-panel');
+
+        function switchAuthTab(mode) {
+            const loginActive = mode === 'login';
+            tabLoginBtn.classList.toggle('active', loginActive);
+            tabRegisterBtn.classList.toggle('active', !loginActive);
+            loginPanel.classList.toggle('active', loginActive);
+            registerPanel.classList.toggle('active', !loginActive);
+            errorMessage.style.display = 'none';
+        }
+
+        tabLoginBtn.addEventListener('click', () => switchAuthTab('login'));
+        tabRegisterBtn.addEventListener('click', () => switchAuthTab('register'));
 
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -248,6 +315,52 @@
             } finally {
                 loginBtn.disabled = false;
                 loginBtn.textContent = 'Login';
+            }
+        });
+
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const username = document.getElementById('register-username').value.trim();
+            const password = document.getElementById('register-password').value.trim();
+            const confirmPassword = document.getElementById('register-password-confirm').value.trim();
+
+            if (!username || !password) {
+                showError('Please enter username and password');
+                return;
+            }
+            if (password !== confirmPassword) {
+                showError('Passwords do not match');
+                return;
+            }
+
+            registerBtn.disabled = true;
+            registerBtn.textContent = 'Creating...';
+            errorMessage.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        username,
+                        password
+                    })
+                });
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    window.location.href = '/';
+                } else {
+                    showError(data.error || 'Registration failed');
+                }
+            } catch (error) {
+                showError('Registration failed: ' + error.message);
+            } finally {
+                registerBtn.disabled = false;
+                registerBtn.textContent = 'Create Account';
             }
         });
         

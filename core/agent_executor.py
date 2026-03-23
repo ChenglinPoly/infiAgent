@@ -461,7 +461,10 @@ class AgentExecutor:
         
         if not self.action_history:
             return messages
-        
+
+        use_kimi_history_tool_ids = self._should_normalize_kimi_history_tool_ids()
+        history_tool_call_index = 0
+
         # 按 _turn 分组普通 action
         turns = OrderedDict()
         
@@ -501,6 +504,12 @@ class AgentExecutor:
             
             # 构建 tool_call 条目
             tool_call_id = action.get("tool_call_id", f"call_{turn}_{len(turns[turn]['tool_calls'])}")
+            if use_kimi_history_tool_ids:
+                tool_call_id = self._format_kimi_history_tool_call_id(
+                    tool_name=action.get("tool_name", ""),
+                    sequence_index=history_tool_call_index,
+                )
+            history_tool_call_index += 1
             turns[turn]["tool_calls"].append({
                 "id": tool_call_id,
                 "type": "function",
@@ -578,6 +587,16 @@ class AgentExecutor:
         
         return messages
 
+    def _should_normalize_kimi_history_tool_ids(self) -> bool:
+        model_name = str(getattr(self, "execution_model", "") or "").strip().lower()
+        if not model_name:
+            return False
+        return "kimi-k2" in model_name or ("moonshot" in model_name and "kimi" in model_name)
+
+    @staticmethod
+    def _format_kimi_history_tool_call_id(tool_name: str, sequence_index: int) -> str:
+        safe_tool_name = str(tool_name or "").strip() or "tool"
+        return f"functions.{safe_tool_name}:{max(0, int(sequence_index))}"
     def _execute_llm_call(self, system_prompt: str, messages: List[Dict] = None, task_id: Optional[str] = None):
         """
         执行LLM调用并分发事件

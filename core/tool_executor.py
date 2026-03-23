@@ -143,10 +143,21 @@ class ToolExecutor:
                 tool_result = tool.execute(task_id, arguments)
             
             # 包装返回值（保持与既有工具执行层的 output 字段格式一致）
+            wrapped_status = "success"
+            wrapped_error_information = ""
+            if isinstance(tool_result, dict):
+                inner_status = str(tool_result.get("status") or "").strip().lower()
+                if inner_status:
+                    wrapped_status = inner_status
+                wrapped_error_information = str(
+                    tool_result.get("error_information")
+                    or tool_result.get("error")
+                    or ""
+                )
             wrapped = {
-                "status": "success",
+                "status": wrapped_status,
                 "output": json.dumps(tool_result, indent=2, ensure_ascii=False),
-                "error_information": ""
+                "error_information": wrapped_error_information
             }
             # 透传内部控制字段，供 agent_executor 处理特殊副作用（load/offload skill、fresh 等）
             if isinstance(tool_result, dict):

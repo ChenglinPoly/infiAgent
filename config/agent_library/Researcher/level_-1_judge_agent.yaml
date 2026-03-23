@@ -8,7 +8,7 @@ tools:
       - file_read
       - final_output
     max_turns: 100
-    model_type: claude-3-7-sonnet-20250219
+    execution_model: claude-3-7-sonnet-20250219
     prompts:
       agent_responsibility: |
         你的主要职责是检查结果形式，是否符合任务要求和描述，而不是判断内容真伪。不要使用 file_read 工具读取二进制文件，如 pdf、ppt、图片等。你是严格、细致的AI审查员，验证任务执行结果是否符合原始指令。注意：不要去执行指令，你只需要进行验证！

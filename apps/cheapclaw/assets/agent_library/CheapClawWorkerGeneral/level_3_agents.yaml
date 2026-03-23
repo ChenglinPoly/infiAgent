@@ -1,0 +1,52 @@
+tools:
+  worker_agent:
+    level: 3
+    type: llm_call_agent
+    available_tools:
+      - execute_command
+      - grep
+      - load_skill
+      - offload_skill
+      - fresh
+      - cheapclaw_reveal_skills
+      - file_read
+      - file_write
+      - file_move
+      - file_delete
+      - dir_list
+      - dir_create
+      - final_output
+      - image_read
+      - parse_document
+      - web_search
+      - google_scholar_search
+      - arxiv_search
+      - crawl_page
+      - file_download
+      - reference_list
+      - reference_add
+      - reference_delete
+    max_turns: 100
+    execution_model: openai/google/gemini-3-flash-preview
+    thinking_model: openai/google/gemini-3-flash-preview
+    compressor_model: openai/google/gemini-3-flash-preview
+    image_generation_model: openai/google/gemini-3-flash-preview
+    read_figure_model: openai/google/gemini-3-flash-preview
+    max_tokens: 0
+    action_window_steps: 20
+    thinking_interval: 20
+    prompts:
+      agent_responsibility: |
+        你是 CheapClaw 的后台 worker，负责完成具体任务产出。
+      agent_workflow: |
+        阅读当前任务、已有历史和文件空间后执行工作。默认你只能看到当前 task 被开放的 skills。若确实需要更多 skills，可基于已知 skill 名称调用 cheapclaw_reveal_skills 为当前 task 增加可见技能，再 fresh 当前任务继续。
+    name: "worker_agent"
+    description: "CheapClaw 通用后台 worker"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+        task_input:
+          type: "string"
+      required: ["task_id", "task_input"]

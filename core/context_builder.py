@@ -49,6 +49,25 @@ class ContextBuilder:
         except ImportError:
             self.encoding = None
 
+    def _resolve_compressor_model(self) -> str:
+        preferred = str(self.agent_config.get("compressor_model") or "").strip() or None
+        return self.llm_client.resolve_model("compressor", preferred)
+
+    def _resolve_compressor_tool_choice(self, model: str) -> str:
+        return self.llm_client.resolve_tool_choice("compressor", model)
+
+    def _build_task_system_add(self, task_id: str) -> str:
+        try:
+            system_add_path = Path(task_id) / "system-add.md"
+            if not system_add_path.exists():
+                return ""
+            content = system_add_path.read_text(encoding="utf-8").strip()
+            if not content:
+                return ""
+            return f"<任务级补充系统提示>\n{content}\n</任务级补充系统提示>"
+        except Exception:
+            return ""
+
     def _count_tokens(self, text: str) -> int:
         text = str(text or "")
         if self.encoding:
@@ -86,11 +105,12 @@ class ContextBuilder:
         
         # 1️⃣ 读取通用系统提示词（general_prompts.yaml，包含<智能体经验>）
         general_system_prompt = self._load_general_system_prompt(agent_name)
+        task_system_add = self._build_task_system_add(task_id)
         
         # 2️⃣ 构建各个动态部分
         user_latest_input = self._build_user_latest_input(current)
         user_agent_history = self._build_user_agent_history(task_id, current)
-        structured_call_info = self._build_structured_call_info(current, agent_id)
+        structured_call_info = self._build_structured_call_info(current, agent_id, task_id)
         current_thinking = self._build_current_thinking(task_id, agent_id, current)
         workspace_abs_path = task_id
         skills_root_abs_path = str(get_user_skills_library_root())
@@ -123,6 +143,7 @@ class ContextBuilder:
         # 3️⃣ 组装完整上下文（通用部分在最前面）
         full_context = f"""{general_system_prompt}
 
+{task_system_add}
 <用户最新输入>
 {user_latest_input}
 </用户最新输入>
@@ -139,9 +160,9 @@ class ContextBuilder:
 {workspace_abs_path}
 </当前工作空间绝对路径>
 
-<主Skills目录绝对路径>
+<当前可见Skills目录绝对路径>
 {skills_root_abs_path}
-</主Skills目录绝对路径>
+</当前可见Skills目录绝对路径>
 
 <结构化调用信息>
 {structured_call_info}
@@ -387,12 +408,15 @@ class ContextBuilder:
         
         history_messages = [ChatMessage(role="user", content=prompt)]
         
+        compressor_model = self._resolve_compressor_model()
         response = self.llm_client.chat(
             history=history_messages,
-            model=self.llm_client.compressor_models[0],  # 使用压缩专用模型
+            model=compressor_model,  # 使用压缩专用模型
             system_prompt="你是一个专业的内容总结助手。请简洁明了地总结历史交互信息。",
             tool_list=[],  # 空列表表示不使用工具
-            tool_choice="none"  # 明确表示不调用工具（总结任务）
+            tool_choice=self._resolve_compressor_tool_choice(compressor_model),
+            debug_task_id=task_id,
+            debug_label="context_builder",
         )
         
         if response.status != "success":
@@ -404,7 +428,7 @@ class ContextBuilder:
         
         return output_text
     
-    def _build_structured_call_info(self, current: Dict, current_agent_id: str) -> str:
+    def _build_structured_call_info(self, current: Dict, current_agent_id: str, task_id: str) -> str:
         """
         构建结构化调用信息（JSON格式，更清晰）
         支持压缩机制：当agent数量超过阈值时，使用LLM压缩
@@ -453,7 +477,7 @@ class ContextBuilder:
         if agent_count > compress_agent_threshold or self._count_tokens(call_tree_json) > compress_token_threshold:
             safe_print(f"检测到较大的结构化调用信息（{agent_count}个agents，{len(call_tree_json)}字符），启动压缩...")
             compressed_result = self._compress_structured_call_info_with_llm(
-                call_tree, current_agent_id
+                call_tree, current_agent_id, task_id
             )
             
             # 保存压缩结果（针对当前agent）
@@ -466,7 +490,7 @@ class ContextBuilder:
         
         return call_tree_json
     
-    def _compress_structured_call_info_with_llm(self, call_tree: List[Dict], current_agent_id: str) -> str:
+    def _compress_structured_call_info_with_llm(self, call_tree: List[Dict], current_agent_id: str, task_id: str) -> str:
         """
         使用LLM压缩结构化调用信息
         
@@ -503,12 +527,15 @@ Agent调用树数据：
         
         messages = [ChatMessage(role="user", content=prompt)]
         
+        compressor_model = self._resolve_compressor_model()
         response = self.llm_client.chat(
             history=messages,
-            model=self.llm_client.compressor_models[0],  # 使用压缩专用模型
+            model=compressor_model,  # 使用压缩专用模型
             system_prompt="你是一个专业的内容总结助手。请简洁明了地总结Agent调用树信息。",
             tool_list=[],
-            tool_choice="none"
+            tool_choice=self._resolve_compressor_tool_choice(compressor_model),
+            debug_task_id=task_id,
+            debug_label="context_builder",
         )
         
         if response.status != "success":

@@ -1,2 +1,7 @@
 users:
-  user: "password"
+  admin:
+    password_hash: pbkdf2_sha256$120000$IuT1vcU5d2q2ZlGYGw19Pg==$FjWja4SpXCd4NWHyuRkPNNKIUMogs0WVGx1pQkcHY9E=
+    role: admin
+    enabled: true
+    created_at: '2026-03-23T00:00:00Z'
+    updated_at: '2026-03-23T00:00:00Z'

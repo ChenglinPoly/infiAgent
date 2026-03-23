@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MLA-V3 - Web UI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260322-thinking-fix-2">
 </head>
 <body>
     <div class="container">
@@ -14,6 +14,7 @@
                 <h1>MLA-V3</h1>
                 <div style="display: flex; align-items: center; gap: 15px;">
                     <span id="username-display" class="username-badge"></span>
+                    <button id="users-btn" class="btn-secondary" title="User Management" style="display:none;"><i class="fas fa-users"></i> Users</button>
                     <button id="logout-btn" class="btn-secondary logout-btn">Logout</button>
                 </div>
                 <div class="controls">
@@ -125,6 +126,52 @@
             <input type="file" id="tool-upload-input" style="display: none;" accept=".py">
         </div>
 
+        <!-- User Management Modal -->
+        <div id="users-modal" class="config-modal" style="display: none;">
+            <div class="config-modal-content tools-modal-content">
+                <div class="config-modal-header">
+                    <h2><i class="fas fa-users"></i> User Management</h2>
+                    <button id="close-users-btn" class="btn-icon" title="Close"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="tools-modal-body">
+                    <div class="tools-toolbar">
+                        <button id="new-user-btn" class="btn-primary"><i class="fas fa-user-plus"></i> New User</button>
+                        <button id="reload-users-btn" class="btn-secondary"><i class="fas fa-sync-alt"></i> Reload</button>
+                    </div>
+                    <div id="users-status" class="config-status"></div>
+                    <div class="users-admin-grid">
+                        <div class="users-list-panel">
+                            <div id="users-list" class="tools-list"></div>
+                        </div>
+                        <div class="users-editor-panel">
+                            <div class="form-group">
+                                <label class="form-label" for="admin-user-username">Username</label>
+                                <input type="text" id="admin-user-username" class="form-input" placeholder="new_user">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="admin-user-password">Password</label>
+                                <input type="password" id="admin-user-password" class="form-input" placeholder="Leave empty to keep unchanged">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="admin-user-role">Role</label>
+                                <select id="admin-user-role" class="form-input">
+                                    <option value="user">user</option>
+                                    <option value="admin">admin</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label"><input type="checkbox" id="admin-user-enabled" checked> Enabled</label>
+                            </div>
+                            <div class="tools-toolbar">
+                                <button id="save-user-btn" class="btn-primary"><i class="fas fa-save"></i> Save</button>
+                                <button id="delete-user-btn" class="btn-danger"><i class="fas fa-trash"></i> Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Agent Selection Modal -->
         <div id="agent-select-modal" class="agent-select-modal" style="display: none;">
             <div class="agent-select-modal-content">
@@ -216,6 +263,6 @@
             }
         })();
     </script>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=20260322-thinking-fix-2"></script>
 </body>
 </html>

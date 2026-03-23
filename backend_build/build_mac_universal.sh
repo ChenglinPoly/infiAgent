@@ -14,12 +14,55 @@ mkdir -p "${OUTPUT_ROOT}" "${WORK_ROOT}"
 echo "[backend_build] repo_root: ${REPO_ROOT}"
 echo "[backend_build] output_root: ${OUTPUT_ROOT}"
 
-PYTHON_ARM64="python3"
+resolve_python_ge_310() {
+  for candidate in "$@"; do
+    [ -n "${candidate}" ] || continue
+    if [ ! -x "${candidate}" ]; then
+      continue
+    fi
+    if "${candidate}" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+    then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_ARM64="$(
+  resolve_python_ge_310 \
+    /opt/anaconda3/bin/python3.12 \
+    /opt/anaconda3/bin/python3 \
+    /usr/local/bin/python3.12 \
+    /usr/local/bin/python3.11 \
+    /usr/local/bin/python3.10 \
+    "$(command -v python3 2>/dev/null || true)"
+)"
+if [ -z "${PYTHON_ARM64}" ]; then
+  echo "[backend_build] ERROR: no Python 3.10+ interpreter found for arm64 build."
+  exit 2
+fi
+
+echo "[backend_build] arm64_python: ${PYTHON_ARM64}"
 VENV_ARM64="${SCRIPT_DIR}/.venv_arm64"
+BUILD_X64_BACKEND="${MLA_BUILD_X64_BACKEND:-0}"
 
 ensure_venv() {
   local py="$1"
   local venv_dir="$2"
+  if [ -d "${venv_dir}" ]; then
+    if ! "${venv_dir}/bin/python" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+    then
+      echo "[backend_build] existing venv is below Python 3.10; recreating: ${venv_dir}"
+      rm -rf "${venv_dir}"
+    fi
+  fi
   if [ ! -d "${venv_dir}" ]; then
     echo "[backend_build] create venv: ${venv_dir}"
     ${py} -m venv "${venv_dir}"
@@ -258,7 +301,7 @@ ensure_litellm_tokenizers_init "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 sanitize_bundled_llm_config "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 ensure_packaged_playwright_browsers "darwin-arm64" "${VENV_ARM64}" "${OUTPUT_ROOT}/darwin-arm64/mlav3-backend"
 
-if [ "${HOST_ARCH}" = "arm64" ]; then
+if [ "${HOST_ARCH}" = "arm64" ] && [ "${BUILD_X64_BACKEND}" = "1" ]; then
   echo "[backend_build] === x64 backend (Rosetta) ==="
   if ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
     echo "[backend_build] ERROR: Rosetta not available. Install it first:"
@@ -268,15 +311,37 @@ if [ "${HOST_ARCH}" = "arm64" ]; then
 
   # IMPORTANT:
   # - Do NOT rely on `python3` in PATH; on Apple Silicon it may be arm64-only (e.g. conda).
-  # - Prefer the system /usr/bin/python3 under Rosetta for bootstrapping.
-  PYTHON_X64="arch -x86_64 /usr/bin/python3"
+  # - Prefer an explicit x86_64 Python 3.12+ (for example Homebrew in /usr/local) under Rosetta.
+  PYTHON_X64_BIN="$(
+    resolve_python_ge_310 \
+      /usr/local/bin/python3.12 \
+      /usr/local/bin/python3.11 \
+      /usr/local/bin/python3.10 \
+      /usr/bin/python3
+  )"
+  if [ -z "${PYTHON_X64_BIN}" ]; then
+    echo "[backend_build] ERROR: no Python 3.10+ interpreter found for x64 build."
+    exit 2
+  fi
+  TARGET_X64_PY_MM="$(
+    arch -x86_64 "${PYTHON_X64_BIN}" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'
+  )"
+  PYTHON_X64="arch -x86_64 ${PYTHON_X64_BIN}"
   VENV_X64="${SCRIPT_DIR}/.venv_x64"
 
-  # Recreate venv if it exists but isn't runnable under x86_64
+  # Recreate venv if it exists but isn't runnable under x86_64 or is on the wrong Python minor version.
   if [ -d "${VENV_X64}" ]; then
     if ! arch -x86_64 "${VENV_X64}/bin/python" -c "import platform; print(platform.machine())" >/dev/null 2>&1; then
       echo "[backend_build] existing venv_x64 is not usable under x86_64; recreating..."
       rm -rf "${VENV_X64}"
+    else
+      EXISTING_X64_PY_MM="$(
+        arch -x86_64 "${VENV_X64}/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'
+      )"
+      if [ "${EXISTING_X64_PY_MM}" != "${TARGET_X64_PY_MM}" ]; then
+        echo "[backend_build] existing venv_x64 uses Python ${EXISTING_X64_PY_MM}, expected ${TARGET_X64_PY_MM}; recreating..."
+        rm -rf "${VENV_X64}"
+      fi
     fi
   fi
 
@@ -331,8 +396,7 @@ PY
   sanitize_bundled_llm_config "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
   ensure_packaged_playwright_browsers "darwin-x64" "${VENV_X64}" "${OUTPUT_ROOT}/darwin-x64/mlav3-backend"
 else
-  echo "[backend_build] host is not arm64; skipping darwin-x64 build."
+  echo "[backend_build] skipping darwin-x64 backend build (set MLA_BUILD_X64_BACKEND=1 to enable)."
 fi
 
 echo "[backend_build] done."
-

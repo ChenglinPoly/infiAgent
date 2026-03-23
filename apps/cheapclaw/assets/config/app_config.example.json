@@ -1,0 +1,24 @@
+{
+  "runtime": {
+    "action_window_steps": 20,
+    "thinking_interval": 20,
+    "fresh_enabled": false,
+    "fresh_interval_sec": 0
+  },
+  "env": {
+    "command_mode": "direct",
+    "seed_builtin_resources": false
+  },
+  "cheapclaw": {
+    "watchdog_interval_sec": 10800,
+    "default_exposed_skills": [
+      "docx",
+      "pptx",
+      "xlsx",
+      "find-skills"
+    ],
+    "default_mcp_servers": [],
+    "feishu_mode": "long_connection",
+    "service_log_file": "cheapclaw_service.log"
+  }
+}

@@ -80,6 +80,16 @@ try:
 except Exception:
     pass
 
+# Playwright's Python package launches a bundled Node driver and reads files like
+# `driver/package/browsers.json`, `cli.js`, and `lib/**` directly from disk.
+# These assets are not guaranteed to be bundled into PYZ, so frozen builds can hit
+# file-not-found errors under `_internal/playwright/driver/package/*` unless they
+# are explicitly copied as data files.
+try:
+    datas += collect_data_files("playwright")
+except Exception:
+    pass
+
 a = Analysis(
     [str(repo_root / "start.py")],
     pathex=[str(repo_root)],
@@ -129,4 +139,3 @@ coll = COLLECT(
     upx_exclude=[],
     name="mlav3-backend",
 )
-

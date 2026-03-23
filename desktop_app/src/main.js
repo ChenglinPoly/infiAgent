@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const childProcess = require('child_process');
+const yaml = require('js-yaml');
 const os = require('os');
 const crypto = require('crypto');
 const AdmZip = require('adm-zip');
@@ -41,6 +42,21 @@ function getPackagedBackendExecutablePath() {
   const exeName = process.platform === 'win32' ? 'mlav3-backend.exe' : 'mlav3-backend';
   // PyInstaller --onedir default: <dist>/<name>/<name>
   return path.join(backendRoot, archDir, 'mlav3-backend', exeName);
+}
+
+function getPackagedBackendPlaywrightBrowsersPath() {
+  const backendRoot = getPythonBackendPath();
+  const archDir = getPackagedBackendArchDir();
+  return path.join(
+    backendRoot,
+    archDir,
+    'mlav3-backend',
+    '_internal',
+    'playwright',
+    'driver',
+    'package',
+    '.local-browsers'
+  );
 }
 
 function getBackendLaunchSpecDev(userInput, workspacePath, agentName, agentSystem, appendTimestamp) {
@@ -111,10 +127,16 @@ function defaultAppConfig() {
       extra_env: {}
     },
     runtime: {
-      action_window_steps: 10,
-      thinking_interval: 10,
+      action_window_steps: 30,
+      thinking_interval: 30,
+      max_turns: 100000,
       fresh_enabled: false,
       fresh_interval_sec: 0
+    },
+    context: {
+      user_history_compress_threshold_tokens: 1500,
+      structured_call_info_compress_threshold_agents: 10,
+      structured_call_info_compress_threshold_tokens: 2200
     },
     mcp: {
       servers: []
@@ -153,6 +175,7 @@ function readAppConfig() {
   const out = { ...base, ...raw };
   out.env = { ...base.env, ...(raw.env || {}) };
   out.runtime = { ...base.runtime, ...(raw.runtime || {}) };
+  out.context = { ...base.context, ...(raw.context || {}) };
   out.mcp = { ...base.mcp, ...(raw.mcp || {}) };
   out.market = { ...base.market, ...(raw.market || {}) };
   // normalize types
@@ -246,8 +269,9 @@ function buildRuntimeEnv() {
   const env = { ...process.env };
   env.PATH = computeEffectivePath(appCfg);
   env.MLA_EXECUTE_COMMAND_MODE = (appCfg?.env?.command_mode === 'system_terminal') ? 'system_terminal' : 'direct';
-  env.MLA_ACTION_WINDOW_STEPS = String(appCfg?.runtime?.action_window_steps || 10);
-  env.MLA_THINKING_INTERVAL = String(appCfg?.runtime?.thinking_interval || appCfg?.runtime?.action_window_steps || 10);
+  env.MLA_ACTION_WINDOW_STEPS = String(appCfg?.runtime?.action_window_steps || 30);
+  env.MLA_THINKING_INTERVAL = String(appCfg?.runtime?.thinking_interval || appCfg?.runtime?.action_window_steps || 30);
+  env.MLA_MAX_TURNS = String(appCfg?.runtime?.max_turns || 100000);
   env.MLA_FRESH_ENABLED = appCfg?.runtime?.fresh_enabled ? 'true' : 'false';
   env.MLA_FRESH_INTERVAL_SEC = String(appCfg?.runtime?.fresh_interval_sec || 0);
   env.MLA_SKILLS_LIBRARY_DIR = getSkillsLibraryPath();
@@ -548,10 +572,9 @@ ipcMain.handle('start-task', async (event, { workspacePath, userInput, agentName
       MLA_LLM_CONFIG_PATH: llmConfigPath,
       // Allow importing agent systems under ~/mla_v3/agent_library/
       MLA_AGENT_LIBRARY_DIR: getUserDataRoot(),
-      // Packaged app: force Playwright to use bundled browsers under
-      //   <bundle>/_internal/playwright/driver/package/.local-browsers
-      // (installed at build time via PLAYWRIGHT_BROWSERS_PATH=0).
-      ...(app.isPackaged ? { PLAYWRIGHT_BROWSERS_PATH: '0' } : {})
+      ...(app.isPackaged && fs.existsSync(getPackagedBackendPlaywrightBrowsersPath())
+        ? { PLAYWRIGHT_BROWSERS_PATH: getPackagedBackendPlaywrightBrowsersPath() }
+        : {})
     }
   });
 
@@ -693,7 +716,9 @@ ipcMain.handle('resume-task', async (event, { workspacePath, agentSystem }) => {
         PYTHONUNBUFFERED: '1',
         MLA_LLM_CONFIG_PATH: llmConfigPath,
         MLA_AGENT_LIBRARY_DIR: getUserDataRoot(),
-        ...(app.isPackaged ? { PLAYWRIGHT_BROWSERS_PATH: '0' } : {})
+        ...(app.isPackaged && fs.existsSync(getPackagedBackendPlaywrightBrowsersPath())
+          ? { PLAYWRIGHT_BROWSERS_PATH: getPackagedBackendPlaywrightBrowsersPath() }
+          : {})
       }
     });
 
@@ -773,73 +798,17 @@ function killPythonProcess() {
 
 // ==================== IPC: Settings (llm_config.yaml) ====================
 
-// Simple YAML parser for flat config (no nested objects)
-function parseSimpleYaml(text) {
-  const result = {};
-  let currentKey = null;
-  let currentList = null;
-  
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trimEnd();
-    
-    // Skip empty lines and comments
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-    
-    // List item (- value)
-    if (line.match(/^\s*-\s+/) && currentKey) {
-      const val = line.replace(/^\s*-\s+/, '').trim();
-      if (!currentList) currentList = [];
-      currentList.push(val);
-      result[currentKey] = currentList;
-      continue;
-    }
-    
-    // Key: value
-    const match = line.match(/^(\w[\w_]*)\s*:\s*(.*)/);
-    if (match) {
-      // Save previous list
-      currentList = null;
-      currentKey = match[1];
-      const val = match[2].trim();
-      
-      if (val === '') {
-        // Could be list header
-        result[currentKey] = [];
-        currentList = [];
-        result[currentKey] = currentList;
-      } else if (val === 'true') {
-        result[currentKey] = true;
-      } else if (val === 'false') {
-        result[currentKey] = false;
-      } else if (!isNaN(Number(val)) && val !== '') {
-        result[currentKey] = Number(val);
-      } else {
-        result[currentKey] = val;
-      }
-    }
-  }
-  
-  return result;
+function parseSettingsYaml(text) {
+  const parsed = yaml.load(text) || {};
+  return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
 }
 
-// Simple YAML serializer for flat config
-function serializeSimpleYaml(obj) {
-  const lines = [];
-  for (const [key, value] of Object.entries(obj)) {
-    if (Array.isArray(value)) {
-      lines.push(`${key}:`);
-      for (const item of value) {
-        lines.push(`- ${item}`);
-      }
-    } else if (typeof value === 'string' && value.includes('#')) {
-      // Preserve inline comments - write value before comment
-      lines.push(`${key}: ${value}`);
-    } else {
-      lines.push(`${key}: ${value}`);
-    }
-  }
-  lines.push(''); // trailing newline
-  return lines.join('\n');
+function serializeSettingsYaml(obj) {
+  return yaml.dump(obj || {}, {
+    lineWidth: 120,
+    noRefs: true,
+    sortKeys: false
+  });
 }
 
 // Read LLM config
@@ -851,7 +820,7 @@ ipcMain.handle('get-settings', async () => {
       return { error: 'Config file not found', path: configPath };
     }
     const content = fs.readFileSync(configPath, 'utf-8');
-    const config = parseSimpleYaml(content);
+    const config = parseSettingsYaml(content);
     return { success: true, config, raw_yaml: content, path: configPath };
   } catch (e) {
     return { error: e.message };
@@ -867,8 +836,8 @@ ipcMain.handle('save-settings', async (event, config) => {
     if (typeof config === 'string') {
       fs.writeFileSync(configPath, config, 'utf-8');
     } else {
-      const yaml = serializeSimpleYaml(config);
-      fs.writeFileSync(configPath, yaml, 'utf-8');
+      const yamlText = serializeSettingsYaml(config);
+      fs.writeFileSync(configPath, yamlText, 'utf-8');
     }
     return { success: true };
   } catch (e) {
@@ -964,6 +933,7 @@ ipcMain.handle('save-app-config', async (event, config) => {
     const out = { ...base, ...raw };
     out.env = { ...base.env, ...(raw.env || {}) };
     out.runtime = { ...base.runtime, ...(raw.runtime || {}) };
+    out.context = { ...base.context, ...(raw.context || {}) };
     out.mcp = { ...base.mcp, ...(raw.mcp || {}) };
     out.market = { ...base.market, ...(raw.market || {}) };
     fs.writeFileSync(getAppConfigPath(), JSON.stringify(out, null, 2) + '\n', 'utf-8');

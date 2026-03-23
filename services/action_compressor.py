@@ -7,7 +7,7 @@ from utils.windows_compat import safe_print
 """
 
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 try:
     import tiktoken
@@ -22,7 +22,13 @@ class ActionCompressor:
     # action_history 中的内部元数据字段（不参与 XML 转换和 token 统计）
     _INTERNAL_FIELDS = {"_turn", "tool_call_id", "assistant_content", "reasoning_content", "_has_image", "_image_base64"}
     
-    def __init__(self, llm_client):
+    def __init__(
+        self,
+        llm_client,
+        preferred_model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        debug_task_id: Optional[str] = None,
+    ):
         """
         初始化
         
@@ -31,12 +37,21 @@ class ActionCompressor:
         """
         self.llm_client = llm_client
         self.compressor_multimodal = getattr(llm_client, 'compressor_multimodal', False)
+        self.preferred_model = preferred_model
+        self.max_tokens = max_tokens
+        self.debug_task_id = debug_task_id
         
         # 初始化tiktoken
         if HAS_TIKTOKEN:
             self.encoding = tiktoken.get_encoding("cl100k_base")
         else:
             self.encoding = None
+
+    def _resolve_compressor_model(self) -> str:
+        return self.llm_client.resolve_model("compressor", self.preferred_model)
+
+    def _resolve_compressor_tool_choice(self, model: str) -> str:
+        return self.llm_client.resolve_tool_choice("compressor", model)
     
     def count_tokens(self, text: str) -> int:
         """统计token数"""
@@ -303,12 +318,16 @@ class ActionCompressor:
         else:
             history = [{"role": "user", "content": prompt}]
         
+        compressor_model = self._resolve_compressor_model()
         response = self.llm_client.chat(
             history=history,
-            model=self.llm_client.compressor_models[0],
+            model=compressor_model,
             system_prompt=f"你是整体上下文构造专家。目标：将内容压缩到{target_tokens} tokens以内。",
             tool_list=[],
-            tool_choice="none"
+            tool_choice=self._resolve_compressor_tool_choice(compressor_model),
+            max_tokens=self.max_tokens,
+            debug_task_id=self.debug_task_id,
+            debug_label="action_compressor",
         )
         
         summary = response.output if response.status == "success" else "[总结失败]"
@@ -414,12 +433,16 @@ class ActionCompressor:
             history = [ChatMessage(role="user", content=prompt)]
             
             try:
+                compressor_model = self._resolve_compressor_model()
                 response = self.llm_client.chat(
                     history=history,
-                    model=self.llm_client.compressor_models[0],
+                    model=compressor_model,
                     system_prompt=f"你是内容压缩专家。目标：将本段压缩到{target_per_chunk} tokens以内。",
                     tool_list=[],  # 空列表表示不使用工具
-                    tool_choice="none"  # 明确表示不调用工具（压缩任务）
+                    tool_choice=self._resolve_compressor_tool_choice(compressor_model),
+                    max_tokens=self.max_tokens,
+                    debug_task_id=self.debug_task_id,
+                    debug_label="action_compressor",
                 )
                 
                 if response.status == "success":
@@ -622,12 +645,16 @@ class ActionCompressor:
             
             history = [ChatMessage(role="user", content=prompt)]
             
+            compressor_model = self._resolve_compressor_model()
             response = self.llm_client.chat(
                 history=history,
-                model=self.llm_client.compressor_models[0],
+                model=compressor_model,
                 system_prompt=f"你是智能内容压缩助手。目标：将{content_type}压缩到{target_tokens} tokens，同时保留核心信息。",
                 tool_list=[],  # 空列表表示不使用工具
-                tool_choice="none"  # 明确表示不调用工具（压缩任务）
+                tool_choice=self._resolve_compressor_tool_choice(compressor_model),
+                max_tokens=self.max_tokens,
+                debug_task_id=self.debug_task_id,
+                debug_label="action_compressor",
             )
             
             compressed = response.output if response.status == "success" else text[:1000] + "\n[压缩失败，仅保留前1000字符]"
@@ -746,12 +773,16 @@ class ActionCompressor:
             history = [ChatMessage(role="user", content=prompt)]
             
             try:
+                compressor_model = self._resolve_compressor_model()
                 response = self.llm_client.chat(
                     history=history,
-                    model=self.llm_client.compressor_models[0],
+                    model=compressor_model,
                     system_prompt=f"压缩专家。目标：将本段压缩到{target_per_chunk} tokens。",
                     tool_list=[],  # 空列表表示不使用工具
-                    tool_choice="none"  # 明确表示不调用工具（压缩任务）
+                    tool_choice=self._resolve_compressor_tool_choice(compressor_model),
+                    max_tokens=self.max_tokens,
+                    debug_task_id=self.debug_task_id,
+                    debug_label="action_compressor",
                 )
                 
                 if response.status == "success":
@@ -799,4 +830,3 @@ if __name__ == "__main__":
     safe_print("1. 历史actions → LLM总结为5k tokens")
     safe_print("2. 最新action → 保留结构，LLM智能压缩大字段到50% max_window")
     safe_print("3. 备用方案 → 首尾保留法（当LLM失败时）")
-

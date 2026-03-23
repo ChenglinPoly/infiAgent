@@ -39,12 +39,27 @@ from tool_server_lite.registry import (
 )
 from utils.user_paths import (
     apply_runtime_env_defaults,
-    ensure_user_llm_config_exists,
-    get_user_agent_library_root,
-    get_user_conversations_dir,
-    get_user_data_root,
-    get_user_llm_config_path,
-    get_user_tools_library_root,
+    runtime_env_scope,
+)
+from user_runtime import (
+    ensure_web_user_runtime,
+    get_web_user_agent_library_root,
+    get_web_user_app_config_path,
+    get_web_user_config_dir,
+    get_web_user_conversations_dir,
+    get_web_user_data_root,
+    get_web_user_llm_config_path,
+    get_web_user_skills_dir,
+    get_web_user_tools_library_root,
+)
+from user_accounts import (
+    authenticate_user,
+    delete_user as delete_account,
+    ensure_default_accounts,
+    list_users as list_account_records,
+    public_user_record,
+    register_user,
+    update_user as update_account,
 )
 
 # OutputCapture is no longer used - we directly parse JSONL events
@@ -71,18 +86,10 @@ else:
 
 # 确保目录存在
 WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+HIDDEN_WORKSPACE_NAMES = {'chat_history.json', 'latest_output.json', 'conversations'}
+WRITE_LATEST_OUTPUT = os.environ.get('WEB_UI_WRITE_LATEST_OUTPUT', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
-# Load user accounts
-def load_users():
-    """Load user accounts from users.yaml"""
-    users_file = Path(__file__).parent / 'users.yaml'
-    if users_file.exists():
-        with open(users_file, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f)
-            return data.get('users', {})
-    return {}
-
-USER_ACCOUNTS = load_users()
+ensure_default_accounts()
 
 # Global variable to store current execution state (per user)
 # Format: {username: {'running': False, 'process': None, ...}}
@@ -113,14 +120,31 @@ def get_user_execution(username: str) -> dict:
     return current_executions[username]
 
 
-def get_agent_system_dir(agent_system: str) -> Path:
-    return get_user_agent_library_root() / agent_system
+def ensure_user_runtime_ready(username: str) -> Path:
+    return ensure_web_user_runtime(username)
 
 
-def get_run_env_config_dir() -> Path:
-    cfg = get_user_llm_config_path().parent
+def get_user_runtime_overrides(username: str) -> dict:
+    ensure_user_runtime_ready(username)
+    user_root = get_web_user_data_root(username)
+    return {
+        "MLA_USER_DATA_ROOT": str(user_root),
+        "MLA_LLM_CONFIG_PATH": str(get_web_user_llm_config_path(username)),
+        "MLA_AGENT_LIBRARY_DIR": str(user_root),
+        "MLA_TOOLS_LIBRARY_DIR": str(get_web_user_tools_library_root(username)),
+        "MLA_SKILLS_LIBRARY_DIR": str(get_web_user_skills_dir(username)),
+    }
+
+
+def get_agent_system_dir(username: str, agent_system: str) -> Path:
+    ensure_user_runtime_ready(username)
+    return get_web_user_agent_library_root(username) / agent_system
+
+
+def get_run_env_config_dir(username: str) -> Path:
+    ensure_user_runtime_ready(username)
+    cfg = get_web_user_config_dir(username)
     cfg.mkdir(parents=True, exist_ok=True)
-    ensure_user_llm_config_exists()
     return cfg
 
 
@@ -131,20 +155,22 @@ def sanitize_tool_name(raw_name: str) -> str:
     return name
 
 
-def collect_tool_bindings() -> dict:
+def collect_tool_bindings(username: str) -> dict:
     systems = []
-    root = get_user_agent_library_root()
+    root = get_web_user_agent_library_root(username)
     if root.exists():
         systems = sorted(d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith('.'))
 
     bound_by_tool = {}
     declared_without_impl = []
-    runtime_tools = set(get_runtime_registry().keys())
+    with runtime_env_scope(get_user_runtime_overrides(username)):
+        reload_runtime_registry()
+        runtime_tools = set(get_runtime_registry().keys())
 
     from utils.config_loader import ConfigLoader
     for system_name in systems:
         try:
-            loader = ConfigLoader(system_name)
+            loader = ConfigLoader(system_name, agent_library_root=str(get_web_user_data_root(username)))
         except Exception:
             continue
         for tool_name, config in loader.all_tools.items():
@@ -282,6 +308,19 @@ def login_required(f):
     return decorated_function
 
 
+def admin_required(f):
+    """Admin role required."""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return jsonify({"error": "Login required"}), 401
+        if session.get('role') != 'admin':
+            return jsonify({"error": "Admin permission required"}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 def run_agent_task(task_id: str, agent_name: str, user_input: str, 
                    agent_system: str, output_queue: queue.Queue, username: str = None):
     """
@@ -342,7 +381,7 @@ def run_agent_task(task_id: str, agent_name: str, user_input: str,
                 "timestamp": None
             })
             
-            config_loader = ConfigLoader(agent_system)
+            config_loader = ConfigLoader(agent_system, agent_library_root=str(get_web_user_data_root(username)))
             
             send_message({
                 "type": "info",
@@ -502,15 +541,17 @@ def login():
         username = data.get('username', '').strip()
         password = data.get('password', '').strip()
         
-        # Verify username and password
-        if username in USER_ACCOUNTS and USER_ACCOUNTS[username] == password:
+        account = authenticate_user(username, password)
+        if account:
             session['logged_in'] = True
-            session['username'] = username
-            # Initialize user workspace
-            get_user_workspace(username)
+            session['username'] = account['username']
+            session['role'] = account.get('role', 'user')
+            ensure_user_runtime_ready(account['username'])
+            get_user_workspace(account['username'])
             return jsonify({
                 "success": True,
-                "message": "Login successful"
+                "message": "Login successful",
+                "user": account,
             })
         else:
             return jsonify({
@@ -518,6 +559,28 @@ def login():
             }), 401
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    """Self-service registration."""
+    try:
+        data = request.json or {}
+        username = str(data.get('username', '')).strip()
+        password = str(data.get('password', '')).strip()
+        account = register_user(username, password, role='user')
+        session['logged_in'] = True
+        session['username'] = account['username']
+        session['role'] = account.get('role', 'user')
+        ensure_user_runtime_ready(account['username'])
+        get_user_workspace(account['username'])
+        return jsonify({
+            "success": True,
+            "message": "Registration successful",
+            "user": account,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route('/api/logout', methods=['POST'])
@@ -536,7 +599,9 @@ def check_auth():
     if session.get('logged_in'):
         return jsonify({
             "logged_in": True,
-            "username": session.get('username', '')
+            "username": session.get('username', ''),
+            "role": session.get('role', 'user'),
+            "can_manage_users": session.get('role', 'user') == 'admin',
         })
     else:
         return jsonify({
@@ -551,6 +616,64 @@ def health():
         "service": "web_ui",
         "running_users": sum(1 for st in current_executions.values() if st.get('running'))
     })
+
+
+@app.route('/api/users', methods=['GET'])
+@admin_required
+def api_list_users():
+    try:
+        return jsonify({
+            "users": list_account_records()
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/users', methods=['POST'])
+@admin_required
+def api_create_user():
+    try:
+        data = request.json or {}
+        username = str(data.get('username', '')).strip()
+        password = str(data.get('password', '')).strip()
+        role = str(data.get('role', 'user')).strip()
+        account = register_user(username, password, role=role)
+        ensure_user_runtime_ready(account['username'])
+        return jsonify({"success": True, "user": account})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route('/api/users/<username>', methods=['PATCH'])
+@admin_required
+def api_update_user(username: str):
+    try:
+        data = request.json or {}
+        password = data.get('password')
+        role = data.get('role')
+        enabled = data.get('enabled')
+        account = update_account(
+            username,
+            password=password if password is not None else None,
+            role=role if role is not None else None,
+            enabled=enabled if enabled is not None else None,
+            actor_username=session.get('username'),
+        )
+        if username == session.get('username'):
+            session['role'] = account.get('role', session.get('role', 'user'))
+        return jsonify({"success": True, "user": account})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route('/api/users/<username>', methods=['DELETE'])
+@admin_required
+def api_delete_user(username: str):
+    try:
+        delete_account(username, actor_username=session.get('username'))
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route('/api/run', methods=['POST'])
@@ -593,27 +716,25 @@ def run_task():
     user_execution['pending_hil'] = None
     user_execution['pending_tool_confirmation'] = None
     
-    # Get path to start.py
-    start_script = project_root / 'start.py'
+    ensure_user_runtime_ready(username)
+    worker_script = server_dir / 'sdk_worker.py'
     
-    # Start subprocess to run start.py (using absolute path)
     process_env = os.environ.copy()
-    process_env.setdefault('MLA_USER_DATA_ROOT', str(get_user_data_root()))
-    process_env.setdefault('MLA_LLM_CONFIG_PATH', str(ensure_user_llm_config_exists()))
+    process_env.update(get_user_runtime_overrides(username))
 
     process = subprocess.Popen(
         [
             sys.executable,
-            str(start_script),
+            str(worker_script),
             '--task_id', task_id_absolute,
+            '--user_data_root', str(get_web_user_data_root(username)),
+            '--skills_dir', str(get_web_user_skills_dir(username)),
             '--agent_name', agent_name,
             '--user_input', user_input,
             '--agent_system', agent_system,
-            '--jsonl',  # Use JSONL mode to parse output
-            '--direct-tools',
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,  # Merge stderr to stdout
+        stderr=subprocess.PIPE,
         stdin=subprocess.PIPE,
         text=True,
         bufsize=1,
@@ -644,6 +765,8 @@ def run_task():
             import json
             params_str = json.dumps(parameters, ensure_ascii=False, indent=2)
             frontend_event["type"] = "tool_call"
+            frontend_event["tool_name"] = tool_name
+            frontend_event["arguments"] = parameters
             frontend_event["content"] = f"🔧 [{default_agent_name}] calls tool: {tool_name}\n\n📋 Parameters:\n{params_str}"
             
         elif event_type == "agent_call":
@@ -674,6 +797,10 @@ def run_task():
             status = event.get("status", "unknown")
             preview = event.get("output_preview", "")
             error_text = event.get("error", "")
+            frontend_event["tool_name"] = name
+            frontend_event["status"] = status
+            frontend_event["output_preview"] = preview
+            frontend_event["error"] = error_text
             frontend_event["content"] = (
                 f"🔧 Tool result: {name} ({status})\n\n"
                 + (f"Error:\n{error_text}" if error_text else f"Output:\n{preview}")
@@ -689,18 +816,18 @@ def run_task():
             frontend_event["content"] = f"🏁 Agent end: {event.get('status', 'unknown')}"
 
         elif event_type == "thinking_start":
-            frontend_event["type"] = "thinking"
+            frontend_event["type"] = "thinking_start"
             frontend_event["content"] = "Thinking..."
 
         elif event_type == "thinking_end":
-            frontend_event["type"] = "thinking"
+            frontend_event["type"] = "thinking_end"
             frontend_event["content"] = str(event.get("result", "") or "")
 
-        elif event_type in ("thinking_token", "reasoning_token"):
+        elif event_type == "thinking_token":
             text = event.get("text", "")
             if not text:
                 return None
-            frontend_event["type"] = "thinking"
+            frontend_event["type"] = "thinking_token"
             frontend_event["content"] = text
 
         elif event_type == "token":
@@ -711,37 +838,15 @@ def run_task():
             # Filter initialization messages (不需要在前端显示)
             if "加载配置" in text or "配置加载成功" in text:
                 return None  # Skip config loading messages
-            
-            # Check if this is a tool call text (backward compatibility - 保持向后兼容)
-            if "调用工具:" in text and "参数:" in text:
-                # Parse tool call text (兼容旧的文本格式)
-                lines_split = text.split('\n')
-                tool_line = lines_split[0] if lines_split else ""
-                params_text = '\n'.join(lines_split[1:]) if len(lines_split) > 1 else ""
-                
-                # Extract tool name
-                import re
-                tool_match = re.search(r'调用工具:\s*(\w+)', tool_line)
-                tool_name = tool_match.group(1) if tool_match else "unknown"
-                
-                frontend_event["type"] = "tool_call"
-                frontend_event["content"] = f"🔧 [{default_agent_name}] calls tool: {tool_name}\n\n📋 Parameters:\n{params_text}"
-            elif "调用子Agent:" in text and "参数:" in text:
-                # 兼容旧的子 Agent 调用文本格式
-                lines_split = text.split('\n')
-                agent_line = lines_split[0] if lines_split else ""
-                params_text = '\n'.join(lines_split[1:]) if len(lines_split) > 1 else ""
-                
-                import re
-                agent_match = re.search(r'调用子Agent:\s*(\w+)', agent_line)
-                agent_name = agent_match.group(1) if agent_match else "unknown"
-                
-                frontend_event["type"] = "agent_call"
-                frontend_event["content"] = f"🤖 [{default_agent_name}] calls sub-agent: {agent_name}\n\n📋 Parameters:\n{params_text}"
-            else:
-                # Regular text information
-                frontend_event["type"] = "info"
-                frontend_event["content"] = text
+            frontend_event["type"] = "token"
+            frontend_event["content"] = text
+
+        elif event_type == "reasoning_token":
+            text = event.get("text", "")
+            if not text:
+                return None
+            frontend_event["type"] = "reasoning_token"
+            frontend_event["content"] = text
                 
         elif event_type == "start":
             frontend_event["type"] = "start"
@@ -795,16 +900,15 @@ def run_task():
                 # Skip events without content
                 return None
         
-        return frontend_event if frontend_event.get("content") else None
+        always_emit_types = {"end", "thinking_start", "thinking_end", "tool_call", "tool_result", "human_in_loop", "tool_confirmation"}
+        return frontend_event if frontend_event.get("content") or frontend_event.get("type") in always_emit_types else None
     
     # Read process output in background thread
     def read_process_output():
         """Read subprocess output - directly parse JSONL events"""
         end_event_received = False
         try:
-            # Read JSONL event stream directly
-            # Note: start event will come from JSONL stream (emitted by start.py)
-            buffer = ""  # For handling multi-line JSON (though JSONL is usually one JSON per line)
+            buffer = ""
             for line in process.stdout:
                 if user_execution.get('stop_requested', False):
                     break
@@ -850,16 +954,6 @@ def run_task():
                             output_queue.put(frontend_event)
                             
                     except json.JSONDecodeError:
-                        # Non-JSON line, may be error output
-                        json_line = json_line.strip()
-                        if json_line and ("Error" in json_line or "Exception" in json_line):
-                            # Only handle obvious error information
-                            output_queue.put({
-                                "type": "error",
-                                "agent": agent_name,
-                                "content": f"❌ {json_line}",
-                                "timestamp": datetime.now().isoformat()
-                            })
                         continue
                     except Exception as e:
                         # 捕获其他所有异常，输出错误但继续读取
@@ -959,10 +1053,28 @@ def run_task():
             user_execution['process'] = None
             user_execution['pending_hil'] = None
             user_execution['pending_tool_confirmation'] = None
-    
+
+    def read_process_stderr():
+        try:
+            for line in process.stderr:
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                if any(keyword in text for keyword in ['Error', 'Exception', 'Traceback', 'CRITICAL', 'FATAL']):
+                    output_queue.put({
+                        "type": "error",
+                        "agent": agent_name,
+                        "content": f"❌ {text}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+        except Exception:
+            pass
+
     reader_thread = threading.Thread(target=read_process_output, daemon=True)
     user_execution['reader_thread'] = reader_thread
     reader_thread.start()
+    stderr_thread = threading.Thread(target=read_process_stderr, daemon=True)
+    stderr_thread.start()
     
     # Track this SSE connection
     import uuid
@@ -1100,11 +1212,6 @@ def confirm_task():
             # Create new directory
             try:
                 task_path.mkdir(parents=True, exist_ok=True)
-                # Create necessary subdirectories
-                (task_path / 'code_env').mkdir(exist_ok=True)
-                (task_path / 'code_run').mkdir(exist_ok=True)
-                (task_path / 'conversations').mkdir(exist_ok=True)
-                (task_path / 'files').mkdir(exist_ok=True)
                 is_new = True
             except Exception as e:
                 return jsonify({"error": f"Create directory failed: {str(e)}"}), 500
@@ -1181,10 +1288,14 @@ def stop_task():
 def get_agents():
     """Get available agent list"""
     try:
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
+        ensure_user_runtime_ready(username)
         agent_system = request.args.get('agent_system', 'Researcher')
         
         from utils.config_loader import ConfigLoader
-        config_loader = ConfigLoader(agent_system)
+        config_loader = ConfigLoader(agent_system, agent_library_root=str(get_web_user_data_root(username)))
         
         agents = []
         for name, config in config_loader.all_tools.items():
@@ -1209,7 +1320,11 @@ def get_agents():
 def get_agent_systems():
     """List all available agent systems from user library."""
     try:
-        agent_library_dir = get_user_agent_library_root()
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
+        ensure_user_runtime_ready(username)
+        agent_library_dir = get_web_user_agent_library_root(username)
         systems = []
         if agent_library_dir.exists():
             for d in sorted(agent_library_dir.iterdir()):
@@ -1248,7 +1363,7 @@ def check_resume():
         task_name = f"{task_hash}_{task_folder}"
         
         # Stack file location
-        conversations_dir = get_user_conversations_dir()
+        conversations_dir = get_web_user_conversations_dir(username)
         stack_file = conversations_dir / f"{task_name}_stack.json"
         
         if not stack_file.exists():
@@ -1390,10 +1505,8 @@ def list_files():
             # Skip hidden files and special directories
             if item.name.startswith('.'):
                 continue
-            
-            # Skip chat_history.json and conversations folder (hidden from users)
-            # if item.name == 'chat_history.json' or item.name == 'conversations':
-            #     continue
+            if item.name in HIDDEN_WORKSPACE_NAMES:
+                continue
             
             # Calculate file relative path (for display)
             try:
@@ -1542,7 +1655,7 @@ def clear_task():
         task_name = f"{task_hash}_{task_folder}"
         
         # Delete all files matching the pattern in home conversations directory
-        conversations_dir = get_user_conversations_dir()
+        conversations_dir = get_web_user_conversations_dir(username)
         if conversations_dir.exists():
             deleted_files = []
             # Pattern: {task_hash}_{task_folder}_*.json
@@ -1786,19 +1899,10 @@ def download_task():
                 rel_root = Path(root).relative_to(task_path)
                 rel_root_str = str(rel_root)
                 
-                # # Skip conversations directory and all its subdirectories
-                # if 'conversations' in rel_root_str.split(os.sep):
-                #     # Remove conversations from dirs to prevent further traversal
-                #     if 'conversations' in dirs:
-                #         dirs.remove('conversations')
-                #     continue
-                
-                # # Remove conversations directory from dirs to skip it during walk
-                # if 'conversations' in dirs:
-                #     dirs.remove('conversations')
+                dirs[:] = [d for d in dirs if d not in HIDDEN_WORKSPACE_NAMES and not d.startswith('.')]
                 
                 # Check if directory has any valid files (excluding chat_history.json)
-                valid_files = [f for f in files if f != 'chat_history.json']
+                valid_files = [f for f in files if f not in HIDDEN_WORKSPACE_NAMES]
                 
                 if not valid_files:
                     # Directory is empty (or only contains chat_history.json)
@@ -1814,7 +1918,7 @@ def download_task():
                 # Process files
                 for file in files:
                     # Skip chat_history.json file
-                    if file == 'chat_history.json':
+                    if file in HIDDEN_WORKSPACE_NAMES:
                         continue
                     
                     file_path = Path(root) / file
@@ -1940,6 +2044,8 @@ def create_latest_output(chat_history_file: Path):
     Excludes system messages and truncates content to 200 characters
     """
     try:
+        if not WRITE_LATEST_OUTPUT:
+            return
         if not chat_history_file.exists():
             print(f"[latest_output] chat_history.json not found: {chat_history_file}")
             return
@@ -2497,9 +2603,14 @@ def respond_tool_confirmation():
 def list_runtime_tools():
     """List runtime tools, custom tool load failures, and YAML binding status."""
     try:
-        metadata = get_runtime_registry_metadata()
-        failures = get_runtime_registry_failures()
-        bindings_info = collect_tool_bindings()
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
+        with runtime_env_scope(get_user_runtime_overrides(username)):
+            reload_runtime_registry()
+            metadata = get_runtime_registry_metadata()
+            failures = get_runtime_registry_failures()
+        bindings_info = collect_tool_bindings(username)
         bound_map = bindings_info["bindings"]
 
         tools = []
@@ -2531,7 +2642,11 @@ def list_runtime_tools():
 def reload_runtime_tools():
     """Reload runtime registry after tool changes."""
     try:
-        reload_runtime_registry()
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
+        with runtime_env_scope(get_user_runtime_overrides(username)):
+            reload_runtime_registry()
         return jsonify({"success": True})
     except Exception as e:
         import traceback
@@ -2544,6 +2659,9 @@ def reload_runtime_tools():
 def upload_runtime_tool():
     """Upload a Python tool implementation into ~/mla_v3/tools_library/."""
     try:
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
         if 'file' not in request.files:
             return jsonify({"error": "Missing file field"}), 400
         upload = request.files['file']
@@ -2556,13 +2674,15 @@ def upload_runtime_tool():
         if not tool_name:
             return jsonify({"error": "Invalid tool filename"}), 400
 
-        tools_root = get_user_tools_library_root()
+        ensure_user_runtime_ready(username)
+        tools_root = get_web_user_tools_library_root(username)
         tool_dir = tools_root / tool_name
         tool_dir.mkdir(parents=True, exist_ok=True)
         target_path = tool_dir / f"{tool_name}.py"
         upload.save(str(target_path))
 
-        reload_runtime_registry()
+        with runtime_env_scope(get_user_runtime_overrides(username)):
+            reload_runtime_registry()
         return jsonify({
             "success": True,
             "tool_name": tool_name,
@@ -2580,11 +2700,14 @@ def upload_runtime_tool():
 def delete_runtime_tool(tool_name):
     """Delete a custom Python tool from ~/mla_v3/tools_library/."""
     try:
+        username = session.get('username')
+        if not username:
+            return jsonify({"error": "User not authenticated"}), 401
         safe_name = sanitize_tool_name(tool_name)
         if not safe_name:
             return jsonify({"error": "Invalid tool name"}), 400
 
-        tool_dir = get_user_tools_library_root() / safe_name
+        tool_dir = get_web_user_tools_library_root(username) / safe_name
         if not tool_dir.exists():
             return jsonify({"error": "Tool not found"}), 404
 
@@ -2594,7 +2717,8 @@ def delete_runtime_tool(tool_name):
             import shutil
             shutil.rmtree(tool_dir)
 
-        reload_runtime_registry()
+        with runtime_env_scope(get_user_runtime_overrides(username)):
+            reload_runtime_registry()
         return jsonify({"success": True, "message": "Tool deleted"})
     except Exception as e:
         import traceback
@@ -2617,9 +2741,9 @@ def list_config_files():
         agent_system = request.args.get('agent_system', 'Researcher')
         
         if config_type == 'run_env':
-            config_dir = get_run_env_config_dir()
+            config_dir = get_run_env_config_dir(username)
         elif config_type == 'agent':
-            config_dir = get_agent_system_dir(agent_system)
+            config_dir = get_agent_system_dir(username, agent_system)
         else:
             return jsonify({"error": "Invalid config type. Use 'run_env' or 'agent'"}), 400
         
@@ -2668,9 +2792,9 @@ def read_config_file():
         
         # Determine config directory based on type
         if config_type == 'run_env':
-            config_dir = get_run_env_config_dir()
+            config_dir = get_run_env_config_dir(username)
         elif config_type == 'agent':
-            config_dir = get_agent_system_dir(agent_system)
+            config_dir = get_agent_system_dir(username, agent_system)
         else:
             return jsonify({"error": "Invalid config type"}), 400
         
@@ -2718,6 +2842,7 @@ def get_agent_tree():
         username = session.get('username')
         if not username:
             return jsonify({"error": "User not authenticated"}), 401
+        ensure_user_runtime_ready(username)
         
         # Get optional root_agent and agent_system parameters
         root_agent = request.args.get('root_agent', None)
@@ -2725,7 +2850,7 @@ def get_agent_tree():
         
         # Load agent configurations
         from utils.config_loader import ConfigLoader
-        config_loader = ConfigLoader(agent_system)
+        config_loader = ConfigLoader(agent_system, agent_library_root=str(get_web_user_data_root(username)))
         
         # Build agent tree
         all_agents = {}
@@ -2867,9 +2992,9 @@ def save_config_file():
         
         # Determine config directory based on type
         if config_type == 'run_env':
-            config_dir = get_run_env_config_dir()
+            config_dir = get_run_env_config_dir(username)
         elif config_type == 'agent':
-            config_dir = get_agent_system_dir(agent_system)
+            config_dir = get_agent_system_dir(username, agent_system)
         else:
             return jsonify({"error": "Invalid config type"}), 400
         
@@ -2912,4 +3037,3 @@ if __name__ == '__main__':
     print(f"📂 Project root: {project_root}")
     print(f"💡 Tip: If port is occupied, specify another port via environment variable PORT=8080")
     app.run(host='0.0.0.0', port=port, debug=True, threaded=True)
-

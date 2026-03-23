@@ -11,6 +11,7 @@ import time
 import json
 import copy
 import concurrent.futures
+import re
 from typing import Callable, List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,6 +54,113 @@ class LLMResponse:
     error_information: str = ""
     reasoning_content: str = ""  # 模型的推理/思考内容（如 Claude thinking, Deepseek reasoning）
     thinking_blocks: Optional[List[Dict]] = None  # Anthropic 专用的 thinking_blocks
+
+
+_RAW_TOOL_CALLS_SECTION_BEGIN = "<|tool_calls_section_begin|>"
+_RAW_TOOL_CALLS_SECTION_END = "<|tool_calls_section_end|>"
+_RAW_TOOL_CALL_PATTERN = re.compile(
+    r"<\|tool_call_begin\|>(.*?)<\|tool_call_argument_begin\|>(.*?)<\|tool_call_end\|>",
+    re.DOTALL,
+)
+
+
+def _marker_prefix_overlap(text: str, marker: str) -> int:
+    """返回 text 尾部与 marker 前缀的最大重叠长度，用于流式解析跨 chunk 标记。"""
+    if not text or not marker:
+        return 0
+    max_size = min(len(text), len(marker) - 1)
+    for size in range(max_size, 0, -1):
+        if text.endswith(marker[:size]):
+            return size
+    return 0
+
+
+class _EmbeddedToolCallStreamState:
+    """过滤模型直接吐出的原始 tool-call section，同时保留其中的原始标记以便后续解析。"""
+
+    def __init__(self):
+        self._pending = ""
+        self._captured_parts: List[str] = []
+        self._in_section = False
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+
+        self._pending += text
+        visible_parts: List[str] = []
+
+        while self._pending:
+            if not self._in_section:
+                start_idx = self._pending.find(_RAW_TOOL_CALLS_SECTION_BEGIN)
+                if start_idx >= 0:
+                    if start_idx > 0:
+                        visible_parts.append(self._pending[:start_idx])
+                    self._pending = self._pending[start_idx + len(_RAW_TOOL_CALLS_SECTION_BEGIN):]
+                    self._in_section = True
+                    continue
+
+                hold = _marker_prefix_overlap(self._pending, _RAW_TOOL_CALLS_SECTION_BEGIN)
+                if hold:
+                    visible_parts.append(self._pending[:-hold])
+                    self._pending = self._pending[-hold:]
+                else:
+                    visible_parts.append(self._pending)
+                    self._pending = ""
+                break
+
+            end_idx = self._pending.find(_RAW_TOOL_CALLS_SECTION_END)
+            if end_idx >= 0:
+                if end_idx > 0:
+                    self._captured_parts.append(self._pending[:end_idx])
+                self._pending = self._pending[end_idx + len(_RAW_TOOL_CALLS_SECTION_END):]
+                self._in_section = False
+                continue
+
+            hold = _marker_prefix_overlap(self._pending, _RAW_TOOL_CALLS_SECTION_END)
+            if hold:
+                self._captured_parts.append(self._pending[:-hold])
+                self._pending = self._pending[-hold:]
+            else:
+                self._captured_parts.append(self._pending)
+                self._pending = ""
+            break
+
+        return "".join(visible_parts)
+
+    def finish(self) -> tuple[str, str]:
+        visible_tail = ""
+        if self._pending:
+            if self._in_section:
+                self._captured_parts.append(self._pending)
+            else:
+                visible_tail = self._pending
+        self._pending = ""
+        return visible_tail, "".join(self._captured_parts)
+
+
+def _coerce_text_content(value: Any) -> str:
+    """Best-effort flattening for OpenAI-compatible message content payloads."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                    continue
+                if "text" in item:
+                    parts.append(str(item.get("text") or ""))
+                    continue
+            parts.append(str(item))
+        return "".join(parts)
+    return str(value)
 
 
 class SimpleLLMClient:
@@ -207,6 +315,237 @@ class SimpleLLMClient:
     def get_default_tool_choice(self, category: str = "execution") -> str:
         return self.default_tool_choice.get(category, "required")
 
+    @staticmethod
+    def _is_kimi_tool_model(model: str, tool_count: int = 0) -> bool:
+        if int(tool_count or 0) <= 0:
+            return False
+        normalized = str(model or "").strip().lower()
+        if not normalized:
+            return False
+        return "kimi" in normalized or "moonshot" in normalized
+
+    @staticmethod
+    def _contains_embedded_tool_markup(text: str) -> bool:
+        value = str(text or "")
+        if not value:
+            return False
+        markers = (
+            "<|tool_calls_section_begin",
+            "<|tool_calls_section_end",
+            "<|tool_call_begin|>",
+            "<|tool_call_argument_begin|>",
+        )
+        return any(marker in value for marker in markers)
+
+    @staticmethod
+    def _embedded_tool_name_from_id(raw_call_id: str) -> str:
+        token = str(raw_call_id or "").strip()
+        if not token:
+            return ""
+        if token.startswith("functions."):
+            token = token[len("functions."):]
+        if ":" in token:
+            token = token.rsplit(":", 1)[0]
+        return token.strip()
+
+    def _parse_embedded_tool_calls(self, raw_markup: str) -> List[ToolCall]:
+        text = str(raw_markup or "")
+        if not text or "<|tool_call_begin|>" not in text:
+            return []
+
+        final_calls: List[ToolCall] = []
+        for idx, match in enumerate(_RAW_TOOL_CALL_PATTERN.finditer(text)):
+            raw_call_id = str(match.group(1) or "").strip()
+            raw_args = str(match.group(2) or "").strip()
+            tool_name = self._embedded_tool_name_from_id(raw_call_id)
+            if not tool_name:
+                continue
+
+            args: Dict[str, Any]
+            if not raw_args:
+                args = {}
+            else:
+                try:
+                    args = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    args = self._try_fix_json(raw_args) or {}
+
+            final_calls.append(
+                ToolCall(
+                    id=raw_call_id or f"embedded_call_{idx}",
+                    name=tool_name,
+                    arguments=args,
+                )
+            )
+        return final_calls
+
+    @staticmethod
+    def _merge_tool_calls(primary: List[ToolCall], secondary: List[ToolCall]) -> List[ToolCall]:
+        merged: List[ToolCall] = []
+        seen = set()
+        for tool_call in list(primary or []) + list(secondary or []):
+            args_key = json.dumps(tool_call.arguments or {}, ensure_ascii=False, sort_keys=True)
+            key = (str(tool_call.id or "").strip(), str(tool_call.name or "").strip(), args_key)
+            fallback_key = (str(tool_call.name or "").strip(), args_key)
+            if key in seen or fallback_key in seen:
+                continue
+            seen.add(key)
+            seen.add(fallback_key)
+            merged.append(tool_call)
+        return merged
+
+    def _extract_embedded_tool_calls_and_visible_text(
+        self,
+        content_text: str,
+        reasoning_text: str,
+    ) -> tuple[str, str, List[ToolCall], bool]:
+        content_state = _EmbeddedToolCallStreamState()
+        reasoning_state = _EmbeddedToolCallStreamState()
+
+        visible_content = content_state.feed(str(content_text or ""))
+        visible_content_tail, embedded_content_markup = content_state.finish()
+        visible_content += visible_content_tail
+
+        visible_reasoning = reasoning_state.feed(str(reasoning_text or ""))
+        visible_reasoning_tail, embedded_reasoning_markup = reasoning_state.finish()
+        visible_reasoning += visible_reasoning_tail
+
+        marker_seen = (
+            self._contains_embedded_tool_markup(content_text)
+            or self._contains_embedded_tool_markup(reasoning_text)
+        )
+
+        embedded_tool_calls = self._merge_tool_calls(
+            self._parse_embedded_tool_calls(embedded_content_markup),
+            self._parse_embedded_tool_calls(embedded_reasoning_markup),
+        )
+
+        if marker_seen and not embedded_tool_calls:
+            embedded_tool_calls = self._merge_tool_calls(
+                self._parse_embedded_tool_calls(str(content_text or "")),
+                self._parse_embedded_tool_calls(str(reasoning_text or "")),
+            )
+
+        return visible_content, visible_reasoning, embedded_tool_calls, marker_seen
+
+    def _parse_non_stream_tool_calls(self, tool_calls_payload: Any) -> List[ToolCall]:
+        final_tool_calls: List[ToolCall] = []
+        if not tool_calls_payload:
+            return final_tool_calls
+
+        for idx, tool_call in enumerate(tool_calls_payload):
+            tc_id = str(getattr(tool_call, "id", "") or (tool_call.get("id", "") if isinstance(tool_call, dict) else "")).strip()
+            function_payload = getattr(tool_call, "function", None)
+            if function_payload is None and isinstance(tool_call, dict):
+                function_payload = tool_call.get("function")
+
+            function_name = ""
+            function_arguments = ""
+
+            if function_payload is not None:
+                function_name = str(
+                    getattr(function_payload, "name", "")
+                    or (function_payload.get("name", "") if isinstance(function_payload, dict) else "")
+                ).strip()
+                function_arguments = str(
+                    getattr(function_payload, "arguments", "")
+                    or (function_payload.get("arguments", "") if isinstance(function_payload, dict) else "")
+                )
+
+            args: Dict[str, Any]
+            if not function_arguments:
+                args = {}
+            else:
+                try:
+                    args = json.loads(function_arguments)
+                except json.JSONDecodeError:
+                    args = self._try_fix_json(function_arguments) or {}
+
+            if not function_name:
+                continue
+
+            final_tool_calls.append(
+                ToolCall(
+                    id=tc_id or f"call_{idx}",
+                    name=function_name,
+                    arguments=args,
+                )
+            )
+
+        return final_tool_calls
+
+    def _chat_internal_non_stream(
+        self,
+        kwargs: Dict[str, Any],
+        model: str,
+        tools_definition: List[Dict[str, Any]],
+        debug_label: str,
+    ) -> LLMResponse:
+        safe_print(f"   🌊 正在调用LLM (non-stream fallback, timeout={kwargs['timeout']}s)...")
+        response = completion(**kwargs)
+
+        response_model = str(getattr(response, "model", "") or model)
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return LLMResponse(
+                status="error",
+                output="",
+                tool_calls=[],
+                model=response_model,
+                finish_reason="empty",
+                error_information="Empty non-stream response",
+            )
+
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is None and isinstance(choice, dict):
+            message = choice.get("message")
+
+        finish_reason = str(getattr(choice, "finish_reason", "") or (choice.get("finish_reason", "") if isinstance(choice, dict) else "") or "stop")
+        raw_content = _coerce_text_content(getattr(message, "content", None) if message is not None else None)
+        if not raw_content and isinstance(message, dict):
+            raw_content = _coerce_text_content(message.get("content"))
+
+        raw_reasoning = str(
+            (getattr(message, "reasoning_content", None) if message is not None else None)
+            or (message.get("reasoning_content") if isinstance(message, dict) else "")
+            or ""
+        )
+
+        structured_tool_calls = self._parse_non_stream_tool_calls(
+            getattr(message, "tool_calls", None) if message is not None else None
+        )
+        if not structured_tool_calls and isinstance(message, dict):
+            structured_tool_calls = self._parse_non_stream_tool_calls(message.get("tool_calls"))
+
+        visible_content, visible_reasoning, embedded_tool_calls, raw_marker_seen = self._extract_embedded_tool_calls_and_visible_text(
+            raw_content,
+            raw_reasoning,
+        )
+        final_tool_calls = self._merge_tool_calls(structured_tool_calls, embedded_tool_calls)
+
+        if final_tool_calls and finish_reason in {"", "unknown", "stop"}:
+            finish_reason = "tool_calls"
+
+        if self._is_kimi_tool_model(model, len(tools_definition)) and raw_marker_seen and not final_tool_calls:
+            return LLMResponse(
+                status="error",
+                output=visible_content,
+                tool_calls=[],
+                model=response_model,
+                finish_reason=finish_reason or "tool_calls_parse_failed",
+                error_information="Kimi raw tool-call markup detected but no executable tool call could be parsed",
+                reasoning_content=visible_reasoning,
+            )
+
+        return LLMResponse(
+            status="success",
+            output=visible_content,
+            tool_calls=final_tool_calls,
+            model=response_model,
+            finish_reason=finish_reason,
+            reasoning_content=visible_reasoning,
+        )
     def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
         debug_msgs = copy.deepcopy(messages)
@@ -552,20 +891,64 @@ class SimpleLLMClient:
             # 这里做一次“就地兼容重试”：第一次失败则移除 tool_choice，保持 tools 但不强制 required。
             # 这类报错文案在不同 provider/router 上差异很大，因此只要是 tool_choice=required
             # 且首轮失败信息明确指向 tool_choice 不兼容，就降级为 auto 重试一次。
-            for _compat_try in range(2):
+            tried_kimi_non_stream_fallback = False
+            for _compat_try in range(3):
                 safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
                 safe_print(f"   📨 请求模型: {model}")
                 safe_print(f"   🛠️ 工具数量: {len(tools_definition)}")
                 safe_print(f"   📝 消息数: {len(messages)}")
                 request_start_time = time.time()
 
+                if not kwargs.get("stream", True):
+                    return self._chat_internal_non_stream(
+                        kwargs=kwargs,
+                        model=model,
+                        tools_definition=tools_definition,
+                        debug_label=debug_label,
+                    )
+
                 # 累积变量
                 accumulated_content = ""
                 accumulated_reasoning_content = ""  # reasoning/thinking 内容
+                visible_content = ""
+                visible_reasoning_content = ""
                 accumulated_tool_calls = {}  # index -> {id, name, arguments}
                 finish_reason = "unknown"
                 response_model = model
                 chunk_count = 0
+                content_stream_state = _EmbeddedToolCallStreamState()
+                reasoning_stream_state = _EmbeddedToolCallStreamState()
+
+                def _emit_visible_text(kind: str, text: str):
+                    if not text:
+                        return
+
+                    _emit_stream_chunk(kind, text, response_model)
+
+                    if kind == "content":
+                        try:
+                            safe_print(text, end="", flush=True)
+                            if emit_tokens:
+                                from utils.event_emitter import get_event_emitter as _get_ee
+                                _ee = _get_ee()
+                                if _ee.enabled:
+                                    if emit_tokens == "thinking":
+                                        _ee.emit({"type": "thinking_token", "text": text})
+                                    else:
+                                        _ee.token(text)
+                        except Exception:
+                            pass
+                        return
+
+                    try:
+                        if emit_tokens:
+                            from utils.event_emitter import get_event_emitter as _get_ee_reason
+                            _ee_reason = _get_ee_reason()
+                            if _ee_reason.enabled:
+                                event_type = "thinking_token" if emit_tokens == "thinking" else "reasoning_token"
+                                _ee_reason.emit({"type": event_type, "text": text})
+                    except Exception:
+                        pass
 
                 try:
                     # --- 强制首包超时检测（包含 completion 调用以防止连接池死锁）---
@@ -598,34 +981,16 @@ class SimpleLLMClient:
                                     delta = first_chunk.choices[0].delta
                                     if hasattr(delta, 'content') and delta.content:
                                         accumulated_content += delta.content
-                                        _emit_stream_chunk("content", delta.content, response_model)
-                                        # 关键修复：首包的 delta.content 不能只累积不发送，否则前端会丢失首 token
-                                        try:
-                                            safe_print(delta.content, end="", flush=True)
-                                            if emit_tokens:
-                                                from utils.event_emitter import get_event_emitter as _get_ee_first
-                                                _ee_first = _get_ee_first()
-                                                if _ee_first.enabled:
-                                                    if emit_tokens == "thinking":
-                                                        _ee_first.emit({"type": "thinking_token", "text": delta.content})
-                                                    else:
-                                                        _ee_first.token(delta.content)
-                                        except Exception:
-                                            pass
+                                        visible_piece = content_stream_state.feed(delta.content)
+                                        visible_content += visible_piece
+                                        _emit_visible_text("content", visible_piece)
 
                                     # 累积 reasoning_content（thinking/reasoning 模型）
                                     if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                                         accumulated_reasoning_content += delta.reasoning_content
-                                        _emit_stream_chunk("reasoning", delta.reasoning_content, response_model)
-                                        # 关键修复：首包的 reasoning_content 同样需要发出（否则 reasoning/thinking 首段缺失）
-                                        try:
-                                            if emit_tokens:
-                                                from utils.event_emitter import get_event_emitter as _get_ee_reason_first
-                                                _ee_reason_first = _get_ee_reason_first()
-                                                if _ee_reason_first.enabled:
-                                                    _ee_reason_first.emit({"type": "reasoning_token", "text": delta.reasoning_content})
-                                        except Exception:
-                                            pass
+                                        visible_reasoning_piece = reasoning_stream_state.feed(delta.reasoning_content)
+                                        visible_reasoning_content += visible_reasoning_piece
+                                        _emit_visible_text("reasoning", visible_reasoning_piece)
 
                                     if hasattr(delta, 'tool_calls') and delta.tool_calls:
                                         for tc in delta.tool_calls:
@@ -671,32 +1036,16 @@ class SimpleLLMClient:
                         # A. 累积文本内容
                         if hasattr(delta, 'content') and delta.content:
                             accumulated_content += delta.content
-                            _emit_stream_chunk("content", delta.content, response_model)
-                            try:
-                                safe_print(delta.content, end="", flush=True)
-                                if emit_tokens:
-                                    from utils.event_emitter import get_event_emitter as _get_ee
-                                    _ee = _get_ee()
-                                    if _ee.enabled:
-                                        if emit_tokens == "thinking":
-                                            _ee.emit({"type": "thinking_token", "text": delta.content})
-                                        else:
-                                            _ee.token(delta.content)
-                            except Exception:
-                                pass
+                            visible_piece = content_stream_state.feed(delta.content)
+                            visible_content += visible_piece
+                            _emit_visible_text("content", visible_piece)
 
                         # A2. 累积 reasoning_content（thinking/reasoning 模型）
                         if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                             accumulated_reasoning_content += delta.reasoning_content
-                            _emit_stream_chunk("reasoning", delta.reasoning_content, response_model)
-                            try:
-                                if emit_tokens:
-                                    from utils.event_emitter import get_event_emitter as _get_ee2
-                                    _ee2 = _get_ee2()
-                                    if _ee2.enabled:
-                                        _ee2.emit({"type": "reasoning_token", "text": delta.reasoning_content})
-                            except Exception:
-                                pass
+                            visible_reasoning_piece = reasoning_stream_state.feed(delta.reasoning_content)
+                            visible_reasoning_content += visible_reasoning_piece
+                            _emit_visible_text("reasoning", visible_reasoning_piece)
 
                         # B. 累积工具调用
                         if hasattr(delta, 'tool_calls') and delta.tool_calls:
@@ -717,6 +1066,16 @@ class SimpleLLMClient:
                             finish_reason = chunk.choices[0].finish_reason
 
                     safe_print(f"   ✅ 流式响应完成，共接收 {chunk_count} 个数据块")
+
+                    visible_tail, embedded_content_markup = content_stream_state.finish()
+                    if visible_tail:
+                        visible_content += visible_tail
+                        _emit_visible_text("content", visible_tail)
+
+                    visible_reasoning_tail, embedded_reasoning_markup = reasoning_stream_state.finish()
+                    if visible_reasoning_tail:
+                        visible_reasoning_content += visible_reasoning_tail
+                        _emit_visible_text("reasoning", visible_reasoning_tail)
 
                     # 构建最终的 ToolCall 对象列表
                     final_tool_calls = []
@@ -746,13 +1105,33 @@ class SimpleLLMClient:
                             arguments=args
                         ))
 
+                    sanitized_content, sanitized_reasoning, embedded_tool_calls, raw_marker_seen = self._extract_embedded_tool_calls_and_visible_text(
+                        accumulated_content,
+                        accumulated_reasoning_content,
+                    )
+                    final_tool_calls = self._merge_tool_calls(final_tool_calls, embedded_tool_calls)
+                    if final_tool_calls and finish_reason in {"", "unknown", "stop"}:
+                        finish_reason = "tool_calls"
+
+                    if (
+                        self._is_kimi_tool_model(model, len(tools_definition))
+                        and raw_marker_seen
+                        and not final_tool_calls
+                        and tools_definition
+                        and not tried_kimi_non_stream_fallback
+                    ):
+                        safe_print("⚠️ Kimi raw tool-call markup detected without parsed tool_calls; retrying once with non-stream mode...")
+                        kwargs["stream"] = False
+                        tried_kimi_non_stream_fallback = True
+                        continue
+
                     return LLMResponse(
                         status="success",
-                        output=accumulated_content,
+                        output=sanitized_content,
                         tool_calls=final_tool_calls,
                         model=response_model,
                         finish_reason=finish_reason,
-                        reasoning_content=accumulated_reasoning_content
+                        reasoning_content=sanitized_reasoning
                     )
 
                 except Exception as _compat_e:

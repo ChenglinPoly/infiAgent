@@ -62,14 +62,15 @@ class LLMClientLite:
         
         # 解析模型配置（支持字符串和对象格式，对象格式可覆盖 api_key/base_url）
         self.model_configs = {}  # 模型名称 -> {api_key?, base_url?, ...}
+        self.default_models = {}
         self.models = []
         self.figure_models = []
         self.compressor_models = []
         self.read_figure_models = []
-        self._parse_models(self.config.get("models", []), self.models)
-        self._parse_models(self.config.get("figure_models", []), self.figure_models)
-        self._parse_models(self.config.get("compressor_models", []), self.compressor_models)
-        self._parse_models(self.config.get("read_figure_models", []), self.read_figure_models)
+        self._parse_models(self.config.get("models", []), self.models, "execution")
+        self._parse_models(self.config.get("figure_models", []), self.figure_models, "image_generation")
+        self._parse_models(self.config.get("compressor_models", []), self.compressor_models, "compressor")
+        self._parse_models(self.config.get("read_figure_models", []), self.read_figure_models, "read_figure")
         
         # 回退逻辑：未配置的模型类别回退到 models
         if not self.figure_models:
@@ -78,6 +79,10 @@ class LLMClientLite:
             self.compressor_models = list(self.models)
         if not self.read_figure_models:
             self.read_figure_models = list(self.models)
+        self.default_models.setdefault("execution", self.models[0] if self.models else "")
+        self.default_models.setdefault("image_generation", self.figure_models[0] if self.figure_models else "")
+        self.default_models.setdefault("compressor", self.compressor_models[0] if self.compressor_models else "")
+        self.default_models.setdefault("read_figure", self.read_figure_models[0] if self.read_figure_models else "")
         
         if not self.api_key:
             raise ValueError("未配置API密钥")
@@ -91,18 +96,43 @@ class LLMClientLite:
         
         print(f"✅ LLM客户端配置已加载: {llm_config_path}")
     
-    def _parse_models(self, models_config: list, target_list: list):
+    def _parse_models(self, models_config: list, target_list: list, category: str):
         """解析模型配置，支持字符串和对象格式"""
+        default_name = ""
         for item in models_config:
             if isinstance(item, str):
                 target_list.append(item)
                 if item not in self.model_configs:
                     self.model_configs[item] = {}
+                if not default_name:
+                    default_name = item
             elif isinstance(item, dict):
                 name = item.get("name")
                 if name:
                     target_list.append(name)
                     self.model_configs[name] = {k: v for k, v in item.items() if k != "name"}
+                    if self.model_configs[name].get("default") is True:
+                        default_name = name
+                    elif not default_name:
+                        default_name = name
+        if default_name:
+            self.default_models[category] = default_name
+
+    def resolve_model(self, category: str = "execution", preferred: Optional[str] = None) -> str:
+        model_groups = {
+            "execution": self.models,
+            "image_generation": self.figure_models or self.models,
+            "compressor": self.compressor_models or self.models,
+            "read_figure": self.read_figure_models or self.models,
+        }
+        candidates = model_groups.get(category, self.models) or self.models
+        preferred_name = str(preferred or "").strip()
+        if preferred_name and preferred_name in candidates:
+            return preferred_name
+        default_name = str(self.default_models.get(category) or "").strip()
+        if default_name and default_name in candidates:
+            return default_name
+        return candidates[0] if candidates else preferred_name
     
     def _get_model_api_key(self, model: str) -> str:
         """获取模型的 api_key（优先模型级别，回退全局）"""
@@ -111,6 +141,202 @@ class LLMClientLite:
     def _get_model_base_url(self, model: str) -> str:
         """获取模型的 base_url（优先模型级别，回退全局）"""
         return self.model_configs.get(model, {}).get("base_url", self.base_url)
+
+    @staticmethod
+    def _is_openrouter_base_url(base_url: Optional[str]) -> bool:
+        return bool(base_url and 'openrouter' in str(base_url).lower())
+
+    @staticmethod
+    def _normalize_openrouter_model_name(model: str, base_url: Optional[str]) -> str:
+        normalized = str(model or "").strip()
+        if not normalized:
+            return normalized
+        if not LLMClientLite._is_openrouter_base_url(base_url):
+            return normalized
+        if normalized.startswith("openrouter/"):
+            return normalized
+        return f"openrouter/{normalized}"
+
+    @staticmethod
+    def _extract_image_urls_from_completion_message(message) -> list[str]:
+        results: list[str] = []
+        if message is None:
+            return results
+
+        if hasattr(message, 'images') and message.images:
+            for image in message.images:
+                if isinstance(image, dict):
+                    image_url = image.get('image_url', {}).get('url')
+                    if image_url:
+                        results.append(image_url)
+                elif hasattr(image, 'image_url'):
+                    url = getattr(image.image_url, 'url', None)
+                    if url:
+                        results.append(url)
+
+        if not results and hasattr(message, 'content') and isinstance(message.content, list):
+            for part in message.content:
+                if isinstance(part, dict) and part.get('type') == 'image_url':
+                    url = part.get('image_url', {}).get('url')
+                    if url:
+                        results.append(url)
+
+        return results
+
+    def _create_image_via_litellm_completion(
+        self,
+        prompt: str,
+        model: str,
+        reference_images: Optional[list[str]] = None,
+        size: str = "1024x1024",
+    ) -> str | list[str]:
+        has_reference = reference_images and len(reference_images) > 0
+
+        content = [{"type": "text", "text": prompt}] if has_reference else prompt
+        if has_reference:
+            for img_path_str in reference_images:
+                img_path = Path(img_path_str)
+                with open(img_path, "rb") as image_file:
+                    image_data = base64.b64encode(image_file.read()).decode('utf-8')
+
+                suffix = img_path.suffix.lower()
+                mime_type_map = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.gif': 'image/gif',
+                    '.webp': 'image/webp'
+                }
+                mime_type = mime_type_map.get(suffix, 'image/jpeg')
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{image_data}"
+                    }
+                })
+
+        model_api_key = self._get_model_api_key(model)
+        model_base_url = self._get_model_base_url(model)
+        normalized_model = self._normalize_openrouter_model_name(model, model_base_url)
+
+        kwargs = {
+            "model": normalized_model,
+            "messages": [{"role": "user", "content": content}],
+            "api_key": model_api_key,
+            "timeout": 300,
+            "modalities": ["image", "text"]
+        }
+
+        if model_base_url and model_base_url.strip():
+            kwargs["api_base"] = model_base_url
+
+        if size and "x" in size:
+            width, height = map(int, size.split("x"))
+            from math import gcd
+            g = gcd(width, height)
+            ratio_w, ratio_h = width // g, height // g
+            aspect_ratio = f"{ratio_w}:{ratio_h}"
+            if aspect_ratio in ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]:
+                kwargs["extra_body"] = {"image_config": {"aspect_ratio": aspect_ratio}}
+
+        response = completion(**kwargs)
+        if not getattr(response, 'choices', None):
+            raise Exception("响应格式异常")
+
+        message = response.choices[0].message
+        results = self._extract_image_urls_from_completion_message(message)
+        if results:
+            print(f"[INFO] LiteLLM 成功生成 {len(results)} 张图片")
+            return results[0] if len(results) == 1 else results
+
+        raise Exception(
+            f"LiteLLM completion 未在响应中找到图片。"
+            f" model={getattr(response, 'model', 'unknown')}, "
+            f"content_type={type(getattr(message, 'content', None)).__name__}"
+        )
+
+    def _create_image_via_openrouter_sdk(
+        self,
+        prompt: str,
+        model: str,
+        reference_images: Optional[list[str]] = None,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> str | list[str]:
+        has_reference = reference_images and len(reference_images) > 0
+
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url=self._get_model_base_url(model),
+            api_key=self._get_model_api_key(model),
+        )
+
+        if has_reference:
+            content = [{"type": "text", "text": prompt}]
+
+            for img_path_str in reference_images:
+                img_path = Path(img_path_str)
+                if not img_path.exists():
+                    raise FileNotFoundError(f"参考图片不存在: {img_path_str}")
+
+                with open(img_path, "rb") as image_file:
+                    image_data = base64.b64encode(image_file.read()).decode('utf-8')
+
+                suffix = img_path.suffix.lower()
+                mime_type_map = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.gif': 'image/gif',
+                    '.webp': 'image/webp'
+                }
+                mime_type = mime_type_map.get(suffix, 'image/jpeg')
+
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{image_data}"
+                    }
+                })
+        else:
+            content = prompt
+
+        extra_body = {"modalities": ["image", "text"]}
+
+        if size and "x" in size:
+            width, height = map(int, size.split("x"))
+            from math import gcd
+            g = gcd(width, height)
+            ratio_w, ratio_h = width // g, height // g
+            aspect_ratio = f"{ratio_w}:{ratio_h}"
+            if aspect_ratio in ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]:
+                extra_body["image_config"] = {"aspect_ratio": aspect_ratio}
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": content}],
+            extra_body=extra_body
+        )
+
+        message = response.choices[0].message
+        results = []
+        if hasattr(message, 'images') and message.images:
+            for image in message.images:
+                if isinstance(image, dict):
+                    image_url = image.get('image_url', {}).get('url')
+                    if image_url:
+                        results.append(image_url)
+                elif hasattr(image, 'image_url'):
+                    url = getattr(image.image_url, 'url', None)
+                    if url:
+                        results.append(url)
+
+        if results:
+            print(f"[INFO] OpenRouter SDK 成功生成 {len(results)} 张图片")
+            return results[0] if n == 1 else results
+
+        raise Exception(f"响应中没有 images 字段。Message 属性: {dir(message)}")
     
     def reload_config(self):
         """
@@ -138,10 +364,11 @@ class LLMClientLite:
         self.figure_models = []
         self.compressor_models = []
         self.read_figure_models = []
-        self._parse_models(self.config.get("models", []), self.models)
-        self._parse_models(self.config.get("figure_models", []), self.figure_models)
-        self._parse_models(self.config.get("compressor_models", []), self.compressor_models)
-        self._parse_models(self.config.get("read_figure_models", []), self.read_figure_models)
+        self.default_models = {}
+        self._parse_models(self.config.get("models", []), self.models, "execution")
+        self._parse_models(self.config.get("figure_models", []), self.figure_models, "image_generation")
+        self._parse_models(self.config.get("compressor_models", []), self.compressor_models, "compressor")
+        self._parse_models(self.config.get("read_figure_models", []), self.read_figure_models, "read_figure")
         
         if not self.api_key:
             raise ValueError("未配置API密钥")
@@ -211,7 +438,7 @@ class LLMClientLite:
         
         # 选择模型
         if model is None:
-            model = self.read_figure_models[0]
+            model = self.resolve_model("read_figure")
         
         # 调用LLM
         try:
@@ -263,9 +490,7 @@ class LLMClientLite:
         """
         if model is None:
             if self.figure_models:
-                # 兼容字符串或字典格式
-                first_model = self.figure_models[0]
-                model = first_model if isinstance(first_model, str) else first_model.get("name")
+                model = self.resolve_model("image_generation")
             else:
                 model = "dall-e-3"
         
@@ -278,199 +503,38 @@ class LLMClientLite:
                 print(f"[INFO] 使用自定义端点: {self.base_url}")
             
             # 判断是否是 OpenRouter
-            is_openrouter = self.base_url and 'openrouter' in self.base_url.lower()
+            model_base_url = self._get_model_base_url(model)
+            is_openrouter = self._is_openrouter_base_url(model_base_url)
             
             if is_openrouter:
-                # OpenRouter：使用 chat.completions + modalities
-                from openai import OpenAI
-                
-                print(f"[INFO] 使用 OpenRouter 方式")
-                
-                client = OpenAI(
-                    base_url=self._get_model_base_url(model),
-                    api_key=self._get_model_api_key(model),
-                )
-                
-                # 构建 content
-                if has_reference:
-                    # 有参考图：构建多模态 content
-                    content = [{"type": "text", "text": prompt}]
-                    
-                    for img_path_str in reference_images:
-                        img_path = Path(img_path_str)
-                        if not img_path.exists():
-                            raise FileNotFoundError(f"参考图片不存在: {img_path_str}")
-                        
-                        # 读取并编码图片
-                        with open(img_path, "rb") as image_file:
-                            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-                        
-                        # 判断图片格式
-                        suffix = img_path.suffix.lower()
-                        mime_type_map = {
-                            '.jpg': 'image/jpeg',
-                            '.jpeg': 'image/jpeg',
-                            '.png': 'image/png',
-                            '.gif': 'image/gif',
-                            '.webp': 'image/webp'
-                        }
-                        mime_type = mime_type_map.get(suffix, 'image/jpeg')
-                        
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_data}"
-                            }
-                        })
-                else:
-                    # 纯文本生成
-                    content = prompt
-                
-                # 构建 extra_body
-                extra_body = {"modalities": ["image", "text"]}
-                
-                # 添加 image_config（宽高比）
-                if size and "x" in size:
-                    width, height = map(int, size.split("x"))
-                    from math import gcd
-                    g = gcd(width, height)
-                    ratio_w, ratio_h = width // g, height // g
-                    aspect_ratio = f"{ratio_w}:{ratio_h}"
-                    if aspect_ratio in ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]:
-                        extra_body["image_config"] = {"aspect_ratio": aspect_ratio}
-                
-                # 调用 API
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": content}],
-                    extra_body=extra_body
-                )
-                
-                # 提取图片
-                message = response.choices[0].message
-                results = []
-                
-                if hasattr(message, 'images') and message.images:
-                    for image in message.images:
-                        if isinstance(image, dict):
-                            image_url = image.get('image_url', {}).get('url')
-                            if image_url:
-                                results.append(image_url)
-                        elif hasattr(image, 'image_url'):
-                            url = getattr(image.image_url, 'url', None)
-                            if url:
-                                results.append(url)
-                    
-                    if results:
-                        print(f"[INFO] 成功生成 {len(results)} 张图片")
-                        return results[0] if n == 1 else results
-                    else:
-                        raise Exception("响应中未找到有效的图片")
-                else:
-                    raise Exception(f"响应中没有 images 字段。Message 属性: {dir(message)}")
+                # OpenRouter: 优先用 LiteLLM completion 统一处理；若当前运行环境/返回结构不稳定，再回退原生 SDK。
+                print(f"[INFO] 使用 OpenRouter 方式（LiteLLM 优先，SDK 兜底）")
+                try:
+                    return self._create_image_via_litellm_completion(
+                        prompt=prompt,
+                        model=model,
+                        reference_images=reference_images,
+                        size=size,
+                    )
+                except Exception as litellm_error:
+                    print(f"[WARN] LiteLLM OpenRouter 图片生成失败，回退 SDK: {litellm_error}")
+                    return self._create_image_via_openrouter_sdk(
+                        prompt=prompt,
+                        model=model,
+                        reference_images=reference_images,
+                        size=size,
+                        n=n,
+                    )
             
             else:
                 # 其他供应商（Gemini等）：统一使用 litellm.completion()
-                from litellm import completion
-                
                 print(f"[INFO] 使用 litellm.completion() 方式")
-                
-                # 构建 content
-                if has_reference:
-                    # 有参考图：构建多模态 content
-                    content = [{"type": "text", "text": prompt}]
-                    
-                    for img_path_str in reference_images:
-                        img_path = Path(img_path_str)
-                        
-                        # 读取并编码图片
-                        with open(img_path, "rb") as image_file:
-                            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-                        
-                        # 判断图片格式
-                        suffix = img_path.suffix.lower()
-                        mime_type_map = {
-                            '.jpg': 'image/jpeg',
-                            '.jpeg': 'image/jpeg',
-                            '.png': 'image/png',
-                            '.gif': 'image/gif',
-                            '.webp': 'image/webp'
-                        }
-                        mime_type = mime_type_map.get(suffix, 'image/jpeg')
-                        
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_data}"
-                            }
-                        })
-                else:
-                    # 纯文本生成
-                    content = prompt
-                
-                # 构建请求参数
-                model_api_key = self._get_model_api_key(model)
-                model_base_url = self._get_model_base_url(model)
-                kwargs = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": content}],
-                    "api_key": model_api_key,
-                    "timeout": 300,
-                    "modalities": ["image", "text"]
-                }
-                
-                # 添加 base_url（如果有）
-                if model_base_url and model_base_url.strip():
-                    kwargs["api_base"] = model_base_url
-                
-                # 添加 image_config（宽高比配置）
-                if size and "x" in size:
-                    width, height = map(int, size.split("x"))
-                    from math import gcd
-                    g = gcd(width, height)
-                    ratio_w, ratio_h = width // g, height // g
-                    aspect_ratio = f"{ratio_w}:{ratio_h}"
-                    if aspect_ratio in ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]:
-                        kwargs["image_config"] = {"aspect_ratio": aspect_ratio}
-                
-                # 调用 litellm.completion
-                response = completion(**kwargs)
-                
-                # 提取图片
-                results = []
-                if hasattr(response, 'choices') and response.choices:
-                    message = response.choices[0].message
-                    
-                    # 方式1：images 字段
-                    if hasattr(message, 'images') and message.images:
-                        for image in message.images:
-                            if isinstance(image, dict):
-                                image_url = image.get('image_url', {}).get('url')
-                                if image_url:
-                                    results.append(image_url)
-                            elif hasattr(image, 'image_url'):
-                                url = getattr(image.image_url, 'url', None)
-                                if url:
-                                    results.append(url)
-                    
-                    # 方式2：content 中的 image_url
-                    if not results and hasattr(message, 'content'):
-                        if isinstance(message.content, list):
-                            for part in message.content:
-                                if isinstance(part, dict) and part.get('type') == 'image_url':
-                                    url = part.get('image_url', {}).get('url')
-                                    if url:
-                                        results.append(url)
-                
-                if results:
-                    print(f"[INFO] 成功生成 {len(results)} 张图片")
-                    return results[0] if n == 1 else results
-                else:
-                    if hasattr(response, 'choices') and response.choices:
-                        message = response.choices[0].message
-                        raise Exception(f"响应中未找到图片。Message 内容: {message.content[:200] if hasattr(message, 'content') else 'N/A'}")
-                    else:
-                        raise Exception("响应格式异常")
+                return self._create_image_via_litellm_completion(
+                    prompt=prompt,
+                    model=model,
+                    reference_images=reference_images,
+                    size=size,
+                )
                 
         except Exception as e:
             raise Exception(f"生成图片失败: {str(e)}")
