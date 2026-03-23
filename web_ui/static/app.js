@@ -11,6 +11,14 @@ let isRunning = false;
 let currentHILTask = null;  // Current HIL task: {hil_id, instruction}
 let currentToolConfirmation = null;  // Current tool confirmation: {confirm_id, tool_name, arguments}
 let hilCheckInterval = null;  // Interval for checking HIL tasks
+let liveAgentStream = null;
+let liveReasoningStream = null;
+let liveThinkingStream = null;
+let pendingThinkingMeta = null;
+let pendingReasoningMeta = null;
+let currentUsername = '';
+let currentUserRole = 'user';
+let selectedAdminUser = null;
 
 // Message save queue (ensures serial saving to avoid concurrency issues)
 let saveQueue = [];
@@ -97,6 +105,7 @@ const copyTaskBtn = document.getElementById('copy-task-btn');
 const downloadTaskBtn = document.getElementById('download-task-btn');
 const configBtn = document.getElementById('config-btn');
 const toolsBtn = document.getElementById('tools-btn');
+const usersBtn = document.getElementById('users-btn');
 const agentSelectBtn = document.getElementById('agent-select-btn');
 const agentSelectText = document.getElementById('agent-select-text');
 const agentSelectModal = document.getElementById('agent-select-modal');
@@ -137,6 +146,18 @@ const reloadToolsBtn = document.getElementById('reload-tools-btn');
 const toolUploadInput = document.getElementById('tool-upload-input');
 const toolsList = document.getElementById('tools-list');
 const toolsStatus = document.getElementById('tools-status');
+const usersModal = document.getElementById('users-modal');
+const closeUsersBtn = document.getElementById('close-users-btn');
+const reloadUsersBtn = document.getElementById('reload-users-btn');
+const newUserBtn = document.getElementById('new-user-btn');
+const saveUserBtn = document.getElementById('save-user-btn');
+const deleteUserBtn = document.getElementById('delete-user-btn');
+const usersList = document.getElementById('users-list');
+const usersStatus = document.getElementById('users-status');
+const adminUserUsername = document.getElementById('admin-user-username');
+const adminUserPassword = document.getElementById('admin-user-password');
+const adminUserRole = document.getElementById('admin-user-role');
+const adminUserEnabled = document.getElementById('admin-user-enabled');
 
 // Current browsing path (for directory navigation)
 let currentBrowsePath = '';
@@ -186,7 +207,12 @@ async function checkAuth() {
         // Display username
         const usernameDisplay = document.getElementById('username-display');
         if (usernameDisplay) {
-            usernameDisplay.textContent = `User: ${data.username || 'polyu'}`;
+            currentUsername = data.username || '';
+            currentUserRole = data.role || 'user';
+            usernameDisplay.textContent = `User: ${currentUsername}${currentUserRole === 'admin' ? ' (admin)' : ''}`;
+        }
+        if (usersBtn) {
+            usersBtn.style.display = data.can_manage_users ? 'inline-flex' : 'none';
         }
         
         return true;
@@ -211,6 +237,173 @@ async function logout() {
         }
     } catch (error) {
         console.error('Logout failed:', error);
+    }
+}
+
+function setUsersStatus(text, isError = false) {
+    if (!usersStatus) return;
+    usersStatus.textContent = text || '';
+    usersStatus.style.color = isError ? '#ff6b6b' : '#4ec9b0';
+}
+
+function openUsersModal() {
+    if (!usersModal) return;
+    usersModal.style.display = 'flex';
+    resetUserEditor();
+    loadUsers();
+}
+
+function closeUsersModal() {
+    if (!usersModal) return;
+    usersModal.style.display = 'none';
+}
+
+function resetUserEditor() {
+    selectedAdminUser = null;
+    if (adminUserUsername) {
+        adminUserUsername.value = '';
+        adminUserUsername.disabled = false;
+    }
+    if (adminUserPassword) adminUserPassword.value = '';
+    if (adminUserRole) adminUserRole.value = 'user';
+    if (adminUserEnabled) adminUserEnabled.checked = true;
+    if (deleteUserBtn) deleteUserBtn.disabled = true;
+    setUsersStatus('');
+    document.querySelectorAll('.user-item').forEach(item => item.classList.remove('active'));
+}
+
+function fillUserEditor(user) {
+    selectedAdminUser = user || null;
+    if (!user) {
+        resetUserEditor();
+        return;
+    }
+    if (adminUserUsername) {
+        adminUserUsername.value = user.username || '';
+        adminUserUsername.disabled = true;
+    }
+    if (adminUserPassword) adminUserPassword.value = '';
+    if (adminUserRole) adminUserRole.value = user.role || 'user';
+    if (adminUserEnabled) adminUserEnabled.checked = !!user.enabled;
+    if (deleteUserBtn) deleteUserBtn.disabled = user.username === currentUsername;
+}
+
+function renderUsersList(users) {
+    if (!usersList) return;
+    if (!Array.isArray(users) || users.length === 0) {
+        usersList.innerHTML = '<div class="config-file-empty">No users found</div>';
+        return;
+    }
+    usersList.innerHTML = users.map(user => `
+        <div class="tool-item user-item${selectedAdminUser && selectedAdminUser.username === user.username ? ' active' : ''}" data-username="${escapeHtml(user.username)}">
+            <div class="tool-item-header">
+                <div class="tool-item-name"><i class="fas fa-user"></i> ${escapeHtml(user.username)}</div>
+                <span class="tool-item-status ${user.enabled ? 'bound' : 'error'}">${user.enabled ? user.role : 'disabled'}</span>
+            </div>
+            <div class="tool-item-meta">
+                <span>Role: ${escapeHtml(user.role || 'user')}</span>
+                <span>Updated: ${escapeHtml(user.updated_at || '')}</span>
+            </div>
+        </div>
+    `).join('');
+    usersList.querySelectorAll('.user-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const username = item.dataset.username;
+            const user = users.find(entry => entry.username === username);
+            fillUserEditor(user);
+            usersList.querySelectorAll('.user-item').forEach(node => node.classList.remove('active'));
+            item.classList.add('active');
+        });
+    });
+}
+
+async function loadUsers() {
+    if (!usersList) return;
+    setUsersStatus('');
+    try {
+        const response = await fetch('/api/users', {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to load users');
+        }
+        renderUsersList(data.users || []);
+    } catch (error) {
+        setUsersStatus(error.message, true);
+    }
+}
+
+async function saveUserRecord() {
+    try {
+        const username = (adminUserUsername?.value || '').trim();
+        const password = (adminUserPassword?.value || '').trim();
+        const role = adminUserRole?.value || 'user';
+        const enabled = !!adminUserEnabled?.checked;
+
+        if (!username) {
+            throw new Error('Username is required');
+        }
+
+        let response;
+        if (selectedAdminUser) {
+            response = await fetch(`/api/users/${encodeURIComponent(selectedAdminUser.username)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    ...(password ? { password } : {}),
+                    role,
+                    enabled,
+                })
+            });
+        } else {
+            if (!password) {
+                throw new Error('Password is required for a new user');
+            }
+            response = await fetch('/api/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    username,
+                    password,
+                    role,
+                })
+            });
+        }
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Save failed');
+        }
+
+        setUsersStatus(selectedAdminUser ? 'User updated' : 'User created');
+        resetUserEditor();
+        await checkAuth();
+        await loadUsers();
+    } catch (error) {
+        setUsersStatus(error.message, true);
+    }
+}
+
+async function deleteSelectedUser() {
+    if (!selectedAdminUser) return;
+    if (!confirm(`Delete user "${selectedAdminUser.username}"?`)) return;
+    try {
+        const response = await fetch(`/api/users/${encodeURIComponent(selectedAdminUser.username)}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Delete failed');
+        }
+        setUsersStatus('User deleted');
+        resetUserEditor();
+        await loadUsers();
+    } catch (error) {
+        setUsersStatus(error.message, true);
     }
 }
 
@@ -373,7 +566,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Initial file list load
     loadFiles();
-    
+
     // Periodically refresh file list
     setInterval(() => {
         if (taskIdInput.value.trim()) {
@@ -384,6 +577,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Initialize configuration modal
     initConfigModal();
     initToolsModal();
+    initUsersModal();
 });
 
 // 加载聊天记录
@@ -458,8 +652,9 @@ async function loadChatHistory(taskId, shouldRemoveWelcome = false) {
 
 // Load history messages（辅助函数）
 function loadHistoryMessages(messages) {
-    console.log('loadHistoryMessages: found', messages.length, 'messages, start rendering');
-    messages.forEach((msg, index) => {
+    const normalizedMessages = normalizeHistoryMessages(messages);
+    console.log('loadHistoryMessages: found', normalizedMessages.length, 'messages after normalization, start rendering');
+    normalizedMessages.forEach((msg, index) => {
         console.log(`loadHistoryMessages: rendering message ${index + 1}/${messages.length}:`, {
             agent: msg.agent,
             type: msg.type,
@@ -479,6 +674,46 @@ function loadHistoryMessages(messages) {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }, 100);
     console.log('loadHistoryMessages: chat history loaded');
+}
+
+function isThinkingPlaceholderMessage(msg) {
+    if (!msg || typeof msg !== 'object') return false;
+    const type = String(msg.type || '').trim().toLowerCase();
+    if (!['thinking', 'reasoning', 'thinking_start', 'thinking_end'].includes(type)) return false;
+    const content = String(msg.content || '').trim();
+    if (!content) return true;
+    return /^thinking(\.\.\.)?$/i.test(content) || /^model reasoning(\.\.\.)?$/i.test(content);
+}
+
+function normalizeHistoryMessages(messages) {
+    if (!Array.isArray(messages)) return [];
+    const filtered = messages.filter(msg => !isThinkingPlaceholderMessage(msg));
+    const merged = [];
+
+    for (const msg of filtered) {
+        const type = String(msg?.type || '').trim().toLowerCase();
+        if ((type === 'thinking' || type === 'reasoning') && merged.length > 0) {
+            const prev = merged[merged.length - 1];
+            const prevType = String(prev?.type || '').trim().toLowerCase();
+            if (
+                prev &&
+                prevType === type &&
+                String(prev.agent || '') === String(msg.agent || '') &&
+                !prev.isUser &&
+                !msg.isUser
+            ) {
+                const prevContent = String(prev.content || '').trim();
+                const nextContent = String(msg.content || '').trim();
+                if (nextContent && nextContent !== prevContent) {
+                    prev.content = nextContent;
+                }
+                continue;
+            }
+        }
+        merged.push({ ...msg });
+    }
+
+    return merged;
 }
 
 // Process save queue
@@ -2169,6 +2404,7 @@ function startSSEConnection(taskId, agentName, userInputText, agentSystem) {
                 readStream();
             }).catch(error => {
                 console.error('Read stream failed:', error);
+                finalizeAllLiveStreams();
                 // Remove all loading animations
                 removeAllLoadingAnimations();
                 
@@ -2188,6 +2424,7 @@ function startSSEConnection(taskId, agentName, userInputText, agentSystem) {
         readStream();
     }).catch(error => {
         console.error('请求失败:', error);
+        finalizeAllLiveStreams();
         // Remove all loading animations
         removeAllLoadingAnimations();
         
@@ -2207,8 +2444,10 @@ function handleSSEMessage(data) {
     const type = data.type || 'info';
     const agent = data.agent || 'unknown';
     const content = data.content || '';
+    pruneEmptyThinkingCards();
     
     if (type === 'end') {
+        finalizeAllLiveStreams();
         // Remove all loading animations
         removeAllLoadingAnimations();
         
@@ -2228,7 +2467,48 @@ function handleSSEMessage(data) {
         // Refresh file list when task completes
         loadFiles();
     } else {
-        // All messages from SSE are agent messages（isUser = false，保存到历史记录）
+        if (type === 'thinking_start') {
+            removeAllLoadingAnimations();
+            finalizeAgentStream();
+            finalizeReasoningStream();
+            pendingThinkingMeta = { agent };
+            return;
+        }
+
+        if (type === 'token') {
+            removeAllLoadingAnimations();
+            finalizeReasoningStream();
+            finalizeThinkingStream();
+            streamAgentToken(agent, content);
+            return;
+        }
+
+        if (type === 'reasoning_token') {
+            removeAllLoadingAnimations();
+            finalizeAgentStream();
+            finalizeThinkingStream();
+            streamReasoningToken(agent, content);
+            return;
+        }
+
+        if (type === 'thinking_token') {
+            removeAllLoadingAnimations();
+            finalizeAgentStream();
+            finalizeReasoningStream();
+            streamThinkingToken(agent, content);
+            return;
+        }
+
+        if (type === 'thinking_end') {
+            removeAllLoadingAnimations();
+            if (!liveThinkingStream && content) {
+                streamThinkingToken(agent, content);
+            }
+            finalizeThinkingStream();
+            return;
+        }
+
+        finalizeAllLiveStreams();
         addMessage(agent, type, content, false, true);
 
         if (type === 'human_in_loop') {
@@ -2256,6 +2536,177 @@ function handleSSEMessage(data) {
             updateSendButtonState();
         }
     }
+}
+
+function createLiveMessage(agent, type, title) {
+    if (type === 'reasoning' || type === 'thinking') {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message-thinking';
+        wrapper.innerHTML = `
+            <div class="thinking-card">
+                <details open>
+                    <summary>${escapeHtml(title || agent)}</summary>
+                    <div class="thinking-content"></div>
+                </details>
+            </div>
+        `;
+        messagesContainer.appendChild(wrapper);
+        scrollToBottom();
+        return {
+            wrapper,
+            textDiv: wrapper.querySelector('.thinking-content'),
+            summaryEl: wrapper.querySelector('summary'),
+            detailsEl: wrapper.querySelector('details'),
+            agent
+        };
+    }
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message agent type-${type}`;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'message-avatar';
+    avatar.style.background = getAgentColor(agent);
+    avatar.innerHTML = agentAvatars[agent] || agentAvatars['default'];
+    messageDiv.appendChild(avatar);
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+
+    const header = document.createElement('div');
+    header.className = 'message-header';
+
+    const agentSpan = document.createElement('span');
+    agentSpan.className = 'message-agent';
+    agentSpan.textContent = title || agent;
+    header.appendChild(agentSpan);
+    contentDiv.appendChild(header);
+
+    const textDiv = document.createElement('div');
+    textDiv.className = 'message-text';
+    contentDiv.appendChild(textDiv);
+
+    messageDiv.appendChild(contentDiv);
+    messagesContainer.appendChild(messageDiv);
+    scrollToBottom();
+    return { wrapper: messageDiv, textDiv, agent };
+}
+
+function renderLiveText(textDiv, text) {
+    if (!textDiv) return;
+    const escaped = escapeHtml(String(text || ''));
+    textDiv.innerHTML = replaceEmojiWithIcons(escaped);
+}
+
+function scrollToBottom() {
+    if (!messagesContainer) return;
+    requestAnimationFrame(() => {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    });
+}
+
+function startThinkingStream(agent) {
+    if (!liveThinkingStream) {
+        liveThinkingStream = createLiveMessage(agent, 'thinking', `${agent} · Thinking`);
+        liveThinkingStream.text = '';
+    }
+}
+
+function ensureReasoningStream(agent) {
+    if (!liveReasoningStream) {
+        liveReasoningStream = createLiveMessage(agent, 'reasoning', `${agent} · Model Reasoning`);
+        liveReasoningStream.text = '';
+    }
+}
+
+function hasMeaningfulText(text) {
+    return String(text || '').trim().length > 0;
+}
+
+function pruneEmptyThinkingCards() {
+    const cards = messagesContainer.querySelectorAll('.message-thinking');
+    cards.forEach(card => {
+        const content = card.querySelector('.thinking-content');
+        if (content && !String(content.textContent || '').trim()) {
+            card.remove();
+        }
+    });
+}
+
+function streamAgentToken(agent, text) {
+    if (!text) return;
+    if (!liveAgentStream) {
+        liveAgentStream = createLiveMessage(agent, 'info', agent);
+        liveAgentStream.text = '';
+    }
+    liveAgentStream.text += text;
+    liveAgentStream.textDiv.textContent = liveAgentStream.text;
+    scrollToBottom();
+}
+
+function finalizeAgentStream() {
+    if (!liveAgentStream) return;
+    if (liveAgentStream.text) {
+        renderLiveText(liveAgentStream.textDiv, liveAgentStream.text);
+        saveChatMessage(liveAgentStream.agent, 'info', liveAgentStream.text, false);
+    } else {
+        liveAgentStream.wrapper.remove();
+    }
+    liveAgentStream = null;
+}
+
+function streamReasoningToken(agent, text) {
+    if (!text) return;
+    const nextText = `${liveReasoningStream?.text || ''}${text}`;
+    if (!liveReasoningStream && !hasMeaningfulText(nextText)) return;
+    ensureReasoningStream(agent);
+    liveReasoningStream.text += text;
+    liveReasoningStream.textDiv.textContent = liveReasoningStream.text;
+    scrollToBottom();
+}
+
+function finalizeReasoningStream() {
+    if (!liveReasoningStream) return;
+    if (hasMeaningfulText(liveReasoningStream.text)) {
+        renderLiveText(liveReasoningStream.textDiv, liveReasoningStream.text);
+        saveChatMessage(liveReasoningStream.agent, 'reasoning', liveReasoningStream.text, false);
+        if (liveReasoningStream.detailsEl) liveReasoningStream.detailsEl.open = false;
+        if (liveReasoningStream.summaryEl) liveReasoningStream.summaryEl.textContent = 'Model Reasoning (click to expand)';
+    } else {
+        liveReasoningStream.wrapper.remove();
+    }
+    liveReasoningStream = null;
+}
+
+function streamThinkingToken(agent, text) {
+    if (!text) return;
+    const nextText = `${liveThinkingStream?.text || ''}${text}`;
+    if (!liveThinkingStream && !hasMeaningfulText(nextText)) return;
+    startThinkingStream(agent);
+    liveThinkingStream.text += text;
+    liveThinkingStream.textDiv.textContent = liveThinkingStream.text;
+    scrollToBottom();
+}
+
+function finalizeThinkingStream() {
+    if (!liveThinkingStream) return;
+    if (hasMeaningfulText(liveThinkingStream.text)) {
+        renderLiveText(liveThinkingStream.textDiv, liveThinkingStream.text);
+        saveChatMessage(liveThinkingStream.agent, 'thinking', liveThinkingStream.text, false);
+        if (liveThinkingStream.detailsEl) liveThinkingStream.detailsEl.open = false;
+        if (liveThinkingStream.summaryEl) liveThinkingStream.summaryEl.textContent = 'Thinking (click to expand)';
+    } else {
+        liveThinkingStream.wrapper.remove();
+    }
+    liveThinkingStream = null;
+}
+
+function finalizeAllLiveStreams() {
+    finalizeAgentStream();
+    finalizeReasoningStream();
+    finalizeThinkingStream();
+    pendingThinkingMeta = null;
+    pendingReasoningMeta = null;
 }
 
 // 移除所有消息的加载动画
@@ -2318,12 +2769,13 @@ function addMessage(agent, type, content, isUser = false, saveToHistory = true) 
     
     contentDiv.appendChild(header);
     
-    // 文本（美化显示，去掉 { }）
+    // 文本（美化显示）
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
     
-    // 美化内容：去掉所有的 { } 和多余的空白
+    // 美化内容
     let displayContent = content;
+    const normalizedType = String(type || '').trim().toLowerCase();
     
     if (typeof displayContent === 'string') {
         // 1. 先处理转义字符：将字符串形式的转义字符转换为实际字符
@@ -2363,6 +2815,10 @@ function addMessage(agent, type, content, isUser = false, saveToHistory = true) 
         // 只匹配不在代码块中的单星号
         displayContent = displayContent.replace(/(?<![*\\])\*([^*\n]+?)\*(?![*])/g, '$1');
     }
+
+    if ((normalizedType === 'thinking' || normalizedType === 'reasoning') && (!String(displayContent || '').trim() || isThinkingPlaceholderMessage({ type, content: displayContent }))) {
+        return;
+    }
     
     // 如果是参数或 final_output 类型，去掉 { } 并美化
     if (type === 'params' || type === 'final_output') {
@@ -2383,9 +2839,6 @@ function addMessage(agent, type, content, isUser = false, saveToHistory = true) 
             displayContent = displayContent.replace(/(\] calls tool: final_output)([^\n])/g, '$1\n\n$2');
         }
         displayContent = displayContent.trim();
-    } else {
-        // 其他类型也去掉 { }（如果有的话）
-        displayContent = displayContent.replace(/\{|\}/g, '');
     }
     
     // 先转义 HTML 以确保安全性
@@ -3112,6 +3565,20 @@ function initToolsModal() {
     if (toolsModal) {
         toolsModal.addEventListener('click', (e) => {
             if (e.target === toolsModal) closeToolsModal();
+        });
+    }
+}
+
+function initUsersModal() {
+    if (usersBtn) usersBtn.addEventListener('click', openUsersModal);
+    if (closeUsersBtn) closeUsersBtn.addEventListener('click', closeUsersModal);
+    if (reloadUsersBtn) reloadUsersBtn.addEventListener('click', loadUsers);
+    if (newUserBtn) newUserBtn.addEventListener('click', resetUserEditor);
+    if (saveUserBtn) saveUserBtn.addEventListener('click', saveUserRecord);
+    if (deleteUserBtn) deleteUserBtn.addEventListener('click', deleteSelectedUser);
+    if (usersModal) {
+        usersModal.addEventListener('click', (e) => {
+            if (e.target === usersModal) closeUsersModal();
         });
     }
 }

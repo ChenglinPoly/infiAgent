@@ -9,20 +9,22 @@ import yaml
 from typing import Dict, List, Any
 from pathlib import Path
 
-from utils.user_paths import get_user_data_root
+from utils.user_paths import get_project_root, get_user_data_root
 
 
 class ConfigLoader:
     """配置加载器，负责读取和合并agent配置"""
     
-    def __init__(self, agent_system_name: str = "infiHelper"):
+    def __init__(self, agent_system_name: str = "infiHelper", agent_library_root: str | None = None):
         """
         初始化配置加载器
         
         Args:
             agent_system_name: Agent系统名称，对应agent_library下的文件夹
+            agent_library_root: 可选。显式指定用户 agent_library 根目录（其下应包含 agent_library/<system>）
         """
         self.agent_system_name = agent_system_name
+        self.agent_library_root = str(agent_library_root).strip() if agent_library_root else ""
         
         # 查找配置目录（支持：项目内 config + 用户导入目录）
         # - 项目内: <project_root>/config/agent_library/<system>
@@ -39,10 +41,8 @@ class ConfigLoader:
         
     def _find_config_root(self) -> str:
         """查找配置根目录"""
-        # 使用MLA_V3自己的config目录
-        current_dir = Path(__file__).parent.parent
-        mla_v3_config = current_dir / "config"
-        
+        mla_v3_config = get_project_root() / "config"
+
         if not mla_v3_config.exists():
             raise FileNotFoundError(f"配置目录不存在: {mla_v3_config}")
         
@@ -54,7 +54,7 @@ class ConfigLoader:
 
         # 1) 用户导入目录（用于桌面端打包后的可扩展配置）
         # 约定：MLA_AGENT_LIBRARY_DIR 指向包含 agent_library/ 的根目录（例如 ~/mla_v3）
-        user_root = os.environ.get("MLA_AGENT_LIBRARY_DIR", "").strip()
+        user_root = self.agent_library_root or os.environ.get("MLA_AGENT_LIBRARY_DIR", "").strip()
         if not user_root:
             user_root = str(get_user_data_root())
         candidates.append(Path(user_root) / "agent_library" / agent_system_name)
@@ -114,6 +114,7 @@ class ConfigLoader:
             raise KeyError(f"工具 {tool_name} 不存在于配置中")
         
         config = self.all_tools[tool_name].copy()
+        config = self._normalize_agent_runtime_config(config)
         
         # 处理available_tool_level（特殊情况：judge_agent）
         if "available_tool_level" in config and "available_tools" not in config:
@@ -124,6 +125,40 @@ class ConfigLoader:
             print(f"✅ 为{tool_name}自动生成工具列表（Level {tool_level}）: {len(level_tools)}个工具")
         
         return config
+
+    def _normalize_agent_runtime_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """兼容旧 agent YAML，并补齐新的运行时字段。"""
+        normalized = dict(config)
+
+        execution_model = (
+            normalized.get("execution_model")
+            or normalized.get("model")
+            or normalized.get("model_type")
+            or ""
+        )
+        if execution_model:
+            normalized["execution_model"] = execution_model
+
+        alias_fields = {
+            "thinking_model": ["thinking_model"],
+            "compressor_model": ["compressor_model"],
+            "image_generation_model": ["image_generation_model", "figure_model", "generate_figure_model"],
+            "read_figure_model": ["read_figure_model", "vision_model"],
+            "max_tokens": ["max_tokens"],
+            "action_window_steps": ["action_window_steps"],
+            "thinking_interval": ["thinking_interval"],
+        }
+
+        for canonical_name, aliases in alias_fields.items():
+            if normalized.get(canonical_name) not in (None, ""):
+                continue
+            for alias in aliases:
+                value = normalized.get(alias)
+                if value not in (None, ""):
+                    normalized[canonical_name] = value
+                    break
+
+        return normalized
     
     def build_agent_system_prompt(self, agent_config: Dict) -> str:
         """
@@ -160,4 +195,3 @@ if __name__ == "__main__":
     print(f"🔧 总共加载 {len(loader.all_tools)} 个工具/Agent")
     print(f"\nLevel 0 工具数量: {len(loader.get_available_tools_by_level(0))}")
     print(f"Level 1 Agent数量: {len(loader.get_available_tools_by_level(1))}")
-

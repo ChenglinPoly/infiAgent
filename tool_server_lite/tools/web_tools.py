@@ -13,11 +13,13 @@ from urllib.parse import urlencode
 from .file_tools import BaseTool, get_abs_path
 
 # Crawl4AI 导入
+CRAWL4AI_IMPORT_ERROR = ""
 try:
     from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
     CRAWL4AI_AVAILABLE = True
-except (ImportError, TypeError, Exception):
+except (ImportError, TypeError, Exception) as exc:
     CRAWL4AI_AVAILABLE = False
+    CRAWL4AI_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 # DuckDuckGo 导入
 try:
@@ -48,6 +50,29 @@ def _get_field(obj: Any, name: str, default: Any = None) -> Any:
 
 class CrawlPageTool(BaseTool):
     """网页爬取工具 - 使用 crawl4ai"""
+
+    @staticmethod
+    def _crawl4ai_unavailable_error() -> str:
+        detail = CRAWL4AI_IMPORT_ERROR.strip()
+        if not detail:
+            return "crawl4ai not available"
+        lower = detail.lower()
+        if "no module named" in lower or "crawl4ai" in lower:
+            return f"crawl4ai import failed: {detail}. Install with: pip install crawl4ai"
+        return f"crawl4ai import failed: {detail}"
+
+    @staticmethod
+    def _normalize_runtime_error_message(error: Exception) -> str:
+        message = str(error or "").strip()
+        lower = message.lower()
+        if "browsertype.launch" in lower and "executable doesn't exist" in lower:
+            return (
+                message
+                + "\nPlaywright Chromium executable is missing in the current runtime. "
+                + "For local Python envs run: python -m playwright install chromium. "
+                + "For packaged desktop builds, ensure PLAYWRIGHT_BROWSERS_PATH points to the bundled .local-browsers directory."
+            )
+        return message
     
     async def execute_async(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -63,7 +88,7 @@ class CrawlPageTool(BaseTool):
                 return {
                     "status": "error",
                     "output": "",
-                    "error": "crawl4ai not installed. Run: pip install crawl4ai"
+                    "error": self._crawl4ai_unavailable_error()
                 }
             
             url = parameters.get("url")
@@ -107,7 +132,7 @@ class CrawlPageTool(BaseTool):
             return {
                 "status": "error",
                 "output": "",
-                "error": str(e)
+                "error": self._normalize_runtime_error_message(e)
             }
     
     async def _crawl_page(self, url: str) -> str:
@@ -179,7 +204,7 @@ class GoogleScholarSearchTool(BaseTool):
                 return {
                     "status": "error",
                     "output": "",
-                    "error": "crawl4ai not installed. Run: pip install crawl4ai"
+                    "error": CrawlPageTool._crawl4ai_unavailable_error()
                 }
             
             query = parameters.get("query")
@@ -429,4 +454,3 @@ class FileDownloadTool(BaseTool):
                 "output": "",
                 "error": str(e)
             }
-

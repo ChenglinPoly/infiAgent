@@ -600,6 +600,7 @@ class InteractiveCLI:
                 import json
                 RESET = "\033[0m"
                 THINKING_COLOR = "\033[94m"
+                REASONING_COLOR = "\033[95m"
                 TOOL_PENDING_COLOR = "\033[33m"
                 TOOL_SUCCESS_COLOR = "\033[32m"
                 TOOL_ERROR_COLOR = "\033[31m"
@@ -623,8 +624,12 @@ class InteractiveCLI:
                         return
                     if stream_kind != kind:
                         flush_stream(force_newline=(stream_kind is not None))
+                        if kind == "reasoning":
+                            sys.stdout.write(f"{REASONING_COLOR}[Model reasoning]{RESET}\n")
+                        elif kind == "thinking":
+                            sys.stdout.write(f"{THINKING_COLOR}[Thinking agent]{RESET}\n")
                         stream_kind = kind
-                    color = THINKING_COLOR if kind in ("thinking", "reasoning") else ""
+                    color = THINKING_COLOR if kind == "thinking" else (REASONING_COLOR if kind == "reasoning" else "")
                     sys.stdout.write(f"{color}{text}{RESET if color else ''}")
                     sys.stdout.flush()
 
@@ -744,6 +749,10 @@ class InteractiveCLI:
                             print("\n" + "="*80)
                             print(f"🔔🔔🔔 {self.t('hil_detected')} 🔔🔔🔔")
                             print("="*80 + "\n")
+                            instruction = event.get("message", "") or ""
+                            if instruction:
+                                print(instruction)
+                                print()
 
                         elif event['type'] == 'tool_confirmation':
                             flush_stream()
@@ -758,6 +767,17 @@ class InteractiveCLI:
                             print("\n" + "="*80)
                             print(f"⚠️⚠️⚠️ {self.t('tool_confirm_detected')} ⚠️⚠️⚠️")
                             print("="*80 + "\n")
+                            tool_name = event.get("tool_name", "")
+                            arguments = event.get("arguments", {}) or {}
+                            if tool_name:
+                                print(f"Tool: {tool_name}")
+                            if arguments:
+                                for key, value in arguments.items():
+                                    value_str = str(value)
+                                    if len(value_str) > 200:
+                                        value_str = value_str[:200] + "..."
+                                    print(f"  {key}: {value_str}")
+                                print()
                         
                         elif event['type'] == 'error':
                             flush_stream()
@@ -1193,4 +1213,3 @@ def start_cli_mode(agent_system: str = None, language: str = 'en'):
 
 if __name__ == "__main__":
     start_cli_mode()
-

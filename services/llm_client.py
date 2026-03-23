@@ -9,14 +9,22 @@ import os
 import yaml
 import time
 import json
+import copy
 import concurrent.futures
-from typing import List, Dict, Any, Optional
+import re
+from typing import Callable, List, Dict, Any, Optional
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from litellm import completion  # 直接导入completion函数
 import litellm
 
-from utils.user_paths import ensure_user_llm_config_exists
+from utils.user_paths import (
+    ensure_user_llm_config_exists,
+    get_task_file_prefix,
+    get_user_conversations_dir,
+    get_user_runtime_dir,
+)
 
 
 @dataclass
@@ -46,6 +54,89 @@ class LLMResponse:
     error_information: str = ""
     reasoning_content: str = ""  # 模型的推理/思考内容（如 Claude thinking, Deepseek reasoning）
     thinking_blocks: Optional[List[Dict]] = None  # Anthropic 专用的 thinking_blocks
+
+
+_RAW_TOOL_CALLS_SECTION_BEGIN = "<|tool_calls_section_begin|>"
+_RAW_TOOL_CALLS_SECTION_END = "<|tool_calls_section_end|>"
+_RAW_TOOL_CALL_PATTERN = re.compile(
+    r"<\|tool_call_begin\|>(.*?)<\|tool_call_argument_begin\|>(.*?)<\|tool_call_end\|>",
+    re.DOTALL,
+)
+
+
+def _marker_prefix_overlap(text: str, marker: str) -> int:
+    """返回 text 尾部与 marker 前缀的最大重叠长度，用于流式解析跨 chunk 标记。"""
+    if not text or not marker:
+        return 0
+    max_size = min(len(text), len(marker) - 1)
+    for size in range(max_size, 0, -1):
+        if text.endswith(marker[:size]):
+            return size
+    return 0
+
+
+class _EmbeddedToolCallStreamState:
+    """过滤模型直接吐出的原始 tool-call section，同时保留其中的原始标记以便后续解析。"""
+
+    def __init__(self):
+        self._pending = ""
+        self._captured_parts: List[str] = []
+        self._in_section = False
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+
+        self._pending += text
+        visible_parts: List[str] = []
+
+        while self._pending:
+            if not self._in_section:
+                start_idx = self._pending.find(_RAW_TOOL_CALLS_SECTION_BEGIN)
+                if start_idx >= 0:
+                    if start_idx > 0:
+                        visible_parts.append(self._pending[:start_idx])
+                    self._pending = self._pending[start_idx + len(_RAW_TOOL_CALLS_SECTION_BEGIN):]
+                    self._in_section = True
+                    continue
+
+                hold = _marker_prefix_overlap(self._pending, _RAW_TOOL_CALLS_SECTION_BEGIN)
+                if hold:
+                    visible_parts.append(self._pending[:-hold])
+                    self._pending = self._pending[-hold:]
+                else:
+                    visible_parts.append(self._pending)
+                    self._pending = ""
+                break
+
+            end_idx = self._pending.find(_RAW_TOOL_CALLS_SECTION_END)
+            if end_idx >= 0:
+                if end_idx > 0:
+                    self._captured_parts.append(self._pending[:end_idx])
+                self._pending = self._pending[end_idx + len(_RAW_TOOL_CALLS_SECTION_END):]
+                self._in_section = False
+                continue
+
+            hold = _marker_prefix_overlap(self._pending, _RAW_TOOL_CALLS_SECTION_END)
+            if hold:
+                self._captured_parts.append(self._pending[:-hold])
+                self._pending = self._pending[-hold:]
+            else:
+                self._captured_parts.append(self._pending)
+                self._pending = ""
+            break
+
+        return "".join(visible_parts)
+
+    def finish(self) -> tuple[str, str]:
+        visible_tail = ""
+        if self._pending:
+            if self._in_section:
+                self._captured_parts.append(self._pending)
+            else:
+                visible_tail = self._pending
+        self._pending = ""
+        return visible_tail, "".join(self._captured_parts)
 
 
 class SimpleLLMClient:
@@ -86,16 +177,26 @@ class SimpleLLMClient:
         self.figure_models = []
         self.compressor_models = []
         self.model_configs = {}  # 模型名称 -> 配置字典
-        
-        self._parse_models_config(self.config.get("models", []), self.models)
-        self._parse_models_config(self.config.get("figure_models", []), self.figure_models)
-        self._parse_models_config(self.config.get("compressor_models", []), self.compressor_models)
+        self.default_models = {}
+
+        self._parse_models_config(self.config.get("models", []), self.models, "execution")
+        self._parse_models_config(self.config.get("figure_models", []), self.figure_models, "image_generation")
+        self._parse_models_config(self.config.get("compressor_models", []), self.compressor_models, "compressor")
         self.thinking_models = []
-        self._parse_models_config(self.config.get("thinking_models", []), self.thinking_models)
+        self._parse_models_config(self.config.get("thinking_models", []), self.thinking_models, "thinking")
         # 如果没有配置 thinking_models，回退到 models
         if not self.thinking_models:
             self.thinking_models = list(self.models)
-
+        self.default_models.setdefault("thinking", self.thinking_models[0] if self.thinking_models else "")
+        self.read_figure_models = []
+        self._parse_models_config(self.config.get("read_figure_models", []), self.read_figure_models, "read_figure")
+        if not self.read_figure_models:
+            self.read_figure_models = list(self.models)
+        self.default_models.setdefault("read_figure", self.read_figure_models[0] if self.read_figure_models else "")
+        self.default_models.setdefault("execution", self.models[0] if self.models else "")
+        self.default_models.setdefault("image_generation", self.figure_models[0] if self.figure_models else "")
+        self.default_models.setdefault("compressor", self.compressor_models[0] if self.compressor_models else "")
+        self.default_tool_choice = self._load_default_tool_choice()
         # 多模态配置
         self.multimodal = self.config.get("multimodal", False)
         self.compressor_multimodal = self.config.get("compressor_multimodal", False)
@@ -126,7 +227,7 @@ class SimpleLLMClient:
         safe_print(f"   超时配置: timeout={self.timeout}s, stream_timeout={self.stream_timeout}s, first_chunk_timeout={self.first_chunk_timeout}s")
         safe_print(f"   多模态: multimodal={self.multimodal}, compressor_multimodal={self.compressor_multimodal}")
     
-    def _parse_models_config(self, models_config: List, target_list: List):
+    def _parse_models_config(self, models_config: List, target_list: List, category: str):
         """
         解析模型配置，支持两种格式：
         1. 字符串格式：直接是模型名称
@@ -136,11 +237,14 @@ class SimpleLLMClient:
             models_config: 原始模型配置列表
             target_list: 目标列表（self.models, self.figure_models 等）
         """
+        default_name = ""
         for model_item in models_config:
             if isinstance(model_item, str):
                 # 简单格式：直接是模型名称
                 target_list.append(model_item)
                 self.model_configs[model_item] = {}
+                if not default_name:
+                    default_name = model_item
             elif isinstance(model_item, dict):
                 # 对象格式：包含额外参数
                 model_name = model_item.get("name")
@@ -152,11 +256,186 @@ class SimpleLLMClient:
                 # 保存除 name 外的所有参数
                 extra_params = {k: v for k, v in model_item.items() if k != "name"}
                 self.model_configs[model_name] = extra_params
-                
+                if extra_params.get("default") is True:
+                    default_name = model_name
+                elif not default_name:
+                    default_name = model_name
+
                 if extra_params:
                     safe_print(f"   📝 模型 {model_name} 配置了额外参数: {list(extra_params.keys())}")
             else:
                 safe_print(f"⚠️ 不支持的模型配置格式，跳过: {model_item}")
+        if default_name:
+            self.default_models[category] = default_name
+
+    def _load_default_tool_choice(self) -> Dict[str, str]:
+        raw = self.config.get("tool_choice", {}) or {}
+        defaults = {
+            "execution": "required",
+            "thinking": "none",
+            "compressor": "none",
+            "image_generation": "none",
+            "read_figure": "none",
+        }
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                normalized = str(value or "").strip().lower()
+                if normalized in {"required", "auto", "none"}:
+                    defaults[str(key)] = normalized
+        elif isinstance(raw, str):
+            normalized = str(raw).strip().lower()
+            if normalized in {"required", "auto", "none"}:
+                defaults["execution"] = normalized
+        return defaults
+
+    def get_default_tool_choice(self, category: str = "execution") -> str:
+        return self.default_tool_choice.get(category, "required")
+
+    @staticmethod
+    def _embedded_tool_name_from_id(raw_call_id: str) -> str:
+        token = str(raw_call_id or "").strip()
+        if not token:
+            return ""
+        if token.startswith("functions."):
+            token = token[len("functions."):]
+        if ":" in token:
+            token = token.rsplit(":", 1)[0]
+        return token.strip()
+
+    def _parse_embedded_tool_calls(self, raw_markup: str) -> List[ToolCall]:
+        text = str(raw_markup or "")
+        if not text or "<|tool_call_begin|>" not in text:
+            return []
+
+        final_calls: List[ToolCall] = []
+        for idx, match in enumerate(_RAW_TOOL_CALL_PATTERN.finditer(text)):
+            raw_call_id = str(match.group(1) or "").strip()
+            raw_args = str(match.group(2) or "").strip()
+            tool_name = self._embedded_tool_name_from_id(raw_call_id)
+            if not tool_name:
+                continue
+
+            args: Dict[str, Any]
+            if not raw_args:
+                args = {}
+            else:
+                try:
+                    args = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    args = self._try_fix_json(raw_args) or {}
+
+            final_calls.append(
+                ToolCall(
+                    id=raw_call_id or f"embedded_call_{idx}",
+                    name=tool_name,
+                    arguments=args,
+                )
+            )
+        return final_calls
+
+    @staticmethod
+    def _merge_tool_calls(primary: List[ToolCall], secondary: List[ToolCall]) -> List[ToolCall]:
+        merged: List[ToolCall] = []
+        seen = set()
+        for tool_call in list(primary or []) + list(secondary or []):
+            args_key = json.dumps(tool_call.arguments or {}, ensure_ascii=False, sort_keys=True)
+            key = (str(tool_call.id or "").strip(), str(tool_call.name or "").strip(), args_key)
+            fallback_key = (str(tool_call.name or "").strip(), args_key)
+            if key in seen or fallback_key in seen:
+                continue
+            seen.add(key)
+            seen.add(fallback_key)
+            merged.append(tool_call)
+        return merged
+
+    def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
+        debug_msgs = copy.deepcopy(messages)
+        for debug_msg in debug_msgs:
+            content = debug_msg.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        image_url = part.get("image_url", {}).get("url", "")
+                        if len(image_url) > 120:
+                            part["image_url"]["url"] = image_url[:80] + f"...({len(image_url)} chars)"
+            elif isinstance(content, str) and len(content) > 2000:
+                if (debug_msg.get("role") or "").lower() != "system":
+                    debug_msg["content"] = content[:2000] + f"\n...({len(content)} chars total)"
+        return debug_msgs
+
+    def _resolve_debug_output_path(self, debug_task_id: Optional[str]) -> Path:
+        debug_task_id = str(debug_task_id or "").strip()
+        if debug_task_id:
+            conversations_dir = get_user_conversations_dir()
+            conversations_dir.mkdir(parents=True, exist_ok=True)
+            return conversations_dir / f"{get_task_file_prefix(debug_task_id)}_llm_debug.jsonl"
+
+        debug_dir = get_user_runtime_dir() / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        return debug_dir / "llm_debug.jsonl"
+
+    def _append_debug_record(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        debug_task_id: Optional[str] = None,
+        debug_label: str = "execution",
+        tool_choice: Optional[str] = None,
+        tool_count: int = 0,
+        emit_tokens: Optional[str] = None,
+    ) -> None:
+        debug_file = self._resolve_debug_output_path(debug_task_id)
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "pid": os.getpid(),
+            "task_id": str(debug_task_id or "").strip() or None,
+            "debug_label": str(debug_label or "execution").strip() or "execution",
+            "model": model,
+            "message_count": len(messages),
+            "tool_count": tool_count,
+            "tool_choice": tool_choice,
+            "emit_tokens": emit_tokens,
+            "messages": self._build_debug_messages_snapshot(messages),
+        }
+        with open(debug_file, "a", encoding="utf-8") as debug_handle:
+            debug_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        safe_print(f"📋 DEBUG: messages JSONL 已追加到 {debug_file}")
+
+    def resolve_model(self, category: str = "execution", preferred: Optional[str] = None) -> str:
+        model_groups = {
+            "execution": self.models,
+            "thinking": self.thinking_models or self.models,
+            "compressor": self.compressor_models or self.models,
+            "image_generation": self.figure_models or self.models,
+            "read_figure": self.read_figure_models or self.models,
+        }
+        candidates = model_groups.get(category, self.models) or self.models
+        preferred_name = str(preferred or "").strip()
+        if preferred_name and preferred_name in candidates:
+            return preferred_name
+        default_name = str(self.default_models.get(category) or "").strip()
+        if default_name and default_name in candidates:
+            return default_name
+        return candidates[0] if candidates else preferred_name
+
+    def resolve_tool_choice(
+        self,
+        category: str = "execution",
+        model: Optional[str] = None,
+        requested: Optional[str] = None,
+    ) -> str:
+        normalized_requested = str(requested or "").strip().lower()
+        if normalized_requested in {"required", "auto", "none"}:
+            return normalized_requested
+
+        normalized_model = str(model or "").strip()
+        if normalized_model:
+            model_choice = str(self.model_configs.get(normalized_model, {}).get("tool_choice", "")).strip().lower()
+            if model_choice in {"required", "auto", "none"}:
+                return model_choice
+
+        return self.get_default_tool_choice(category)
     
     def chat(
         self,
@@ -164,11 +443,14 @@ class SimpleLLMClient:
         model: str,
         system_prompt: str,
         tool_list: List[str],
-        tool_choice: str = "required",
+        tool_choice: Optional[str] = None,
         temperature: float = None,
         max_tokens: int = None,
         max_retries: int = 3,
-        emit_tokens: str = None
+        emit_tokens: str = None,
+        debug_task_id: Optional[str] = None,
+        debug_label: str = "execution",
+        stream_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> LLMResponse:
         """
         调用LLM进行对话 (增强版：支持流式监控、自动重试、参数修复)
@@ -180,10 +462,12 @@ class SimpleLLMClient:
             model: 模型名称
             system_prompt: 系统提示词
             tool_list: 可用工具列表
-            tool_choice: 工具选择策略
+            tool_choice: 工具选择策略；None 表示由调用方或模型配置决定
             temperature: 温度参数（None则使用配置文件默认值）
             max_tokens: 最大token数（None则使用配置文件默认值）
             max_retries: 最大重试次数（默认3次，即总共最多4次尝试）
+            debug_task_id: 可选 task_id；传入后调试请求会按 task 追加到 conversations 目录
+            debug_label: 调试记录标签，用于区分 execution / thinking / compressor 等来源
             
         Returns:
             LLMResponse对象
@@ -214,7 +498,7 @@ class SimpleLLMClient:
             # 调用内部实现
             response = self._chat_internal(
                 history, model, fixed_system_prompt, tool_list, 
-                tool_choice, temperature, max_tokens, emit_tokens
+                tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
             )
             
             # 如果成功，直接返回
@@ -238,7 +522,7 @@ class SimpleLLMClient:
                     # 立即重试，不计入retry_count
                     response = self._chat_internal(
                         history, model, fixed_system_prompt, tool_list, 
-                        tool_choice, temperature, max_tokens, emit_tokens
+                        tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
                     )
                     
                     if response.status == "success":
@@ -276,7 +560,10 @@ class SimpleLLMClient:
         tool_choice: str,
         temperature: float,
         max_tokens: int,
-        emit_tokens: str = None
+        emit_tokens: str = None,
+        debug_task_id: Optional[str] = None,
+        debug_label: str = "execution",
+        stream_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> LLMResponse:
         """
         LLM调用的内部实现（使用 LiteLLM 原生超时机制）
@@ -286,8 +573,23 @@ class SimpleLLMClient:
                 None - 不发送（默认，用于 compressor 等辅助调用）
                 "token" - 发送 content delta 为 token 事件（主 Agent 调用）
                 "thinking" - 发送 content delta 为 thinking_token 事件（Thinking Agent 调用）
+            debug_task_id: 可选 task_id；传入后调试请求会按 task 追加到 conversations 目录
+            debug_label: 调试记录标签，用于区分不同类型的 LLM 调用
         """
         try:
+            def _emit_stream_chunk(kind: str, text: str, current_model: str):
+                if not stream_callback or not text:
+                    return
+                try:
+                    stream_callback({
+                        "kind": str(kind or "content"),
+                        "text": text,
+                        "model": current_model,
+                        "debug_label": debug_label,
+                    })
+                except Exception:
+                    pass
+
             # 构建工具定义（OpenAI格式）
             tools_definition = self._build_tools_definition(tool_list)
             
@@ -303,36 +605,6 @@ class SimpleLLMClient:
                 else:
                     # 尝试 duck typing
                     messages.append({"role": msg.role, "content": msg.content})
-            
-            # === DEBUG: 将完整 messages 结构写入文件（base64 截断） ===
-            try:
-                import copy as _copy
-                from datetime import datetime as _dt
-                _debug_msgs = _copy.deepcopy(messages)
-                for _dm in _debug_msgs:
-                    _c = _dm.get("content")
-                    if isinstance(_c, list):
-                        for _part in _c:
-                            if isinstance(_part, dict) and _part.get("type") == "image_url":
-                                _url = _part.get("image_url", {}).get("url", "")
-                                if len(_url) > 120:
-                                    _part["image_url"]["url"] = _url[:80] + f"...({len(_url)} chars)"
-                    elif isinstance(_c, str) and len(_c) > 2000:
-                        # 不截断 system prompt（用于排查真实传参），其余消息仍做截断避免 debug 文件过大
-                        if (_dm.get("role") or "").lower() != "system":
-                            _dm["content"] = _c[:2000] + f"\n...({len(_c)} chars total)"
-                _debug_file = Path(__file__).parent.parent / "tests" / "debug_messages.json"
-                with open(_debug_file, 'w', encoding='utf-8') as _f:
-                    json.dump({
-                        "timestamp": _dt.now().isoformat(),
-                        "model": model,
-                        "message_count": len(messages),
-                        "messages": _debug_msgs
-                    }, _f, indent=2, ensure_ascii=False)
-                safe_print(f"📋 DEBUG: messages JSON 已写入 {_debug_file}")
-            except Exception as _e:
-                safe_print(f"⚠️ DEBUG 写入失败: {_e}")
-            # === END DEBUG ===
             
             # 获取模型级别的配置（可覆盖全局 api_key 和 base_url）
             model_extra_params = self.model_configs.get(model, {})
@@ -368,6 +640,21 @@ class SimpleLLMClient:
                 kwargs["parallel_tool_calls"] = False
             # 注意：当 tools_definition 为空时，即使 tool_choice="none" 也不添加任何参数
             # 这避免了 API 错误：When using `tool_choice`, `tools` must be set
+
+            # === DEBUG: 将完整 messages 结构追加写入 task 级 JSONL ===
+            try:
+                self._append_debug_record(
+                    messages=messages,
+                    model=model,
+                    debug_task_id=debug_task_id,
+                    debug_label=debug_label,
+                    tool_choice=tool_choice,
+                    tool_count=len(tools_definition),
+                    emit_tokens=emit_tokens,
+                )
+            except Exception as debug_error:
+                safe_print(f"⚠️ DEBUG 写入失败: {debug_error}")
+            # === END DEBUG ===
             
             # 添加模型特定的额外参数（api_key 和 base_url 已在上面处理）
             if model_extra_params:
@@ -385,12 +672,27 @@ class SimpleLLMClient:
                     kwargs["extra_body"].update(model_extra_params["extra_body"])
 
             # 发起流式请求（LiteLLM 会根据 timeout 和 stream_timeout 自动管理超时）
-            def _is_tool_required_thinking_incompatible(msg: str) -> bool:
+            def _should_retry_without_required_tool_choice(msg: str) -> bool:
                 m = (msg or "").lower()
-                return ("tool_choice" in m and "required" in m and "thinking" in m and "incompat" in m)
+                if "tool_choice" not in m:
+                    return False
+                incompat_markers = [
+                    "thinking",
+                    "thinking mode",
+                    "reasoning",
+                    "does not support",
+                    "unsupported",
+                    "invalidparameter",
+                    "required or object",
+                    "required",
+                    "object",
+                ]
+                return any(marker in m for marker in incompat_markers)
 
             # 有些 OpenAI-compatible（如月之暗面/Kimi）会拒绝 tool_choice=required + thinking。
             # 这里做一次“就地兼容重试”：第一次失败则移除 tool_choice，保持 tools 但不强制 required。
+            # 这类报错文案在不同 provider/router 上差异很大，因此只要是 tool_choice=required
+            # 且首轮失败信息明确指向 tool_choice 不兼容，就降级为 auto 重试一次。
             for _compat_try in range(2):
                 safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
                 safe_print(f"   📨 请求模型: {model}")
@@ -401,10 +703,45 @@ class SimpleLLMClient:
                 # 累积变量
                 accumulated_content = ""
                 accumulated_reasoning_content = ""  # reasoning/thinking 内容
+                visible_content = ""
+                visible_reasoning_content = ""
                 accumulated_tool_calls = {}  # index -> {id, name, arguments}
                 finish_reason = "unknown"
                 response_model = model
                 chunk_count = 0
+                content_stream_state = _EmbeddedToolCallStreamState()
+                reasoning_stream_state = _EmbeddedToolCallStreamState()
+
+                def _emit_visible_text(kind: str, text: str):
+                    if not text:
+                        return
+
+                    _emit_stream_chunk(kind, text, response_model)
+
+                    if kind == "content":
+                        try:
+                            safe_print(text, end="", flush=True)
+                            if emit_tokens:
+                                from utils.event_emitter import get_event_emitter as _get_ee
+                                _ee = _get_ee()
+                                if _ee.enabled:
+                                    if emit_tokens == "thinking":
+                                        _ee.emit({"type": "thinking_token", "text": text})
+                                    else:
+                                        _ee.token(text)
+                        except Exception:
+                            pass
+                        return
+
+                    try:
+                        if emit_tokens:
+                            from utils.event_emitter import get_event_emitter as _get_ee_reason
+                            _ee_reason = _get_ee_reason()
+                            if _ee_reason.enabled:
+                                event_type = "thinking_token" if emit_tokens == "thinking" else "reasoning_token"
+                                _ee_reason.emit({"type": event_type, "text": text})
+                    except Exception:
+                        pass
 
                 try:
                     # --- 强制首包超时检测（包含 completion 调用以防止连接池死锁）---
@@ -437,32 +774,16 @@ class SimpleLLMClient:
                                     delta = first_chunk.choices[0].delta
                                     if hasattr(delta, 'content') and delta.content:
                                         accumulated_content += delta.content
-                                        # 关键修复：首包的 delta.content 不能只累积不发送，否则前端会丢失首 token
-                                        try:
-                                            safe_print(delta.content, end="", flush=True)
-                                            if emit_tokens:
-                                                from utils.event_emitter import get_event_emitter as _get_ee_first
-                                                _ee_first = _get_ee_first()
-                                                if _ee_first.enabled:
-                                                    if emit_tokens == "thinking":
-                                                        _ee_first.emit({"type": "thinking_token", "text": delta.content})
-                                                    else:
-                                                        _ee_first.token(delta.content)
-                                        except Exception:
-                                            pass
+                                        visible_piece = content_stream_state.feed(delta.content)
+                                        visible_content += visible_piece
+                                        _emit_visible_text("content", visible_piece)
 
                                     # 累积 reasoning_content（thinking/reasoning 模型）
                                     if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                                         accumulated_reasoning_content += delta.reasoning_content
-                                        # 关键修复：首包的 reasoning_content 同样需要发出（否则 reasoning/thinking 首段缺失）
-                                        try:
-                                            if emit_tokens:
-                                                from utils.event_emitter import get_event_emitter as _get_ee_reason_first
-                                                _ee_reason_first = _get_ee_reason_first()
-                                                if _ee_reason_first.enabled:
-                                                    _ee_reason_first.emit({"type": "reasoning_token", "text": delta.reasoning_content})
-                                        except Exception:
-                                            pass
+                                        visible_reasoning_piece = reasoning_stream_state.feed(delta.reasoning_content)
+                                        visible_reasoning_content += visible_reasoning_piece
+                                        _emit_visible_text("reasoning", visible_reasoning_piece)
 
                                     if hasattr(delta, 'tool_calls') and delta.tool_calls:
                                         for tc in delta.tool_calls:
@@ -508,30 +829,16 @@ class SimpleLLMClient:
                         # A. 累积文本内容
                         if hasattr(delta, 'content') and delta.content:
                             accumulated_content += delta.content
-                            try:
-                                safe_print(delta.content, end="", flush=True)
-                                if emit_tokens:
-                                    from utils.event_emitter import get_event_emitter as _get_ee
-                                    _ee = _get_ee()
-                                    if _ee.enabled:
-                                        if emit_tokens == "thinking":
-                                            _ee.emit({"type": "thinking_token", "text": delta.content})
-                                        else:
-                                            _ee.token(delta.content)
-                            except Exception:
-                                pass
+                            visible_piece = content_stream_state.feed(delta.content)
+                            visible_content += visible_piece
+                            _emit_visible_text("content", visible_piece)
 
                         # A2. 累积 reasoning_content（thinking/reasoning 模型）
                         if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                             accumulated_reasoning_content += delta.reasoning_content
-                            try:
-                                if emit_tokens:
-                                    from utils.event_emitter import get_event_emitter as _get_ee2
-                                    _ee2 = _get_ee2()
-                                    if _ee2.enabled:
-                                        _ee2.emit({"type": "reasoning_token", "text": delta.reasoning_content})
-                            except Exception:
-                                pass
+                            visible_reasoning_piece = reasoning_stream_state.feed(delta.reasoning_content)
+                            visible_reasoning_content += visible_reasoning_piece
+                            _emit_visible_text("reasoning", visible_reasoning_piece)
 
                         # B. 累积工具调用
                         if hasattr(delta, 'tool_calls') and delta.tool_calls:
@@ -552,6 +859,16 @@ class SimpleLLMClient:
                             finish_reason = chunk.choices[0].finish_reason
 
                     safe_print(f"   ✅ 流式响应完成，共接收 {chunk_count} 个数据块")
+
+                    visible_tail, embedded_content_markup = content_stream_state.finish()
+                    if visible_tail:
+                        visible_content += visible_tail
+                        _emit_visible_text("content", visible_tail)
+
+                    visible_reasoning_tail, embedded_reasoning_markup = reasoning_stream_state.finish()
+                    if visible_reasoning_tail:
+                        visible_reasoning_content += visible_reasoning_tail
+                        _emit_visible_text("reasoning", visible_reasoning_tail)
 
                     # 构建最终的 ToolCall 对象列表
                     final_tool_calls = []
@@ -581,13 +898,30 @@ class SimpleLLMClient:
                             arguments=args
                         ))
 
+                    embedded_tool_calls = self._merge_tool_calls(
+                        self._parse_embedded_tool_calls(embedded_content_markup),
+                        self._parse_embedded_tool_calls(embedded_reasoning_markup),
+                    )
+
+                    if not embedded_tool_calls and (
+                        "<|tool_call_begin|>" in accumulated_content or "<|tool_call_begin|>" in accumulated_reasoning_content
+                    ):
+                        embedded_tool_calls = self._merge_tool_calls(
+                            self._parse_embedded_tool_calls(accumulated_content),
+                            self._parse_embedded_tool_calls(accumulated_reasoning_content),
+                        )
+
+                    final_tool_calls = self._merge_tool_calls(final_tool_calls, embedded_tool_calls)
+                    if final_tool_calls and finish_reason in {"", "unknown", "stop"}:
+                        finish_reason = "tool_calls"
+
                     return LLMResponse(
                         status="success",
-                        output=accumulated_content,
+                        output=visible_content,
                         tool_calls=final_tool_calls,
                         model=response_model,
                         finish_reason=finish_reason,
-                        reasoning_content=accumulated_reasoning_content
+                        reasoning_content=visible_reasoning_content
                     )
 
                 except Exception as _compat_e:
@@ -596,9 +930,9 @@ class SimpleLLMClient:
                         _compat_try == 0
                         and kwargs.get("tool_choice") == "required"
                         and tools_definition
-                        and _is_tool_required_thinking_incompatible(_compat_msg)
+                        and _should_retry_without_required_tool_choice(_compat_msg)
                     ):
-                        safe_print("⚠️ 当前模型不支持 tool_choice=required + thinking，自动降级为 tool_choice=auto 重试一次...")
+                        safe_print("⚠️ 当前模型/路由不兼容 tool_choice=required，自动降级为 tool_choice=auto 重试一次...")
                         kwargs.pop("tool_choice", None)
                         continue
                     raise

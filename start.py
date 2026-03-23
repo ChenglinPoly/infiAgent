@@ -65,6 +65,29 @@ if __name__ == "__main__" and not hasattr(sys, '_mla_path_checked'):
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+
+def _configure_packaged_playwright_runtime() -> None:
+    """在打包后的后端中优先使用 bundle 内置的 Playwright 浏览器。"""
+    try:
+        if not getattr(sys, "frozen", False):
+            return
+        bundle_root = Path(sys.executable).resolve().parent
+        bundled_browsers = (
+            bundle_root
+            / "_internal"
+            / "playwright"
+            / "driver"
+            / "package"
+            / ".local-browsers"
+        )
+        if bundled_browsers.exists():
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled_browsers)
+    except Exception:
+        return
+
+
+_configure_packaged_playwright_runtime()
+
 from utils.user_paths import apply_runtime_env_defaults, get_user_data_root
 from utils.runtime_control import get_running_task, request_fresh
 from utils.config_loader import ConfigLoader
@@ -318,7 +341,7 @@ def main():
         if not args.jsonl:
             print(f"✅ Agent配置加载成功")
             print(f"   - Level: {agent_config.get('level', 'unknown')}")
-            print(f"   - Model: {agent_config.get('model_type', 'unknown')}")
+            print(f"   - Execution Model: {agent_config.get('execution_model') or agent_config.get('model_type', 'unknown')}")
             print(f"   - Tools: {len(agent_config.get('available_tools', []))}")
             
             # 创建并运行Agent

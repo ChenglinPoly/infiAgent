@@ -1,9 +1,10 @@
 include README.md
+include LICENSE
 include requirements.txt
 recursive-include config *.yaml
+recursive-include skills *
 recursive-include tool_server_lite *.py *.md *.txt
 exclude conversations/*
 exclude task_*
 exclude *.log
 exclude .DS_Store
-

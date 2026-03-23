@@ -16,6 +16,7 @@ const autoScrollBtn = document.getElementById('auto-scroll-btn');
 let workspacePath = null;
 let isRunning = false;
 let autoScrollEnabled = true;
+let lastLoadedSettingsConfig = {};
 
 // Streaming state
 let currentAgentBubble = null;
@@ -767,6 +768,7 @@ async function loadSettings() {
   }
   
   const c = result.config;
+  lastLoadedSettingsConfig = (c && typeof c === 'object') ? c : {};
   document.getElementById('setting-base-url').value = c.base_url || '';
   document.getElementById('setting-api-key').value = c.api_key || '';
   document.getElementById('setting-timeout').value = c.timeout || 600;
@@ -779,11 +781,11 @@ async function loadSettings() {
   document.getElementById('setting-compressor-multimodal').checked = c.compressor_multimodal !== false;
   
   // Models (array → newline-separated)
-  document.getElementById('setting-models').value = (c.models || []).join('\n');
-  document.getElementById('setting-figure-models').value = (c.figure_models || []).join('\n');
-  document.getElementById('setting-compressor-models').value = (c.compressor_models || []).join('\n');
-  document.getElementById('setting-read-figure-models').value = (c.read_figure_models || []).join('\n');
-  document.getElementById('setting-thinking-models').value = (c.thinking_models || []).join('\n');
+  document.getElementById('setting-models').value = formatModelEntries(c.models || []);
+  document.getElementById('setting-figure-models').value = formatModelEntries(c.figure_models || []);
+  document.getElementById('setting-compressor-models').value = formatModelEntries(c.compressor_models || []);
+  document.getElementById('setting-read-figure-models').value = formatModelEntries(c.read_figure_models || []);
+  document.getElementById('setting-thinking-models').value = formatModelEntries(c.thinking_models || []);
 
   // Raw yaml
   if (rawYamlTextarea) rawYamlTextarea.value = result.raw_yaml || '';
@@ -800,6 +802,7 @@ async function loadSettings() {
     const cfg = appCfgRes.config || {};
     const env = cfg.env || {};
     const runtime = cfg.runtime || {};
+    const context = cfg.context || {};
     const mcp = cfg.mcp || {};
     const market = cfg.market || {};
     const pathModeEl = document.getElementById('setting-path-mode');
@@ -818,13 +821,21 @@ async function loadSettings() {
     if (marketUrlEl) marketUrlEl.value = market.base_url || '';
     const actionWindowEl = document.getElementById('setting-action-window-steps');
     const thinkingIntervalEl = document.getElementById('setting-thinking-interval');
+    const maxTurnsEl = document.getElementById('setting-max-turns');
     const freshEnabledEl = document.getElementById('setting-fresh-enabled');
     const freshIntervalEl = document.getElementById('setting-fresh-interval-sec');
+    const userHistoryThresholdEl = document.getElementById('setting-user-history-threshold');
+    const structuredAgentThresholdEl = document.getElementById('setting-structured-call-agent-threshold');
+    const structuredTokenThresholdEl = document.getElementById('setting-structured-call-token-threshold');
     const mcpServersEl = document.getElementById('setting-mcp-servers');
-    if (actionWindowEl) actionWindowEl.value = runtime.action_window_steps ?? 10;
-    if (thinkingIntervalEl) thinkingIntervalEl.value = runtime.thinking_interval ?? runtime.action_window_steps ?? 10;
+    if (actionWindowEl) actionWindowEl.value = runtime.action_window_steps ?? 30;
+    if (thinkingIntervalEl) thinkingIntervalEl.value = runtime.thinking_interval ?? runtime.action_window_steps ?? 30;
+    if (maxTurnsEl) maxTurnsEl.value = runtime.max_turns ?? 100000;
     if (freshEnabledEl) freshEnabledEl.checked = !!runtime.fresh_enabled;
     if (freshIntervalEl) freshIntervalEl.value = runtime.fresh_interval_sec ?? 0;
+    if (userHistoryThresholdEl) userHistoryThresholdEl.value = context.user_history_compress_threshold_tokens ?? 1500;
+    if (structuredAgentThresholdEl) structuredAgentThresholdEl.value = context.structured_call_info_compress_threshold_agents ?? 10;
+    if (structuredTokenThresholdEl) structuredTokenThresholdEl.value = context.structured_call_info_compress_threshold_tokens ?? 2200;
     if (mcpServersEl) {
       const lines = Array.isArray(mcp.servers) ? mcp.servers.map(item => JSON.stringify(item)) : [];
       mcpServersEl.value = lines.join('\n');
@@ -953,10 +964,16 @@ settingsSaveBtn.addEventListener('click', async () => {
     const appCfg = {
       env: { shell_mode: mode, command_mode: commandMode, extra_path, extra_env },
       runtime: {
-        action_window_steps: Number(document.getElementById('setting-action-window-steps')?.value) || 10,
-        thinking_interval: Number(document.getElementById('setting-thinking-interval')?.value) || 10,
+        action_window_steps: readPositiveNumber(document.getElementById('setting-action-window-steps')?.value, 30),
+        thinking_interval: readPositiveNumber(document.getElementById('setting-thinking-interval')?.value, 30),
+        max_turns: readPositiveNumber(document.getElementById('setting-max-turns')?.value, 100000),
         fresh_enabled: !!document.getElementById('setting-fresh-enabled')?.checked,
         fresh_interval_sec: Number(document.getElementById('setting-fresh-interval-sec')?.value) || 0
+      },
+      context: {
+        user_history_compress_threshold_tokens: readNonNegativeNumber(document.getElementById('setting-user-history-threshold')?.value, 1500),
+        structured_call_info_compress_threshold_agents: readPositiveNumber(document.getElementById('setting-structured-call-agent-threshold')?.value, 10),
+        structured_call_info_compress_threshold_tokens: readNonNegativeNumber(document.getElementById('setting-structured-call-token-threshold')?.value, 2200)
       },
       mcp: { servers: mcpServers },
       market: { base_url: String(marketUrl || '').trim() }
@@ -981,6 +998,7 @@ settingsSaveBtn.addEventListener('click', async () => {
   const thinkingModelsText = document.getElementById('setting-thinking-models').value.trim();
   
   const config = {
+    ...lastLoadedSettingsConfig,
     temperature: Number(document.getElementById('setting-temperature').value) || 0,
     max_tokens: Number(document.getElementById('setting-max-tokens').value) || 0,
     max_context_window: Number(document.getElementById('setting-max-context').value) || 500000,
@@ -989,11 +1007,11 @@ settingsSaveBtn.addEventListener('click', async () => {
     timeout: Number(document.getElementById('setting-timeout').value) || 600,
     stream_timeout: Number(document.getElementById('setting-stream-timeout').value) || 30,
     first_chunk_timeout: Number(document.getElementById('setting-first-chunk-timeout').value) || 30,
-    models: modelsText ? modelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
-    figure_models: figureModelsText ? figureModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
-    compressor_models: compressorModelsText ? compressorModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
-    read_figure_models: readFigureModelsText ? readFigureModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
-    thinking_models: thinkingModelsText ? thinkingModelsText.split('\n').map(s => s.trim()).filter(Boolean) : [],
+    models: parseModelEntries(modelsText),
+    figure_models: parseModelEntries(figureModelsText),
+    compressor_models: parseModelEntries(compressorModelsText),
+    read_figure_models: parseModelEntries(readFigureModelsText),
+    thinking_models: parseModelEntries(thinkingModelsText),
     multimodal: document.getElementById('setting-multimodal').checked,
     compressor_multimodal: document.getElementById('setting-compressor-multimodal').checked
   };
@@ -1037,6 +1055,45 @@ function setMarketStatus(text, isError = false) {
   if (!marketStatus) return;
   marketStatus.textContent = text || '';
   marketStatus.style.color = isError ? '#c75450' : '#5a9a6a';
+}
+
+function formatModelEntries(value) {
+  if (!Array.isArray(value)) return '';
+  return value.map(item => {
+    if (typeof item === 'string') return item;
+    try {
+      return JSON.stringify(item);
+    } catch (_) {
+      return String(item ?? '');
+    }
+  }).join('\n');
+}
+
+function parseModelEntries(text) {
+  return String(text || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      if (line.startsWith('{') || line.startsWith('[')) {
+        try {
+          return JSON.parse(line);
+        } catch (_) {
+          return line;
+        }
+      }
+      return line;
+    });
+}
+
+function readPositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readNonNegativeNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function filterMarketItems(items, q) {

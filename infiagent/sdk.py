@@ -17,11 +17,13 @@ import json
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import yaml
 
 from core.agent_executor import AgentExecutor
+from core.event_handlers import StructuredEventHandler
 from core.hierarchy_manager import get_hierarchy_manager
+from core.runtime_exceptions import InfiAgentRunError
 from core.state_cleaner import clean_before_start
 from utils.config_loader import ConfigLoader
 from utils.runtime_control import is_task_running, request_fresh
@@ -41,6 +43,7 @@ from utils.user_paths import (
     get_user_llm_config_path,
     get_user_logs_dir,
     get_user_runtime_dir,
+    get_task_file_prefix,
     get_user_skills_library_root,
     get_user_tools_library_root,
     runtime_env_scope,
@@ -77,6 +80,7 @@ class InfiAgent:
         default_agent_name: Optional[str] = None,
         action_window_steps: Optional[int] = None,
         thinking_interval: Optional[int] = None,
+        max_turns: Optional[int] = None,
         fresh_enabled: Optional[bool] = None,
         fresh_interval_sec: Optional[int] = None,
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
@@ -110,6 +114,8 @@ class InfiAgent:
             self.runtime_env_overrides["MLA_ACTION_WINDOW_STEPS"] = str(max(1, int(action_window_steps)))
         if thinking_interval is not None:
             self.runtime_env_overrides["MLA_THINKING_INTERVAL"] = str(max(1, int(thinking_interval)))
+        if max_turns is not None:
+            self.runtime_env_overrides["MLA_MAX_TURNS"] = str(max(1, int(max_turns)))
         if fresh_enabled is not None:
             self.runtime_env_overrides["MLA_FRESH_ENABLED"] = "true" if fresh_enabled else "false"
         if fresh_interval_sec is not None:
@@ -129,6 +135,7 @@ class InfiAgent:
         self.tools_dir = _normalize_path(tools_dir)
         self.action_window_steps = max(1, int(action_window_steps)) if action_window_steps is not None else None
         self.thinking_interval = max(1, int(thinking_interval)) if thinking_interval is not None else None
+        self.max_turns = max(1, int(max_turns)) if max_turns is not None else None
         self.fresh_enabled = fresh_enabled if fresh_enabled is not None else None
         self.fresh_interval_sec = max(0, int(fresh_interval_sec)) if fresh_interval_sec is not None else None
         self.mcp_servers = mcp_servers
@@ -136,8 +143,11 @@ class InfiAgent:
         self.context_hooks = context_hooks
         self.seed_builtin_resources = bool(seed_builtin_resources)
 
-    def _runtime_scope(self):
-        return runtime_env_scope(self.runtime_env_overrides)
+    def _runtime_scope(self, extra_overrides: Optional[Dict[str, Any]] = None):
+        merged = dict(self.runtime_env_overrides)
+        if extra_overrides:
+            merged.update(extra_overrides)
+        return runtime_env_scope(merged)
 
     def _resolve_task_id(
         self,
@@ -169,6 +179,8 @@ class InfiAgent:
             config["action_window_steps"] = self.action_window_steps
         if self.thinking_interval is not None:
             config["thinking_interval"] = self.thinking_interval
+        if self.max_turns is not None:
+            config["max_turns"] = self.max_turns
         if self.fresh_enabled is not None:
             config["fresh_enabled"] = self.fresh_enabled
         if self.fresh_interval_sec is not None:
@@ -182,6 +194,38 @@ class InfiAgent:
         config["seed_builtin_resources"] = self.seed_builtin_resources
         return config
 
+    def _build_sdk_event_handler(
+        self,
+        *,
+        collect_events: bool = False,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Tuple[List[StructuredEventHandler], Optional[List[Dict[str, Any]]]]:
+        collected_events: Optional[List[Dict[str, Any]]] = [] if collect_events else None
+        if not collect_events and on_event is None:
+            return [], collected_events
+        return [
+            StructuredEventHandler(
+                callback=on_event,
+                collector=collected_events,
+            )
+        ], collected_events
+
+    def _attach_optional_run_artifacts(
+        self,
+        payload: Dict[str, Any],
+        *,
+        task_id: str,
+        collected_events: Optional[List[Dict[str, Any]]] = None,
+        collect_events: bool = False,
+        include_trace: bool = False,
+    ) -> Dict[str, Any]:
+        enriched = dict(payload)
+        if collect_events:
+            enriched["events"] = list(collected_events or [])
+        if include_trace:
+            enriched["trace"] = self.task_trace(task_id=task_id)
+        return enriched
+
     def run(
         self,
         user_input: str,
@@ -191,19 +235,40 @@ class InfiAgent:
         agent_name: Optional[str] = None,
         force_new: bool = False,
         workspace: Optional[str] = None,
+        collect_events: bool = False,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        include_trace: bool = False,
+        raise_on_error: bool = False,
+        stream_llm_tokens: bool = False,
+        max_turns: Optional[int] = None,
     ) -> Dict[str, Any]:
         target_task_id = self._resolve_task_id(task_id=task_id, workspace=workspace)
         target_agent_system = agent_system or self.default_agent_system
         target_agent_name = agent_name or self.default_agent_name
 
-        with self._runtime_scope():
+        extra_runtime_overrides: Dict[str, Any] = {}
+        if max_turns is not None:
+            extra_runtime_overrides["MLA_MAX_TURNS"] = str(max(1, int(max_turns)))
+
+        with self._runtime_scope(extra_runtime_overrides or None):
+            extra_event_handlers, collected_events = self._build_sdk_event_handler(
+                collect_events=collect_events,
+                on_event=on_event,
+            )
             if is_task_running(target_task_id):
-                return {
+                busy_result = {
                     "status": "busy",
                     "task_id": target_task_id,
                     "output": "",
                     "error": f"任务已在运行: {target_task_id}",
                 }
+                return self._attach_optional_run_artifacts(
+                    busy_result,
+                    task_id=target_task_id,
+                    collected_events=collected_events,
+                    collect_events=collect_events,
+                    include_trace=include_trace,
+                )
             config_loader = ConfigLoader(target_agent_system)
             hierarchy_manager = get_hierarchy_manager(target_task_id)
 
@@ -232,8 +297,36 @@ class InfiAgent:
                 config_loader=config_loader,
                 hierarchy_manager=hierarchy_manager,
                 direct_tools=self.direct_tools,
+                extra_event_handlers=extra_event_handlers,
+                exit_on_error=False,
+                raise_on_error=raise_on_error,
+                stream_llm_tokens=stream_llm_tokens,
             )
-            return agent.run(target_task_id, user_input)
+            try:
+                result = agent.run(target_task_id, user_input)
+            except InfiAgentRunError as exc:
+                exc.events = list(collected_events or exc.events or [])
+                if include_trace:
+                    exc.trace = self.task_trace(task_id=target_task_id)
+                raise
+
+            enriched_result = self._attach_optional_run_artifacts(
+                result,
+                task_id=target_task_id,
+                collected_events=collected_events,
+                collect_events=collect_events,
+                include_trace=include_trace,
+            )
+            if raise_on_error and enriched_result.get("status") == "error":
+                raise InfiAgentRunError.from_result(
+                    enriched_result,
+                    task_id=target_task_id,
+                    agent_name=target_agent_name,
+                    stage="run",
+                    events=enriched_result.get("events"),
+                    trace=enriched_result.get("trace"),
+                )
+            return enriched_result
 
     def fresh(
         self,
@@ -309,9 +402,12 @@ class InfiAgent:
         agent_name: Optional[str] = None,
         force_new: bool = False,
         direct_tools: Optional[bool] = None,
+        max_turns: Optional[int] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         merged_config = self._build_launch_config()
+        if max_turns is not None:
+            merged_config["max_turns"] = max(1, int(max_turns))
         if config:
             merged_config.update(config)
         with self._runtime_scope():
@@ -360,6 +456,7 @@ class InfiAgent:
                 "default_agent_name": self.default_agent_name,
                 "direct_tools": self.direct_tools,
                 "seed_builtin_resources": self.seed_builtin_resources,
+                "max_turns": self.max_turns if self.max_turns is not None else 100000,
             }
 
     def list_agent_systems(self) -> Dict[str, Any]:
@@ -459,6 +556,60 @@ class InfiAgent:
                 "last_final_output_at": last_final_output_at,
             }
 
+    def task_trace(
+        self,
+        *,
+        task_id: str,
+        include_render_history: bool = False,
+        include_system_prompt: bool = False,
+    ) -> Dict[str, Any]:
+        target_task_id = self._resolve_task_id(task_id=task_id)
+        with self._runtime_scope():
+            conversations_dir = get_user_conversations_dir()
+            prefix = get_task_file_prefix(target_task_id)
+            agent_traces: List[Dict[str, Any]] = []
+
+            for path in sorted(conversations_dir.glob(f"{prefix}_*_actions.json")):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception as e:
+                    agent_traces.append({
+                        "path": str(path),
+                        "load_error": str(e),
+                    })
+                    continue
+
+                trace_item = {
+                    "path": str(path),
+                    "agent_id": str(data.get("agent_id") or ""),
+                    "agent_name": str(data.get("agent_name") or ""),
+                    "task_input": str(data.get("task_input") or ""),
+                    "current_turn": int(data.get("current_turn") or 0),
+                    "tool_call_counter": int(data.get("tool_call_counter") or 0),
+                    "llm_turn_counter": int(data.get("llm_turn_counter") or 0),
+                    "latest_thinking": str(data.get("latest_thinking") or ""),
+                    "pending_tools": data.get("pending_tools") or [],
+                    "action_history_fact": data.get("action_history_fact") or data.get("action_history") or [],
+                    "last_updated": str(data.get("last_updated") or ""),
+                }
+                if include_render_history:
+                    trace_item["action_history"] = data.get("action_history") or []
+                if include_system_prompt:
+                    trace_item["system_prompt"] = str(data.get("system_prompt") or "")
+                agent_traces.append(trace_item)
+
+            debug_path = conversations_dir / f"{prefix}_llm_debug.jsonl"
+            paths = get_task_share_paths(target_task_id)
+            return {
+                "status": "success",
+                "task_id": target_task_id,
+                "share_context_path": paths["share_context_path"],
+                "stack_path": paths["stack_path"],
+                "agent_trace_count": len(agent_traces),
+                "agent_traces": agent_traces,
+                "llm_debug_path": str(debug_path) if debug_path.exists() else "",
+            }
+
     def reset_task(
         self,
         *,
@@ -488,6 +639,12 @@ class InfiAgent:
         agent_name: Optional[str] = None,
         force_new: bool = False,
         workspace: Optional[str] = None,
+        collect_events: bool = False,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        include_trace: bool = False,
+        raise_on_error: bool = False,
+        stream_llm_tokens: bool = False,
+        max_turns: Optional[int] = None,
     ) -> Dict[str, Any]:
         fn = partial(
             self.run,
@@ -497,6 +654,12 @@ class InfiAgent:
             agent_name=agent_name,
             force_new=force_new,
             workspace=workspace,
+            collect_events=collect_events,
+            on_event=on_event,
+            include_trace=include_trace,
+            raise_on_error=raise_on_error,
+            stream_llm_tokens=stream_llm_tokens,
+            max_turns=max_turns,
         )
         return await asyncio.to_thread(fn)
 
@@ -530,6 +693,7 @@ class InfiAgent:
         agent_name: Optional[str] = None,
         force_new: bool = False,
         direct_tools: Optional[bool] = None,
+        max_turns: Optional[int] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(
@@ -540,6 +704,7 @@ class InfiAgent:
             agent_name=agent_name,
             force_new=force_new,
             direct_tools=direct_tools,
+            max_turns=max_turns,
             config=config,
         )
 
@@ -557,6 +722,20 @@ class InfiAgent:
 
     async def task_snapshot_async(self, *, task_id: str) -> Dict[str, Any]:
         return await asyncio.to_thread(self.task_snapshot, task_id=task_id)
+
+    async def task_trace_async(
+        self,
+        *,
+        task_id: str,
+        include_render_history: bool = False,
+        include_system_prompt: bool = False,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self.task_trace,
+            task_id=task_id,
+            include_render_history=include_render_history,
+            include_system_prompt=include_system_prompt,
+        )
 
     async def reset_task_async(
         self,

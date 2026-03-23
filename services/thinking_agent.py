@@ -5,7 +5,7 @@ from utils.windows_compat import safe_print
 Thinking Agent - 任务进展分析服务
 """
 
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 from services.llm_client import SimpleLLMClient, ChatMessage
 from utils.user_paths import get_runtime_settings
 
@@ -13,12 +13,14 @@ from utils.user_paths import get_runtime_settings
 class ThinkingAgent:
     """思考Agent - 用于分析任务进展"""
     
-    def __init__(self):
+    def __init__(self, preferred_model: Optional[str] = None, max_tokens: Optional[int] = None):
         """初始化Thinking Agent"""
         # 使用简化的LLM客户端
         self.llm_client = SimpleLLMClient()
         runtime = get_runtime_settings()
         self.window_steps = runtime.get("action_window_steps", 10)
+        self.preferred_model = preferred_model
+        self.max_tokens = max_tokens
         
         # Thinking Agent的系统提示词
         self.system_prompt = f"""你是一个agent行动的上下文管理专家，这个 agent 每次在清除动作历史之前会请你进行上下文整理。
@@ -108,7 +110,26 @@ class ThinkingAgent:
     def analyze_first_thinking(self, task_description: str, agent_system_prompt: str, 
                                available_tools: List[str], tools_config: dict = None,
                                action_history: List[Dict] = None,
-                               multimodal: bool = False) -> str:
+                               multimodal: bool = False,
+                               debug_task_id: Optional[str] = None,
+                               stream_callback: Optional[Callable[[Dict], None]] = None) -> str:
+        return self.analyze_first_thinking_detail(
+            task_description=task_description,
+            agent_system_prompt=agent_system_prompt,
+            available_tools=available_tools,
+            tools_config=tools_config,
+            action_history=action_history,
+            multimodal=multimodal,
+            debug_task_id=debug_task_id,
+            stream_callback=stream_callback,
+        )["formatted_result"]
+
+    def analyze_first_thinking_detail(self, task_description: str, agent_system_prompt: str, 
+                               available_tools: List[str], tools_config: dict = None,
+                               action_history: List[Dict] = None,
+                               multimodal: bool = False,
+                               debug_task_id: Optional[str] = None,
+                               stream_callback: Optional[Callable[[Dict], None]] = None) -> Dict[str, str]:
         """
         首次思考 - 初始规划
         
@@ -121,7 +142,7 @@ class ThinkingAgent:
             multimodal: 是否支持多模态（主模型 multimodal 配置）
             
         Returns:
-            初始规划结果
+            包含格式化结果和原始模型输出的结构化信息
         """
         try:
             # 构建工具信息
@@ -155,19 +176,40 @@ agent可以调用的所有工具和参数信息
                 history = [ChatMessage(role="user", content=analysis_request)]
             
             # 使用第一个可用模型，不使用工具
+            thinking_model = self.llm_client.resolve_model("thinking", self.preferred_model)
             response = self.llm_client.chat(
                 history=history,
-                model=self.llm_client.thinking_models[0],
+                model=thinking_model,
                 system_prompt=self.system_prompt,
                 tool_list=[],
-                tool_choice="none",
-                emit_tokens="thinking"  # Thinking Agent：流式发送为 thinking_token
+                tool_choice=self.llm_client.resolve_tool_choice("thinking", thinking_model),
+                max_tokens=self.max_tokens,
+                emit_tokens="thinking",  # Thinking Agent：流式发送为 thinking_token
+                debug_task_id=debug_task_id,
+                debug_label="thinking",
+                stream_callback=stream_callback,
             )
             
             if response.status == "success":
-                return f"[🤖 初始规划]\n\n{response.output}"
+                return {
+                    "status": "success",
+                    "formatted_result": f"[🤖 初始规划]\n\n{response.output}",
+                    "raw_output": response.output or "",
+                    "raw_reasoning_content": response.reasoning_content or "",
+                    "model": response.model or thinking_model,
+                    "finish_reason": response.finish_reason or "",
+                    "error_information": "",
+                }
             else:
-                return f"[初始规划失败: {response.error_information}]"
+                return {
+                    "status": "error",
+                    "formatted_result": f"[初始规划失败: {response.error_information}]",
+                    "raw_output": response.output or "",
+                    "raw_reasoning_content": response.reasoning_content or "",
+                    "model": response.model or thinking_model,
+                    "finish_reason": response.finish_reason or "",
+                    "error_information": response.error_information or "",
+                }
         
         except Exception as e:
             safe_print(f"⚠️ thinking失败: {e}")
@@ -243,7 +285,19 @@ agent可以调用的所有工具和参数信息
         return "\n".join(tools_details)
     
     def analyze_progress(self, task_description: str, agent_system_prompt: str,
-                        tool_call_counter: int) -> str:
+                        tool_call_counter: int, debug_task_id: Optional[str] = None,
+                        stream_callback: Optional[Callable[[Dict], None]] = None) -> str:
+        return self.analyze_progress_detail(
+            task_description=task_description,
+            agent_system_prompt=agent_system_prompt,
+            tool_call_counter=tool_call_counter,
+            debug_task_id=debug_task_id,
+            stream_callback=stream_callback,
+        )["formatted_result"]
+
+    def analyze_progress_detail(self, task_description: str, agent_system_prompt: str,
+                        tool_call_counter: int, debug_task_id: Optional[str] = None,
+                        stream_callback: Optional[Callable[[Dict], None]] = None) -> Dict[str, str]:
         """
         进度分析 - 周期性分析
         
@@ -253,7 +307,7 @@ agent可以调用的所有工具和参数信息
             tool_call_counter: 工具调用计数
             
         Returns:
-            进度分析结果
+            包含格式化结果和原始模型输出的结构化信息
         """
         try:
             # 构建分析请求（agent_system_prompt已包含完整的<历史动作>）
@@ -279,23 +333,52 @@ Agent的完整上下文（包含系统角色、历史动作等）：
             
             history = [ChatMessage(role="user", content=analysis_request)]
             
+            thinking_model = self.llm_client.resolve_model("thinking", self.preferred_model)
             response = self.llm_client.chat(
                 history=history,
-                model=self.llm_client.thinking_models[0],
+                model=thinking_model,
                 system_prompt=self.system_prompt,
                 tool_list=[],
-                tool_choice="none",
-                emit_tokens="thinking"  # Thinking Agent：流式发送为 thinking_token
+                tool_choice=self.llm_client.resolve_tool_choice("thinking", thinking_model),
+                max_tokens=self.max_tokens,
+                emit_tokens="thinking",  # Thinking Agent：流式发送为 thinking_token
+                debug_task_id=debug_task_id,
+                debug_label="thinking",
+                stream_callback=stream_callback,
             )
             
             if response.status == "success":
-                return f"[🤖 进度分析 - 第{tool_call_counter}轮]\n\n{response.output}"
+                return {
+                    "status": "success",
+                    "formatted_result": f"[🤖 进度分析 - 第{tool_call_counter}轮]\n\n{response.output}",
+                    "raw_output": response.output or "",
+                    "raw_reasoning_content": response.reasoning_content or "",
+                    "model": response.model or thinking_model,
+                    "finish_reason": response.finish_reason or "",
+                    "error_information": "",
+                }
             else:
-                return f"[进度分析失败: {response.error_information}]"
+                return {
+                    "status": "error",
+                    "formatted_result": f"[进度分析失败: {response.error_information}]",
+                    "raw_output": response.output or "",
+                    "raw_reasoning_content": response.reasoning_content or "",
+                    "model": response.model or thinking_model,
+                    "finish_reason": response.finish_reason or "",
+                    "error_information": response.error_information or "",
+                }
         
         except Exception as e:
             safe_print(f"⚠️ 进度分析失败: {e}")
-            return f"[进度分析失败: {str(e)}]"
+            return {
+                "status": "error",
+                "formatted_result": f"[进度分析失败: {str(e)}]",
+                "raw_output": "",
+                "raw_reasoning_content": "",
+                "model": "",
+                "finish_reason": "",
+                "error_information": str(e),
+            }
 
 
 if __name__ == "__main__":
@@ -311,4 +394,3 @@ if __name__ == "__main__":
     safe_print("="*80)
     safe_print(result)
     safe_print("="*80)
-

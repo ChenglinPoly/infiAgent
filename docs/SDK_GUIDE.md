@@ -491,8 +491,8 @@ models:
 ```json
 {
   "runtime": {
-    "action_window_steps": 10,
-    "thinking_interval": 10,
+    "action_window_steps": 30,
+    "thinking_interval": 30,
     "fresh_enabled": false,
     "fresh_interval_sec": 0
   },
@@ -565,8 +565,9 @@ agent = infiagent(
     user_data_root="/path/to/my_agent_project/runtime",
     default_agent_system="MyAgentSystem",
     default_agent_name="alpha_agent",
-    action_window_steps=20,
-    thinking_interval=20,
+    action_window_steps=30,
+    thinking_interval=30,
+    max_turns=100000,
 )
 ```
 
@@ -583,6 +584,7 @@ agent = infiagent(
 | `default_agent_name` | 默认入口 agent 名称 | 默认 `alpha_agent` |
 | `action_window_steps` | 行动窗口步数 | 同时可从 `app_config.json` / 环境变量读取 |
 | `thinking_interval` | thinking 间隔 | 同上 |
+| `max_turns` | 单次 run 的最大轮次上限 | SDK 默认 `100000`，可按实例或单次 `run()` 覆盖 |
 | `fresh_enabled` | 是否启用定时 fresh | 可选 |
 | `fresh_interval_sec` | fresh 周期秒数 | 可选 |
 | `mcp_servers` | 直接注入 MCP 配置 | SDK 嵌入场景推荐 |
@@ -604,6 +606,8 @@ agent = infiagent(
 result = agent.run(
     "请分析这个目录并给出重构建议",
     task_id="/path/to/my_agent_project/tasks/refactor_task",
+    collect_events=True,
+    include_trace=True,
 )
 print(result)
 ```
@@ -613,7 +617,61 @@ print(result)
 - `task_id` 必填
 - `agent_system`、`agent_name` 可覆盖实例默认值
 - `force_new=True` 会清空当前 task 的 current state 和 stack 后重新开始
+- 默认最大轮次上限是 `100000`，你也可以通过 `max_turns=` 显式覆盖
 - 如果这个 task 已在运行，会返回 `status="busy"`，而不是强行并发重入
+- `collect_events=True` 时，返回值里会附带结构化 `events`
+- `include_trace=True` 时，返回值里会附带当前 task 的 `trace`
+- `raise_on_error=True` 时，`status="error"` 不再只靠返回值判断，而会抛出 `InfiAgentRunError`
+- `stream_llm_tokens=True` 时，`on_event` / `collect_events` 会额外收到 execution / thinking 的 token 级事件；默认关闭
+
+也可以实时消费事件：
+
+```python
+from infiagent import InfiAgentRunError, infiagent
+
+agent = infiagent()
+
+def on_event(event: dict):
+    print(event["event_type"], event["payload"])
+
+try:
+    result = agent.run(
+        "执行任务",
+        task_id="/path/to/my_agent_project/tasks/demo_task",
+        collect_events=True,
+        on_event=on_event,
+        stream_llm_tokens=True,
+        raise_on_error=True,
+    )
+except InfiAgentRunError as exc:
+    print(exc.result)
+    print(exc.events)
+```
+
+`events` 的结构是统一的：
+
+- `event_type`：例如 `run.tool.start`
+- `phase` / `domain` / `action`：拆分后的阶段字段
+- `payload`：该事件的结构化内容，例如 tool 参数、tool 结果、thinking 文本等
+
+如果打开 `stream_llm_tokens=True`，还会看到：
+
+- `run.thinking.token`
+- `run.thinking.reasoning_token`
+- `run.llm.token`
+- `run.llm.reasoning_token`
+
+当前 `run()` 返回值的主要内容块通常包括：
+
+- `status` / `output` / `error_information`：最终任务结果
+- `events`：如果你打开了 `collect_events=True`
+- `trace`：如果你打开了 `include_trace=True`
+- `last_execution_output`：最近一次主 execution model 的原生文本输出
+- `last_execution_reasoning_content`：最近一次主 execution model 的原生 reasoning / thinking 内容
+- `last_thinking_output`：最近一次 thinking model 的原生文本输出
+- `last_thinking_reasoning_content`：最近一次 thinking model 的原生 reasoning 内容
+- `model_outputs.execution_turns`：本次 run 期间每一轮主模型调用的完整记录
+- `model_outputs.thinking_turns`：本次 run 期间每一轮 thinking 调用的完整记录
 
 ### 12.2 `fresh(...)`
 
@@ -656,6 +714,7 @@ agent.start_background_task(
     agent_system="MyAgentSystem",
     agent_name="alpha_agent",
     force_new=True,
+    max_turns=5000,
 )
 ```
 
@@ -674,6 +733,7 @@ agent.start_background_task(
 - `tools_dir`
 - `action_window_steps`
 - `thinking_interval`
+- `max_turns`
 - `fresh_enabled`
 - `fresh_interval_sec`
 - `mcp_servers`
@@ -749,7 +809,35 @@ print(snapshot)
 - 最近 final output
 - share_context / stack 路径
 
-### 12.10 `reset_task(...)`
+### 12.10 `task_trace(...)`
+
+```python
+trace = agent.task_trace(
+    task_id="/path/to/my_agent_project/tasks/refactor_task"
+)
+print(trace["agent_traces"][0]["action_history_fact"])
+```
+
+适合在 SDK 外部读取完整动作轨迹：
+
+- tool 参数
+- tool 执行结果
+- pending tools
+- 最新 thinking
+- 对应的 `_actions.json` 路径
+
+默认返回精简版，不包含 render history 和大块 system prompt。
+如果确实需要，也可以打开：
+
+```python
+trace = agent.task_trace(
+    task_id="/path/to/my_agent_project/tasks/refactor_task",
+    include_render_history=True,
+    include_system_prompt=True,
+)
+```
+
+### 12.11 `reset_task(...)`
 
 ```python
 agent.reset_task(
@@ -779,6 +867,7 @@ agent.reset_task(
 - `describe_runtime_async`
 - `list_agent_systems_async`
 - `task_snapshot_async`
+- `task_trace_async`
 - `reset_task_async`
 
 ### 13.1 语义是否一致
@@ -800,6 +889,9 @@ tasks = await agent.list_task_ids_async()
 result = await agent.run_async(
     "分析这个目录",
     task_id="/path/to/my_agent_project/tasks/async_task",
+    collect_events=True,
+    stream_llm_tokens=True,
+    raise_on_error=True,
 )
 ```
 
@@ -1120,8 +1212,8 @@ agent = infiagent(
     user_data_root="/path/to/my_agent_project/runtime",
     default_agent_system="MyAgentSystem",
     default_agent_name="alpha_agent",
-    action_window_steps=20,
-    thinking_interval=20,
+    action_window_steps=30,
+    thinking_interval=30,
 )
 
 

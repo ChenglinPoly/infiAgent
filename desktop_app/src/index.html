@@ -166,7 +166,8 @@
           <div class="form-group">
             <label class="form-label">Thinking Models</label>
             <textarea id="setting-thinking-models" class="form-textarea" rows="2" placeholder="openai/google/gemini-3-flash-preview"></textarea>
-            <p class="form-hint-block">注意：若需要为单个模型配置不同供应商 key/base_url，请用 Raw YAML（对象格式）。</p>
+            <p class="form-hint-block">支持一行一个模型名，也支持一行一个 JSON 对象，例如 <code>{"model":"openai/gpt-4o-mini","tool_choice":"required"}</code>。</p>
+            <p class="form-hint-block">若需要完整 YAML 能力（如顶层 <code>tool_choice</code> 或更复杂嵌套），请切到 Raw YAML。</p>
           </div>
           <div class="form-row">
             <div class="form-group form-half">
@@ -264,11 +265,37 @@
           <div class="form-row">
             <div class="form-group form-half">
               <label class="form-label">Action Window Steps</label>
-              <input type="number" id="setting-action-window-steps" class="form-input" min="1" placeholder="10">
+              <input type="number" id="setting-action-window-steps" class="form-input" min="1" placeholder="30">
             </div>
             <div class="form-group form-half">
               <label class="form-label">Thinking Interval</label>
-              <input type="number" id="setting-thinking-interval" class="form-input" min="1" placeholder="10">
+              <input type="number" id="setting-thinking-interval" class="form-input" min="1" placeholder="30">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Max Turns</label>
+            <input type="number" id="setting-max-turns" class="form-input" min="1" placeholder="100000">
+            <p class="form-hint-block">
+              单次 agent loop 的最大轮次上限。默认保持高上限，只有你想强行限制任务成本或时长时再收紧。
+            </p>
+          </div>
+
+          <div class="form-divider"></div>
+
+          <div class="form-group">
+            <label class="form-label">User History Compress Threshold (tokens)</label>
+            <input type="number" id="setting-user-history-threshold" class="form-input" min="0" placeholder="1500">
+          </div>
+
+          <div class="form-row">
+            <div class="form-group form-half">
+              <label class="form-label">Structured Call Compress Agent Threshold</label>
+              <input type="number" id="setting-structured-call-agent-threshold" class="form-input" min="1" placeholder="10">
+            </div>
+            <div class="form-group form-half">
+              <label class="form-label">Structured Call Compress Token Threshold</label>
+              <input type="number" id="setting-structured-call-token-threshold" class="form-input" min="0" placeholder="2200">
             </div>
           </div>
 

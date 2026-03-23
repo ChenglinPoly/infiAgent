@@ -6,7 +6,7 @@
   <h1>MLA V3 - 打造专属领域的 SOTA 级智能体</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.3-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.0.8-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
     <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
   </p>
@@ -34,7 +34,7 @@
 如果你在最新更新日期前拉取镜像或者代码，请参考修复的问题，重新拉取镜像和代码。
 - [2026/03/19] **基于 `infiagent` SDK 推出 CheapClaw：** CheapClaw 现在作为基于 SDK 的应用层发布，在保留 OpenCowork 大部分实用能力的基础上，支持自定义 bot、多 bot 协作、对接各种 IM 软件以及 Skills，同时完整继承 `infiagent` 的能力模型：单个 bot 背后可挂多智能体系统、支持低成本长程任务，并在单个 bot 内实现按 task 隔离上下文。同一个 bot 下，不同 task 的历史上下文彼此隔离，而同一个 task 会持续复用同一份长程上下文，而不是共享单一 bot session。[点击这里查看 CheapClaw](https://github.com/polyuiislab/CheapClaw)。
 
-- [2026/03/19] **子智能体模型配置更加细粒度：** 现在单个子智能体可以独立配置 `execution_model`、`thinking_model`、`compressor_model`、`image_generation_model` 和 `read_figure_model`，从而把执行、思考、压缩以及多模态/读图工作拆分给不同模型。与此同时，可以在 `llm_config.example.yaml` 中为每个模型配置 `tool_choice` 选项。可参考默认 `OpenCowork` 配置中 Level 3 的 `alpha_agent` 写法。
+- [2026/03/19] **子智能体模型配置更加细粒度：** 现在单个子智能体可以独立配置 `execution_model`、`thinking_model`、`compressor_model`、`image_generation_model` 和 `read_figure_model`，从而在单个 agent loop 中把执行、思考、压缩以及多模态/读图工作拆分给不同模型，在应用层层面上最细粒度地控制成本。与此同时，可以在 `llm_config.example.yaml` 中为每个模型配置 `tool_choice` 选项。可参考默认 `OpenCowork` 配置中 Level 3 的 `alpha_agent` 写法。
 
 - [2026/03/08] **桌面端分支同步更新：** 当前 `desktop-app` 分支已经加入打包 Python 后端构建脚本、内置 `infiagent` Python SDK、可配置运行时节奏（`action_window_steps`、`thinking_interval`、定时/手动 `fresh`）、MCP 运行时接入、单任务日志、桌面端环境设置和 marketplace 集成。旧的独立 `tool-server` 工作流已被进程内 `direct-tools` 替代，内置科研系统名称也统一为 `Researcher`。
 
@@ -152,28 +152,35 @@ docker pull chenglinhku/mlav3:latest
 **3. 选择模式**
 
 ### 方式 A: Web UI 模式（推荐）
-Web UI 现在支持两个内置系统，可通过 Agent System 选择器切换 `Researcher` 和 `OpenCowork`。
+当前 Docker 镜像会直接启动基于 SDK 的 Web UI。可通过 Agent System 选择器切换 `Researcher` 和 `OpenCowork`。旧版 `9641` 独立配置页面已不再需要。
 
 ```bash
 cd /你的工作空间
-# XXXX 为可选端口，用于 agent 开发网页时暴露端口（如 5002）
-docker run -d --name mla \
+mkdir -p ~/.mla_v3
+
+docker run -d --name mla-webui \
   -e HOST_PWD=$(pwd) \
+  -e PORT=4242 \
   -v $(pwd):/workspace$(pwd) \
   -v ~/.mla_v3:/root/mla_v3 \
-  -v mla-config:/mla_config \
-  -p 8002:8002 \
-  -p 9641:9641 \
   -p 4242:4242 \
-  -p 5002:5002 \
-  chenglinhku/mlav3:latest webui && docker logs -f mla
+  chenglinhku/mlav3:latest webui
 ```
 
-打开浏览器：http://localhost:9641 设置配置文件
 然后打开浏览器：`http://localhost:4242`
 
-默认用户名 user
-默认密码 password
+- 首次使用空 volume 时，默认管理员账号为 `admin` / `admin123`
+- 也可以直接在登录页注册新用户
+- 登录后点击 Web UI 里的 `Config` 按钮即可编辑 `llm_config.yaml`、`app_config.json` 和 agent 配置
+- 查看日志：`docker logs -f mla-webui`
+
+如果你希望 Docker 运行数据放在当前项目目录，而不是 `~/.mla_v3`，可以把运行时挂载改成：
+
+```bash
+mkdir -p .mla_v3_docker
+# 把: -v ~/.mla_v3:/root/mla_v3
+# 改成: -v $(pwd)/.mla_v3_docker:/root/mla_v3
+```
 
 
 
@@ -185,45 +192,35 @@ docker run -d --name mla \
 
 ```bash
 cd /你的工作空间
-# XXXX 为可选端口，用于 agent 开发网页时暴露端口（如 5002）
+mkdir -p ~/.mla_v3
+
 docker run -it --rm \
   -e HOST_PWD=$(pwd) \
   -v $(pwd):/workspace$(pwd) \
   -v ~/.mla_v3:/root/mla_v3 \
-  -v mla-config:/mla_config \
-  -p 8002:8002 \
-  -p 9641:9641 \
-  -p 5002:5002 \
   chenglinhku/mlav3:latest cli
 ```
 
 **Windows 用户：**
 
-Windows 用户建议使用 Docker。目前需要自己管理 conversation ID，不同的 conversation ID 维护不同的记忆。
+Windows 用户可以把任意工作目录挂到 `/workspace/<你的任务根目录>`，并持续复用同一个 `/root/mla_v3` 运行时目录。
 如有 bug 欢迎提交 issue。
 
 ```powershell
 # CLI 模式 (PowerShell)
 docker run -it --rm `
-  -e HOST_PWD="/{your_conversation_id}" `
-  -v "${PWD}:/workspace/{your_conversation_id}" `
+  -e HOST_PWD="/docker_web" `
+  -v "${PWD}:/workspace/docker_web" `
   -v "${HOME}\.mla_v3:/root/mla_v3" `
-  -v mla-config:/mla_config `
-  -p 8002:8002 `
-  -p 9641:9641 `
-  -p 5002:5002 `
   chenglinhku/mlav3:latest cli
 
 # Web UI 模式 (PowerShell)
 docker run -d --name mla-webui `
-  -e HOST_PWD="/{your_conversation_id}" `
-  -v "${PWD}:/workspace/{your_conversation_id}" `
+  -e HOST_PWD="/docker_web" `
+  -e PORT=4242 `
+  -v "${PWD}:/workspace/docker_web" `
   -v "${HOME}\.mla_v3:/root/mla_v3" `
-  -v mla-config:/mla_config `
-  -p 8002:8002 `
-  -p 9641:9641 `
   -p 4242:4242 `
-  -p 5002:5002 `
   chenglinhku/mlav3:latest webui
 
 # 然后打开浏览器：http://localhost:4242
@@ -232,13 +229,13 @@ docker run -d --name mla-webui `
 
 **4. 配置 API Key**
 
-打开浏览器：`http://localhost:9641`
+打开浏览器：`http://localhost:4242`
 
 <p align="center">
   <img src="assets/config_web_screen_shot.png" alt="配置管理界面" width="800">
 </p>
 
-编辑 `llm_config.yaml`，填入 API key 并保存。
+登录后打开 `Config` 对话框，编辑 `llm_config.yaml`，填入 API key 并保存。
 
 **🎉 完成！** 开始使用 MLA CLI。
 
@@ -344,7 +341,7 @@ alpha_agent（Level 3）
 
 一个关键洞察：**当前文件系统状态代表了所有历史操作的效果。**
 
-- ✅ 一个独立的 **thinking 模块**每 10 步更新一次文件空间状态
+- ✅ 一个独立的 **thinking 模块**每 30 步更新一次文件空间状态
 - ✅ 智能体仅保留**最近 10 个操作**（自上次状态更新以来）
 - ✅ **无需上下文压缩**
 - ✅ 历史操作反映在文件系统中，而非对话历史
@@ -690,8 +687,9 @@ agent = infiagent(
     user_data_root="/abs/path/to/my_root",
     default_agent_system="Researcher",
     default_agent_name="alpha_agent",
-    action_window_steps=20,
-    thinking_interval=20,
+    action_window_steps=30,
+    thinking_interval=30,
+    max_turns=100000,
     fresh_enabled=True,
     fresh_interval_sec=300,
 )

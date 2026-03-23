@@ -405,6 +405,8 @@ def launch_task_process(
             env["MLA_ACTION_WINDOW_STEPS"] = str(max(1, int(config["action_window_steps"])))
         if config.get("thinking_interval") is not None:
             env["MLA_THINKING_INTERVAL"] = str(max(1, int(config["thinking_interval"])))
+        if config.get("max_turns") is not None:
+            env["MLA_MAX_TURNS"] = str(max(1, int(config["max_turns"])))
         if config.get("fresh_enabled") is not None:
             env["MLA_FRESH_ENABLED"] = "true" if bool(config["fresh_enabled"]) else "false"
         if config.get("fresh_interval_sec") is not None:

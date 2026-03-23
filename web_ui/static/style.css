@@ -141,6 +141,29 @@ body {
     justify-content: center;
 }
 
+.form-input {
+    width: 100%;
+    background: rgba(20, 30, 50, 0.6);
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    color: #e0e6ed;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    box-sizing: border-box;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: rgba(0, 212, 255, 0.45);
+    box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.12);
+}
+
+.form-label {
+    color: #cbd5e1;
+    font-size: 13px;
+    font-weight: 500;
+}
+
 .controls {
     display: flex;
     gap: 16px;
@@ -539,6 +562,45 @@ body {
 .message.type-thinking .message-text {
     color: #c586c0;
     font-style: italic;
+}
+
+.message.type-reasoning .message-text {
+    color: #9cdcfe;
+    font-style: italic;
+}
+
+.message-thinking {
+    padding: 6px 24px;
+    max-width: 820px;
+    width: 100%;
+}
+
+.thinking-card {
+    background: rgba(34, 24, 58, 0.72);
+    border: 1px solid rgba(138, 113, 196, 0.45);
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.thinking-card summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    color: #b9a5ff;
+    letter-spacing: 0.2px;
+}
+
+.thinking-card .thinking-content {
+    margin-top: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.6;
+    max-height: 320px;
+    overflow-y: auto;
+    color: #ddd5ff;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
 }
 
 .message.type-final_output .message-text {
@@ -1376,6 +1438,34 @@ body {
     gap: 12px;
 }
 
+.user-item.active {
+    border-color: rgba(0, 212, 255, 0.45);
+    box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.18);
+}
+
+.users-admin-grid {
+    display: grid;
+    grid-template-columns: minmax(320px, 1.3fr) minmax(260px, 0.9fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.users-editor-panel {
+    background: rgba(16, 22, 36, 0.72);
+    border: 1px solid rgba(0, 212, 255, 0.12);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+@media (max-width: 1100px) {
+    .users-admin-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .tool-item-title {
     font-size: 15px;
     font-weight: 600;
@@ -1945,4 +2035,3 @@ body {
 .agent-tree-panel-content::-webkit-scrollbar-thumb:hover {
     background: rgba(0, 212, 255, 0.5);
 }
-

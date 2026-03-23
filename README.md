@@ -4,7 +4,7 @@
   <h1>MLA V3 - Build Domain-Specific SOTA-Level AI Agents</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.3-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.0.8-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
     <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
   </p>
@@ -33,7 +33,7 @@ If you pulled the image or code before the latest update date, please refer to t
 
 - [2026/03/19] **CheapClaw released on top of the `infiagent` SDK:** CheapClaw now ships as an SDK-based application layer. It keeps most of OpenCowork's practical capabilities, including custom bots, multi-bot collaboration workflows, IM integrations, and Skills, while inheriting the full `infiagent` runtime model: a multi-agent system behind a single bot, low-cost long-horizon tasks, and task-scoped context isolation inside one bot. Different tasks under the same bot now keep isolated contexts, while messages routed to the same task continue in the same long-running context instead of sharing one bot-wide session. [Click here to view CheapClaw](https://github.com/polyuiislab/CheapClaw).
 
-- [2026/03/19] **Finer-grained per-agent model configuration:** Each sub-agent can now configure `execution_model`, `thinking_model`, `compressor_model`, `image_generation_model`, and `read_figure_model` independently. This lets a single agent split execution, planning, compression, and multimodal/image work across different models. You can also configure model-level `tool_choice` options in `llm_config.example.yaml`. See the default `OpenCowork` Level 3 `alpha_agent` definition for a concrete example.
+- [2026/03/19] **Finer-grained per-agent model configuration:** Each sub-agent can now configure `execution_model`, `thinking_model`, `compressor_model`, `image_generation_model`, and `read_figure_model` independently. This makes it possible, within a single agent loop, to split execution, thinking, compression, and multimodal/image understanding across different models, giving the application layer the finest-grained cost control. You can also configure model-level `tool_choice` options in `llm_config.example.yaml`. See the default `OpenCowork` Level 3 `alpha_agent` definition for a concrete example.
 
 - [2026/03/08] **Desktop branch sync update:** The current desktop branch now includes packaged Python backend build scripts, the bundled `infiagent` Python SDK, configurable runtime cadence (`action_window_steps`, `thinking_interval`, scheduled/manual `fresh`), MCP runtime integration, per-task logs, desktop environment settings, and marketplace integration. The legacy standalone tool-server workflow has been replaced by in-process `direct-tools`, and the built-in research system is now named `Researcher`.
 
@@ -152,27 +152,35 @@ docker pull chenglinhku/mlav3:latest
 
 ### Option A: Web UI Mode (Recommended)
 
-Web UI supports both bundled agent systems. Use the Agent System selector to switch between `Researcher` and `OpenCowork`.
-
-open localhost:9641 to set keys and base url.
+The current Docker image starts the SDK-based Web UI directly. Use the Agent System selector to switch between `Researcher` and `OpenCowork`. The old standalone config page on `9641` is no longer required.
 
 ```bash
 cd /your/workspace
-# XXXX is optional port for agent web development (replace with your port like 5002)
-docker run -d --name mla \
+mkdir -p ~/.mla_v3
+
+docker run -d --name mla-webui \
   -e HOST_PWD=$(pwd) \
+  -e PORT=4242 \
   -v $(pwd):/workspace$(pwd) \
   -v ~/.mla_v3:/root/mla_v3 \
-  -v mla-config:/mla_config \
-  -p 8002:8002 \
-  -p 9641:9641 \
   -p 4242:4242 \
-  -p 5002:5002 \
-  chenglinhku/mlav3:latest webui && docker logs -f mla
+  chenglinhku/mlav3:latest webui
 ```
 
 Then open browser: `http://localhost:4242`
-default username：user defaultpassword：password
+
+- On a fresh volume, the bootstrap admin account is `admin` / `admin123`
+- You can also create a new user directly from the login page
+- Click the `Config` button inside Web UI to edit `llm_config.yaml`, `app_config.json`, and agent configuration files
+- View logs with `docker logs -f mla-webui`
+
+If you want Docker runtime data to stay inside the project instead of `~/.mla_v3`, replace the runtime mount with:
+
+```bash
+mkdir -p .mla_v3_docker
+# replace: -v ~/.mla_v3:/root/mla_v3
+# with:    -v $(pwd)/.mla_v3_docker:/root/mla_v3
+```
 
 <p align="center">
   <img src="assets/web_ui.png" alt="Paper Generation Demo 2" width="800">
@@ -184,44 +192,34 @@ default username：user defaultpassword：password
 
 ```bash
 cd /your/workspace
-# XXXX is optional port for agent web development (replace with your port like 5002)
+mkdir -p ~/.mla_v3
+
 docker run -it --rm \
   -e HOST_PWD=$(pwd) \
   -v $(pwd):/workspace$(pwd) \
   -v ~/.mla_v3:/root/mla_v3 \
-  -v mla-config:/mla_config \
-  -p 8002:8002 \
-  -p 9641:9641 \
-  -p 5002:5002 \
   chenglinhku/mlav3:latest cli
 ```
 
 **Windows Users:**
 
-Windows users need to manage conversation IDs manually. Different task IDs maintain different memories.
+Windows users can mount any working folder into `/workspace/<your_task_root>` and reuse the same `/root/mla_v3` runtime volume across runs.
 
 ```powershell
 # CLI Mode (PowerShell)
 docker run -it --rm `
-  -e HOST_PWD="/{your_conversation_id}" `
-  -v "${PWD}:/workspace/{your_conversation_id}" `
+  -e HOST_PWD="/docker_web" `
+  -v "${PWD}:/workspace/docker_web" `
   -v "${HOME}\.mla_v3:/root/mla_v3" `
-  -v mla-config:/mla_config `
-  -p 8002:8002 `
-  -p 9641:9641 `
-  -p 5002:5002 `
   chenglinhku/mlav3:latest cli
 
 # Web UI Mode (PowerShell)
 docker run -d --name mla-webui `
-  -e HOST_PWD="/{your_conversation_id}" `
-  -v "${PWD}:/workspace/{your_conversation_id}" `
+  -e HOST_PWD="/docker_web" `
+  -e PORT=4242 `
+  -v "${PWD}:/workspace/docker_web" `
   -v "${HOME}\.mla_v3:/root/mla_v3" `
-  -v mla-config:/mla_config `
-  -p 8002:8002 `
-  -p 9641:9641 `
   -p 4242:4242 `
-  -p 5002:5002 `
   chenglinhku/mlav3:latest webui
 
 # Then open browser: http://localhost:4242
@@ -230,13 +228,13 @@ docker run -d --name mla-webui `
 
 **4. Configure API Key**
 
-Open browser: `http://localhost:9641`
+Open browser: `http://localhost:4242`
 
 <p align="center">
   <img src="assets/config_web_screen_shot.png" alt="Configuration Web Interface" width="800">
 </p>
 
-Edit `llm_config.yaml`, fill in your API key, and save.
+Sign in, open the `Config` dialog, edit `llm_config.yaml`, fill in your API key, and save.
 
 **🎉 Done!** Start using MLA CLI.
 
@@ -342,7 +340,7 @@ Agent asks: "What is the methodology?"
 
 A key insight: **The current file system state represents the effect of all historical actions.**
 
-- ✅ A separate **thinking module** updates file space state every 10 steps
+- ✅ A separate **thinking module** updates file space state every 30 steps
 - ✅ Agents only retain **the last 10 actions** (since last state update)
 - ✅ **No need for context compression**
 - ✅ Historical actions are reflected in file system, not conversation history
@@ -702,8 +700,9 @@ agent = infiagent(
     user_data_root="/abs/path/to/my_root",
     default_agent_system="Researcher",
     default_agent_name="alpha_agent",
-    action_window_steps=20,
-    thinking_interval=20,
+    action_window_steps=30,
+    thinking_interval=30,
+    max_turns=100000,
     fresh_enabled=True,
     fresh_interval_sec=300,
 )

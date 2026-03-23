@@ -5,7 +5,8 @@
   "main": "src/main.js",
   "scripts": {
     "start": "cross-env ELECTRON_RUN_AS_NODE= electron .",
-    "build:mac": "bash ../backend_build/build_mac_universal.sh && electron-builder --mac",
+    "build:mac": "rm -rf dist/mac-universal dist/mac-universal-* dist/infiAgent-*-universal.dmg dist/infiAgent-*-universal.dmg.blockmap && bash ../backend_build/build_mac_universal.sh && electron-builder --mac --arm64",
+    "build:mac:universal": "rm -rf dist/mac-universal dist/mac-universal-* dist/infiAgent-*-universal.dmg dist/infiAgent-*-universal.dmg.blockmap && MLA_BUILD_X64_BACKEND=1 bash ../backend_build/build_mac_universal.sh && electron-builder --mac --universal",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
   },
@@ -19,12 +20,8 @@
       "category": "public.app-category.productivity",
       "x64ArchFiles": "Contents/Resources/python-backend/**/{*,.*}/**",
       "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "universal"
-          ]
-        }
+        "dmg",
+        "zip"
       ],
       "icon": "../icon.png",
       "darkModeSupport": true
@@ -96,6 +93,7 @@
   "dependencies": {
     "adm-zip": "^0.5.16",
     "dompurify": "^3.3.1",
+    "js-yaml": "^4.1.0",
     "marked": "^17.0.1"
   }
 }

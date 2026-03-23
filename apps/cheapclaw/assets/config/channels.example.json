@@ -1,0 +1,22 @@
+{
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "allowed_chats": []
+  },
+  "feishu": {
+    "enabled": false,
+    "mode": "long_connection",
+    "app_id": "",
+    "app_secret": "",
+    "verify_token": "",
+    "encrypt_key": ""
+  },
+  "whatsapp": {
+    "enabled": false,
+    "access_token": "",
+    "phone_number_id": "",
+    "verify_token": "",
+    "api_version": "v21.0"
+  }
+}

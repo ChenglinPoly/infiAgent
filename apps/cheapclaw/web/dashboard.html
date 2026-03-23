@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CheapClaw Dashboard</title>
+  <style>
+    :root {
+      --bg: #f2efe8;
+      --panel: #fffaf2;
+      --ink: #14211b;
+      --muted: #6b746d;
+      --line: #d9cfbf;
+      --accent: #c45c2f;
+      --accent-2: #2f6f5f;
+      --warn: #a43f2e;
+      --shadow: 0 12px 30px rgba(20,33,27,0.08);
+      --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+      --sans: "Avenir Next", "PingFang SC", "Helvetica Neue", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(196,92,47,0.16), transparent 24rem),
+        radial-gradient(circle at top right, rgba(47,111,95,0.12), transparent 26rem),
+        var(--bg);
+    }
+    .shell {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 52px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+    .hero .meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 18px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .card-header h2 {
+      margin: 0;
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .badge {
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: rgba(196,92,47,0.12);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .list {
+      max-height: calc(100vh - 180px);
+      overflow: auto;
+    }
+    .conversation {
+      padding: 14px 18px;
+      border-bottom: 1px solid rgba(217,207,191,0.7);
+      cursor: pointer;
+    }
+    .conversation.active { background: rgba(47,111,95,0.08); }
+    .conversation:last-child { border-bottom: 0; }
+    .conversation .title {
+      font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .conversation .sub, .muted {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .detail {
+      padding: 0;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      min-height: calc(100vh - 180px);
+    }
+    .detail-section { padding: 18px; border-bottom: 1px solid var(--line); }
+    .detail-section:last-child { border-bottom: 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(20,33,27,0.06);
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+    .tasks, .messages {
+      display: grid;
+      gap: 12px;
+    }
+    .task, .message {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      background: rgba(255,255,255,0.66);
+    }
+    .task.active {
+      border-color: var(--accent);
+      background: rgba(196,92,47,0.08);
+    }
+    .task .row, .message .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .task .row:last-child, .message .row:last-child { margin-bottom: 0; }
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .status-running { color: var(--accent-2); }
+    .status-idle { color: var(--muted); }
+    .status-unknown, .status-error { color: var(--warn); }
+    .empty {
+      padding: 32px 18px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .settings-grid {
+      display: grid;
+      gap: 10px;
+    }
+    .settings-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .skill-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .skill-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(255,255,255,0.7);
+      font-size: 12px;
+    }
+    .settings-textarea {
+      width: 100%;
+      min-height: 120px;
+      resize: vertical;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.8);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .button-row {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 16px;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: rgba(20,33,27,0.12);
+      color: var(--ink);
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    @media (max-width: 960px) {
+      .grid { grid-template-columns: 1fr; }
+      .list, .detail { max-height: none; min-height: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="hero">
+      <div>
+        <div class="meta">CheapClaw / Live Panel</div>
+        <h1>Conversations<br/>And Tasks</h1>
+      </div>
+      <div class="meta" id="runtimeMeta">loading…</div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <div class="card-header">
+          <h2>Conversations</h2>
+          <span class="badge" id="conversationCount">0</span>
+        </div>
+        <div class="list" id="conversationList"></div>
+      </section>
+
+      <section class="card detail">
+        <div class="detail-section" id="conversationSummary"></div>
+        <div class="detail-section">
+          <div class="card-header" style="padding:0 0 12px;border:0;">
+            <h2>Tasks</h2>
+          </div>
+          <div class="tasks" id="taskList"></div>
+        </div>
+        <div class="detail-section">
+          <div class="card-header" style="padding:0 0 12px;border:0;">
+            <h2>Task Settings</h2>
+          </div>
+          <div id="taskSettings"></div>
+        </div>
+        <div class="detail-section" style="border-bottom:0;">
+          <div class="card-header" style="padding:0 0 12px;border:0;">
+            <h2>Recent Messages</h2>
+          </div>
+          <div class="messages" id="messageList"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = { panel: null, selectedKey: "", selectedTaskId: "", globalSkills: [] };
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;");
+    }
+
+    function flattenConversations(panel) {
+      const items = [];
+      const channels = panel.channels || {};
+      for (const [channel, payload] of Object.entries(channels)) {
+        const conversations = (payload || {}).conversations || {};
+        for (const [conversationId, conv] of Object.entries(conversations)) {
+          items.push({ key: `${channel}:${conversationId}`, channel, conversationId, ...conv });
+        }
+      }
+      items.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+      return items;
+    }
+
+    function sortTasks(tasks) {
+      const toIso = (task) => {
+        if (task.created_at) return String(task.created_at);
+        const id = String(task.task_id || "").split("/").pop() || "";
+        const match = id.match(/^(\d{8})_(\d{6})/);
+        if (!match) return "";
+        return `${match[1].slice(0,4)}-${match[1].slice(4,6)}-${match[1].slice(6,8)}T${match[2].slice(0,2)}:${match[2].slice(2,4)}:${match[2].slice(4,6)}`;
+      };
+      return [...(tasks || [])].sort((a, b) => String(toIso(b)).localeCompare(String(toIso(a))));
+    }
+
+    function renderConversations(items) {
+      const root = document.getElementById("conversationList");
+      document.getElementById("conversationCount").textContent = String(items.length);
+      if (!items.length) {
+        root.innerHTML = '<div class="empty">No conversations yet.</div>';
+        return;
+      }
+      root.innerHTML = items.map((item) => `
+        <div class="conversation ${state.selectedKey === item.key ? "active" : ""}" data-key="${item.key}">
+          <div class="title">
+            <span>${escapeHtml(item.display_name || item.conversation_id)}</span>
+            <span class="muted">${escapeHtml(item.channel)}</span>
+          </div>
+          <div class="sub">dirty=${item.dirty ? "true" : "false"} · running=${item.running_task_count || 0} · pending=${(item.pending_events || []).length}</div>
+          <div class="sub">${escapeHtml(item.latest_user_message_at || item.updated_at || "")}</div>
+        </div>
+      `).join("");
+      root.querySelectorAll(".conversation").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedKey = node.dataset.key;
+          render();
+        });
+      });
+    }
+
+    function renderDetail(item) {
+      const summary = document.getElementById("conversationSummary");
+      const taskList = document.getElementById("taskList");
+      const taskSettings = document.getElementById("taskSettings");
+      const messageList = document.getElementById("messageList");
+
+      if (!item) {
+        summary.innerHTML = '<div class="empty">Select a conversation.</div>';
+        taskList.innerHTML = "";
+        taskSettings.innerHTML = "";
+        messageList.innerHTML = "";
+        return;
+      }
+
+      summary.innerHTML = `
+        <div class="row" style="display:flex;justify-content:space-between;gap:12px;">
+          <div>
+            <h2 style="margin:0 0 8px 0;font-size:26px;text-transform:none;letter-spacing:-0.03em;">${escapeHtml(item.display_name || item.conversation_id)}</h2>
+            <div class="muted">${escapeHtml(item.channel)} / ${escapeHtml(item.conversation_type || "")}</div>
+          </div>
+          <div class="badge">${item.dirty ? "DIRTY" : "CLEAN"}</div>
+        </div>
+        <div class="chips">
+          <span class="chip">conversation_id: ${escapeHtml(item.conversation_id)}</span>
+          <span class="chip">running_task_count: ${escapeHtml(item.running_task_count || 0)}</span>
+          <span class="chip">pending_events: ${escapeHtml((item.pending_events || []).length)}</span>
+          <span class="chip">updated_at: ${escapeHtml(item.updated_at || "")}</span>
+        </div>
+      `;
+
+      const tasks = sortTasks(item.linked_tasks || []);
+      if (!state.selectedTaskId && tasks.length) state.selectedTaskId = tasks[0].task_id;
+      if (state.selectedTaskId && !tasks.find((task) => task.task_id === state.selectedTaskId)) {
+        state.selectedTaskId = tasks[0] ? tasks[0].task_id : "";
+      }
+      taskList.innerHTML = tasks.length ? tasks.map((task) => `
+        <div class="task ${state.selectedTaskId === task.task_id ? "active" : ""}" data-task-id="${escapeHtml(task.task_id || "")}">
+          <div class="row">
+            <strong>${escapeHtml(task.agent_name || "worker_agent")}</strong>
+            <span class="status-${escapeHtml(task.status || "unknown")}">${escapeHtml(task.status || "unknown")}</span>
+          </div>
+          <div class="row mono">${escapeHtml(task.task_id || "")}</div>
+          <div class="row muted">
+            <span>${escapeHtml(task.agent_system || "")}</span>
+            <span>${escapeHtml(task.last_final_output_at || task.last_thinking_at || "")}</span>
+          </div>
+          <div class="row"><pre>${escapeHtml(task.last_final_output || task.last_thinking || task.watchdog_observation || "")}</pre></div>
+          <div class="row muted">
+            <span>skills: ${escapeHtml((task.default_exposed_skills || []).join(", ") || "-")}</span>
+            <span>mcp: ${escapeHtml(String((task.mcp_servers || []).length || 0))}</span>
+          </div>
+        </div>
+      `).join("") : '<div class="empty">No linked tasks.</div>';
+      taskList.querySelectorAll(".task").forEach((node) => {
+        node.addEventListener("click", async () => {
+          state.selectedTaskId = node.dataset.taskId;
+          render();
+          await loadTaskSettings(state.selectedTaskId);
+        });
+      });
+
+      renderTaskSettings(tasks.find((task) => task.task_id === state.selectedTaskId));
+
+      const messages = item.messages || [];
+      messageList.innerHTML = messages.length ? messages.slice(-12).reverse().map((msg) => `
+        <div class="message">
+          <div class="row">
+            <strong>${escapeHtml(msg.direction || "")}</strong>
+            <span class="muted">${escapeHtml(msg.timestamp || "")}</span>
+          </div>
+          <div class="row"><pre>${escapeHtml(msg.text || "")}</pre></div>
+          <div class="row mono">${escapeHtml(msg.message_id || "")}</div>
+        </div>
+      `).join("") : '<div class="empty">No messages.</div>';
+    }
+
+    function renderTaskSettings(task) {
+      const root = document.getElementById("taskSettings");
+      if (!task) {
+        root.innerHTML = '<div class="empty">Select a task to edit its default skills and MCP visibility.</div>';
+        return;
+      }
+      const selectedSkills = new Set(task.default_exposed_skills || []);
+      root.innerHTML = `
+        <div class="settings-grid">
+          <div class="mono">${escapeHtml(task.task_id || "")}</div>
+          <div class="settings-label">Default Exposed Skills</div>
+          <div class="skill-grid">
+            ${(state.globalSkills || []).map((skill) => `
+              <label class="skill-option">
+                <input type="checkbox" value="${escapeHtml(skill.name)}" ${selectedSkills.has(skill.name) ? "checked" : ""}>
+                <span>${escapeHtml(skill.name)}</span>
+              </label>
+            `).join("")}
+          </div>
+          <div class="settings-label">Task MCP Servers (JSON array)</div>
+          <textarea id="taskMcpServers" class="settings-textarea"></textarea>
+          <div class="muted">这些设置会在下次以同一 task_id 启动/续跑后台进程时生效。正在运行中的进程不会被立即改写。</div>
+          <div class="button-row">
+            <button class="secondary" id="reloadTaskSettings">Reload</button>
+            <button id="saveTaskSettings">Save</button>
+          </div>
+        </div>
+      `;
+      document.getElementById("taskMcpServers").value = JSON.stringify(task.mcp_servers || [], null, 2);
+      document.getElementById("reloadTaskSettings").addEventListener("click", async () => {
+        await loadTaskSettings(task.task_id);
+      });
+      document.getElementById("saveTaskSettings").addEventListener("click", async () => {
+        const chosenSkills = [...root.querySelectorAll('input[type=\"checkbox\"]:checked')].map((node) => node.value);
+        let mcpServers = [];
+        const raw = document.getElementById("taskMcpServers").value.trim();
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) throw new Error("mcp_servers must be a JSON array");
+            mcpServers = parsed;
+          } catch (error) {
+            alert(`Invalid MCP JSON: ${error.message}`);
+            return;
+          }
+        }
+        const response = await fetch("/api/task-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            task_id: task.task_id,
+            default_exposed_skills: chosenSkills,
+            mcp_servers: mcpServers,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.status !== "success") {
+          alert(payload.error || "Failed to save task settings");
+          return;
+        }
+        await loadPanel();
+      });
+    }
+
+    async function loadGlobalSkills() {
+      const response = await fetch("/api/global-skills");
+      const payload = await response.json();
+      state.globalSkills = payload.skills || [];
+    }
+
+    async function loadTaskSettings(taskId) {
+      if (!taskId) return;
+      const response = await fetch(`/api/task-settings?task_id=${encodeURIComponent(taskId)}`);
+      const payload = await response.json();
+      if (response.ok && payload.status === "success" && state.panel) {
+        const items = flattenConversations(state.panel);
+        for (const item of items) {
+          const match = (item.linked_tasks || []).find((task) => task.task_id === taskId);
+          if (match) {
+            match.default_exposed_skills = payload.default_exposed_skills || [];
+            match.mcp_servers = payload.mcp_servers || [];
+          }
+        }
+        render();
+      }
+    }
+
+    function render() {
+      if (!state.panel) return;
+      const items = flattenConversations(state.panel);
+      if (!state.selectedKey && items.length) state.selectedKey = items[0].key;
+      if (state.selectedKey && !items.find((item) => item.key === state.selectedKey)) {
+        state.selectedKey = items[0] ? items[0].key : "";
+      }
+      renderConversations(items);
+      renderDetail(items.find((item) => item.key === state.selectedKey));
+      const svc = state.panel.service_state || {};
+      document.getElementById("runtimeMeta").textContent =
+        `main_agent_running=${svc.main_agent_running ? "true" : "false"} · watchdog_last_run_at=${svc.watchdog_last_run_at || "-"}`;
+    }
+
+    async function loadPanel() {
+      const response = await fetch("/api/panel");
+      state.panel = await response.json();
+      render();
+    }
+
+    Promise.all([loadGlobalSkills(), loadPanel()]).then(() => render());
+    setInterval(loadPanel, 5000);
+  </script>
+</body>
+</html>
