@@ -32,6 +32,8 @@
 ### 更新 & 新闻🔥
 
 如果你在最新更新日期前拉取镜像或者代码，请参考修复的问题，重新拉取镜像和代码。
+- [2026/03/23] **Docker Web UI 现已支持多用户注册与用户管理：** 最新 `chenglinhku/mlav3:latest` 镜像会通过新的 `webui` 启动命令直接运行基于 SDK 的 Web UI，默认使用 `4242` 端口。用户可以在登录页自行注册，初始管理员账号可在 Web UI 内管理用户。请按 Quick Start 和 `docs/DOCKER_GUIDE.md` 中更新后的 Docker 命令启动：挂载 `~/.mla_v3` 到 `/root/mla_v3`，映射 `4242`，并使用 `chenglinhku/mlav3:latest webui`。旧版基于 `9641` 的独立配置页面流程已不再需要。
+
 - [2026/03/19] **基于 `infiagent` SDK 推出 CheapClaw：** CheapClaw 现在作为基于 SDK 的应用层发布，在保留 OpenCowork 大部分实用能力的基础上，支持自定义 bot、多 bot 协作、对接各种 IM 软件以及 Skills，同时完整继承 `infiagent` 的能力模型：单个 bot 背后可挂多智能体系统、支持低成本长程任务，并在单个 bot 内实现按 task 隔离上下文。同一个 bot 下，不同 task 的历史上下文彼此隔离，而同一个 task 会持续复用同一份长程上下文，而不是共享单一 bot session。[点击这里查看 CheapClaw](https://github.com/polyuiislab/CheapClaw)。
 
 - [2026/03/19] **子智能体模型配置更加细粒度：** 现在单个子智能体可以独立配置 `execution_model`、`thinking_model`、`compressor_model`、`image_generation_model` 和 `read_figure_model`，从而在单个 agent loop 中把执行、思考、压缩以及多模态/读图工作拆分给不同模型，在应用层层面上最细粒度地控制成本。与此同时，可以在 `llm_config.example.yaml` 中为每个模型配置 `tool_choice` 选项。可参考默认 `OpenCowork` 配置中 Level 3 的 `alpha_agent` 写法。
