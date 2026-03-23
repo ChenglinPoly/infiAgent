@@ -597,7 +597,6 @@ class AgentExecutor:
     def _format_kimi_history_tool_call_id(tool_name: str, sequence_index: int) -> str:
         safe_tool_name = str(tool_name or "").strip() or "tool"
         return f"functions.{safe_tool_name}:{max(0, int(sequence_index))}"
-
     def _execute_llm_call(self, system_prompt: str, messages: List[Dict] = None, task_id: Optional[str] = None):
         """
         执行LLM调用并分发事件

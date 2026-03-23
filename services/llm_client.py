@@ -347,7 +347,6 @@ class SimpleLLMClient:
             seen.add(fallback_key)
             merged.append(tool_call)
         return merged
-
     def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
         debug_msgs = copy.deepcopy(messages)
