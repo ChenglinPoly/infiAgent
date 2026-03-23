@@ -23,7 +23,9 @@ from .file_tools import BaseTool, get_abs_path
 # 格式: {process_id: {task_id, pid, command, output_file, start_time, process_obj}}
 BACKGROUND_PROCESSES = {}
 TERMINAL_SESSION_WINDOW_ID = None
-TERMINAL_SESSION_TAB_TITLE = "infiAgent-exec"
+TERMINAL_SESSION_TAB_PREFIX = "infiAgent-exec"
+TERMINAL_SESSION_TAB_TITLE = f"{TERMINAL_SESSION_TAB_PREFIX}-{uuid.uuid4().hex[:6]}"
+TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH = False
 
 
 def has_running_background_processes(task_id: str = None) -> bool:
@@ -611,61 +613,312 @@ class ExecuteCommandTool(BaseTool):
             raise RuntimeError(err or "unknown osascript error")
         return (result.stdout or "").strip()
 
-    def _get_or_create_terminal_window_id(self) -> int:
+    def _find_idle_terminal_window_id(self) -> Optional[int]:
         """
-        Reuse one dedicated Terminal tab/window to avoid opening many terminals.
+        Find an existing dedicated Terminal window whose tagged tab is idle.
+
+        We only reuse tabs that are not busy. Otherwise, commands like `sleep`
+        would keep consuming the shell input buffer and block every following
+        execute_command routed through Terminal.app.
         """
-        global TERMINAL_SESSION_WINDOW_ID
-
-        # Fast-path: cached window still exists
-        if TERMINAL_SESSION_WINDOW_ID is not None:
-            check_script = (
-                f'tell application "Terminal" to return (exists window id {int(TERMINAL_SESSION_WINDOW_ID)}) as string'
-            )
-            try:
-                ok = self._run_osascript(check_script, timeout=5).lower()
-                if ok == "true":
-                    return int(TERMINAL_SESSION_WINDOW_ID)
-            except Exception:
-                pass
-
         title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
-        # Find an existing tagged tab; if none, create one and tag it.
         script = (
             'tell application "Terminal"\n'
-            'set targetWin to missing value\n'
             'repeat with w in windows\n'
             'repeat with t in tabs of w\n'
             f'if (custom title of t) is "{title}" then\n'
-            'set targetWin to w\n'
+            'if (busy of t) is false then return (id of w) as string\n'
+            'end if\n'
+            'end if\n'
+            'end repeat\n'
+            'end repeat\n'
+            'return ""\n'
+            'end tell'
+        )
+        out = self._run_osascript(script, timeout=10).strip()
+        if not out:
+            return None
+        return int(out)
+
+    def _terminal_window_exists(self, window_id: int) -> bool:
+        script = (
+            'tell application "Terminal"\n'
+            f'return (exists window id {int(window_id)}) as string\n'
+            'end tell'
+        )
+        try:
+            return self._run_osascript(script, timeout=5).strip().lower() == "true"
+        except Exception:
+            return False
+
+    def _close_tagged_terminal_windows(self) -> None:
+        """
+        Close every Terminal window carrying our dedicated custom title.
+
+        This keeps the desktop side to a single managed Terminal window even if
+        earlier retries/timeouts already spawned multiple dedicated windows.
+        """
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        script = (
+            'tell application "Terminal"\n'
+            'set targetIds to {}\n'
+            'repeat with w in windows\n'
+            'set shouldClose to false\n'
+            'repeat with t in tabs of w\n'
+            f'if (custom title of t) is "{title}" then\n'
+            'set shouldClose to true\n'
             'exit repeat\n'
             'end if\n'
             'end repeat\n'
-            'if targetWin is not missing value then exit repeat\n'
+            'if shouldClose then set end of targetIds to (id of w)\n'
             'end repeat\n'
-            'if targetWin is missing value then\n'
-            'if (count of windows) is 0 then\n'
-            'do script ""\n'
-            'else\n'
-            'do script "" in selected tab of front window\n'
+            'repeat with wid in targetIds\n'
+            'try\n'
+            'close (window id (contents of wid)) saving no\n'
+            'end try\n'
+            'end repeat\n'
+            'return ""\n'
+            'end tell'
+        )
+        try:
+            self._run_osascript(script, timeout=10)
+        except Exception:
+            pass
+
+    def _list_tagged_terminal_ttys(self) -> list[str]:
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        script = (
+            'tell application "Terminal"\n'
+            'set ttyList to {}\n'
+            'repeat with w in windows\n'
+            'repeat with t in tabs of w\n'
+            f'if (custom title of t) is "{title}" then\n'
+            'set ttyValue to (tty of t) as string\n'
+            'if ttyValue is not "" then set end of ttyList to ttyValue\n'
+            'exit repeat\n'
             'end if\n'
+            'end repeat\n'
+            'end repeat\n'
+            'set AppleScript\'s text item delimiters to "\\n"\n'
+            'set outText to ttyList as text\n'
+            'set AppleScript\'s text item delimiters to ""\n'
+            'return outText\n'
+            'end tell'
+        )
+        try:
+            raw = self._run_osascript(script, timeout=10)
+        except Exception:
+            return []
+        return [line.strip() for line in str(raw or "").splitlines() if line.strip()]
+
+    def _force_reset_tagged_terminal_windows(self) -> None:
+        """
+        Force-stop processes running in dedicated Terminal windows, then close them.
+
+        Closing a busy Terminal window directly is unreliable because Terminal may
+        keep the session alive while a foreground process is still attached to the
+        TTY. We explicitly terminate the TTY session first so the desktop side can
+        go back to a single managed window.
+        """
+        tty_paths = self._list_tagged_terminal_ttys()
+        for tty_path in tty_paths:
+            tty_name = Path(tty_path).name.strip()
+            if not tty_name:
+                continue
+            for signal_name in ("-TERM", "-KILL"):
+                try:
+                    subprocess.run(
+                        ["pkill", signal_name, "-t", tty_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        stdin=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.15)
+        self._close_tagged_terminal_windows()
+
+    def _wait_for_terminal_window_idle(
+        self,
+        window_id: int,
+        timeout: float = 0.8,
+        poll_interval: float = 0.1,
+    ) -> bool:
+        """
+        Give Terminal a short grace period to return to the prompt.
+
+        Even fast commands like `pwd` briefly keep the tab marked as busy after
+        the child process exits. Without this grace period, the next command can
+        incorrectly decide the dedicated tab is still occupied and open a fresh
+        Terminal window every time.
+        """
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        deadline = time.time() + max(0.0, float(timeout))
+
+        while time.time() < deadline:
+            script = (
+                'tell application "Terminal"\n'
+                f'set w to window id {int(window_id)}\n'
+                'repeat with t in tabs of w\n'
+                f'if (custom title of t) is "{title}" then\n'
+                'return ((busy of t) is false) as string\n'
+                'end if\n'
+                'end repeat\n'
+                'return "false"\n'
+                'end tell'
+            )
+            try:
+                out = self._run_osascript(script, timeout=5).strip().lower()
+            except Exception:
+                return False
+            if out == "true":
+                return True
+            time.sleep(max(0.01, float(poll_interval)))
+        return False
+
+    def _get_tagged_terminal_tty(self, window_id: int) -> Optional[str]:
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        script = (
+            'tell application "Terminal"\n'
+            f'set w to window id {int(window_id)}\n'
+            'repeat with t in tabs of w\n'
+            f'if (custom title of t) is "{title}" then return (tty of t) as string\n'
+            'end repeat\n'
+            'return ""\n'
+            'end tell'
+        )
+        try:
+            out = self._run_osascript(script, timeout=5).strip()
+        except Exception:
+            return None
+        return out or None
+
+    def _interrupt_terminal_window_processes(self, window_id: int) -> bool:
+        """
+        Interrupt the currently running command in our dedicated Terminal tab.
+
+        We keep the parent shell alive and only terminate child processes bound
+        to the same TTY. This avoids the user-facing "close running process"
+        dialog while still letting the next command reuse the same Terminal
+        window.
+        """
+        tty_path = self._get_tagged_terminal_tty(window_id)
+        if not tty_path:
+            return False
+
+        tty_name = Path(tty_path).name.strip()
+        if not tty_name:
+            return False
+
+        try:
+            result = subprocess.run(
+                ["ps", "-t", tty_name, "-o", "pid=,ppid=,comm="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception:
+            return False
+
+        processes = []
+        for line in (result.stdout or "").splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except Exception:
+                continue
+            comm = parts[2] if len(parts) > 2 else ""
+            processes.append((pid, ppid, comm))
+
+        if not processes:
+            return self._wait_for_terminal_window_idle(window_id, timeout=0.5)
+
+        pid_set = {pid for pid, _, _ in processes}
+        root_candidates = [pid for pid, ppid, _ in processes if ppid not in pid_set]
+        keep_pid = min(root_candidates) if root_candidates else min(pid_set)
+        target_pids = [pid for pid, _, _ in processes if pid != keep_pid]
+
+        if not target_pids:
+            return self._wait_for_terminal_window_idle(window_id, timeout=1.0)
+
+        for sig in ("-TERM", "-KILL"):
+            for pid in target_pids:
+                try:
+                    subprocess.run(
+                        ["kill", sig, str(pid)],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        stdin=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            if self._wait_for_terminal_window_idle(window_id, timeout=1.0):
+                return True
+            time.sleep(0.2)
+
+        return self._wait_for_terminal_window_idle(window_id, timeout=0.5)
+
+    def _get_or_create_terminal_window_id(self, force_new: bool = False) -> int:
+        """
+        Reuse one idle dedicated Terminal tab/window.
+
+        If every dedicated Terminal tab is still busy, create a new dedicated
+        window so that a hung command does not head-of-line block later commands.
+        """
+        global TERMINAL_SESSION_WINDOW_ID, TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH
+
+        if force_new:
+            self._force_reset_tagged_terminal_windows()
+            TERMINAL_SESSION_WINDOW_ID = None
+
+        if not force_new and TERMINAL_SESSION_WINDOW_ID is not None:
+            cached_id = int(TERMINAL_SESSION_WINDOW_ID)
+            if self._terminal_window_exists(cached_id):
+                return cached_id
+            TERMINAL_SESSION_WINDOW_ID = None
+
+        # Do not reuse leftover tagged windows from previous desktop/backend
+        # sessions. To keep the UX predictable, once the current process loses
+        # its cached window reference we rebuild a single clean dedicated
+        # Terminal window instead of attaching to historical ones.
+        self._force_reset_tagged_terminal_windows()
+        TERMINAL_SESSION_WINDOW_ID = None
+
+        title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
+        script = (
+            'tell application "Terminal"\n'
+            'do script ""\n'
             'set targetWin to front window\n'
             f'set custom title of selected tab of targetWin to "{title}"\n'
-            'end if\n'
             'return id of targetWin\n'
             'end tell'
         )
         out = self._run_osascript(script, timeout=10)
         wid = int(out)
         TERMINAL_SESSION_WINDOW_ID = wid
+        TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH = False
         return wid
 
-    def _launch_terminal_script(self, script_path: Path) -> None:
+    def _launch_terminal_script(self, script_path: Path) -> int:
         """
         Ask Terminal.app to execute the generated shell script.
         Reuse one dedicated Terminal tab/window.
         """
         window_id = self._get_or_create_terminal_window_id()
+        if not self._wait_for_terminal_window_idle(window_id, timeout=1.5):
+            reset_ok = False
+            if TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH:
+                reset_ok = self._interrupt_terminal_window_processes(window_id)
+            else:
+                reset_ok = self._wait_for_terminal_window_idle(window_id, timeout=1.0)
+            if not reset_ok:
+                raise RuntimeError("Dedicated Terminal session is still busy; please retry after the current command finishes.")
         cmd = f'/bin/bash {shlex.quote(str(script_path))}'
         esc_cmd = self._escape_applescript_str(cmd)
         title = self._escape_applescript_str(TERMINAL_SESSION_TAB_TITLE)
@@ -674,37 +927,59 @@ class ExecuteCommandTool(BaseTool):
             f'set w to window id {window_id}\n'
             'set targetTab to missing value\n'
             'repeat with t in tabs of w\n'
-            f'if (custom title of t) is "{title}" then\n'
+            f'if ((custom title of t) is "{title}") and ((busy of t) is false) then\n'
             'set targetTab to t\n'
             'exit repeat\n'
             'end if\n'
             'end repeat\n'
             'if targetTab is missing value then\n'
+            'do script ""\n'
+            'set w to front window\n'
             'set targetTab to selected tab of w\n'
             f'set custom title of targetTab to "{title}"\n'
             'end if\n'
             f'do script "{esc_cmd}" in targetTab\n'
+            'return id of w\n'
             'end tell'
         )
         try:
-            self._run_osascript(apple_script, timeout=10)
+            out = self._run_osascript(apple_script, timeout=10)
+            if out:
+                global TERMINAL_SESSION_WINDOW_ID
+                TERMINAL_SESSION_WINDOW_ID = int(out)
+                return int(out)
         except Exception as e:
             # If cached window was closed by user, reset cache and retry once.
             if "Can’t get window id" in str(e) or "can't get window id" in str(e).lower():
-                global TERMINAL_SESSION_WINDOW_ID
                 TERMINAL_SESSION_WINDOW_ID = None
                 window_id = self._get_or_create_terminal_window_id()
                 retry_script = (
                     'tell application "Terminal"\n'
                     f'set w to window id {window_id}\n'
+                    'set targetTab to missing value\n'
+                    'repeat with t in tabs of w\n'
+                    f'if ((custom title of t) is "{title}") and ((busy of t) is false) then\n'
+                    'set targetTab to t\n'
+                    'exit repeat\n'
+                    'end if\n'
+                    'end repeat\n'
+                    'if targetTab is missing value then\n'
+                    'do script ""\n'
+                    'set w to front window\n'
                     'set targetTab to selected tab of w\n'
+                    'end if\n'
                     f'set custom title of targetTab to "{title}"\n'
                     f'do script "{esc_cmd}" in targetTab\n'
+                    'return id of w\n'
                     'end tell'
                 )
-                self._run_osascript(retry_script, timeout=10)
-                return
+                out = self._run_osascript(retry_script, timeout=10)
+                if out:
+                    TERMINAL_SESSION_WINDOW_ID = int(out)
+                    return int(out)
+                return window_id
             raise RuntimeError(f"Failed to launch Terminal command: {str(e)}")
+        return window_id
 
     def _build_terminal_paths(self, workspace: Path, output_path: Optional[Path]) -> tuple[Path, Path, Path]:
         token = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -747,7 +1022,8 @@ class ExecuteCommandTool(BaseTool):
 
         script_path, output_path, exit_path = self._build_terminal_paths(workspace, user_output_path)
         self._write_terminal_script(script_path, abs_working_dir, command, output_path, exit_path)
-        self._launch_terminal_script(script_path)
+        terminal_window_id = self._launch_terminal_script(script_path)
+        global TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH
 
         deadline = time.time() + max(1, int(timeout))
         while time.time() < deadline:
@@ -756,16 +1032,26 @@ class ExecuteCommandTool(BaseTool):
             time.sleep(0.2)
 
         if not exit_path.exists():
+            TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH = True
             return {
                 "status": "error",
                 "output": "",
-                "error": f"Command timeout ({timeout}s) in system_terminal mode",
+                "error": (
+                    f"Command timeout ({timeout}s) in system_terminal mode. "
+                    "The command may still be running in Terminal.app."
+                ),
             }
 
         try:
             exit_code = int(exit_path.read_text(encoding="utf-8").strip() or "1")
         except Exception:
             exit_code = 1
+
+        # Wait briefly for Terminal to return to an idle prompt so the next
+        # short command can reuse the same dedicated tab instead of creating a
+        # fresh window every time.
+        idle_ready = self._wait_for_terminal_window_idle(terminal_window_id)
+        TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH = not idle_ready
 
         content = ""
         try:
@@ -797,6 +1083,9 @@ class ExecuteCommandTool(BaseTool):
         script_path, _, exit_path = self._build_terminal_paths(workspace, output_path)
         self._write_terminal_script(script_path, abs_working_dir, command, output_path, exit_path)
         self._launch_terminal_script(script_path)
+
+        global TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH
+        TERMINAL_SESSION_ROTATE_ON_NEXT_LAUNCH = True
 
         process_id = f"bg_term_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         BACKGROUND_PROCESSES[process_id] = {
@@ -1353,4 +1642,3 @@ class CodeProcessManagerTool(BaseTool):
                 "output": f"进程已结束（无需终止）\n   Process ID: {process_id}\n   输出文件: {info['output_file']}",
                 "error": ""
             }
-

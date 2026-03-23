@@ -7,6 +7,7 @@
     "start": "cross-env ELECTRON_RUN_AS_NODE= electron .",
     "build:mac": "rm -rf dist/mac-universal dist/mac-universal-* dist/infiAgent-*-universal.dmg dist/infiAgent-*-universal.dmg.blockmap && bash ../backend_build/build_mac_universal.sh && electron-builder --mac --arm64",
     "build:mac:universal": "rm -rf dist/mac-universal dist/mac-universal-* dist/infiAgent-*-universal.dmg dist/infiAgent-*-universal.dmg.blockmap && MLA_BUILD_X64_BACKEND=1 bash ../backend_build/build_mac_universal.sh && electron-builder --mac --universal",
+    "build:mac:universal:dmg": "rm -rf dist/mac-universal dist/mac-universal-* dist/infiAgent-*-universal.dmg dist/infiAgent-*-universal.dmg.blockmap dist/infiAgent-*-universal-mac.zip dist/infiAgent-*-universal-mac.zip.blockmap && MLA_BUILD_X64_BACKEND=1 bash ../backend_build/build_mac_universal.sh && electron-builder --mac dmg --universal",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
   },

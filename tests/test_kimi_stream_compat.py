@@ -5,6 +5,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from services.llm_client import SimpleLLMClient, _EmbeddedToolCallStreamState
 
@@ -46,6 +48,75 @@ class KimiStreamCompatTests(unittest.TestCase):
         self.assertEqual(tool_calls[0].id, "functions.dir_list:0")
         self.assertEqual(tool_calls[0].name, "dir_list")
         self.assertEqual(tool_calls[0].arguments, {"path": "."})
+
+    def test_kimi_raw_marker_stream_falls_back_to_non_stream_and_parses_tool(self):
+        model_name = "openrouter/moonshotai/kimi-k2.5"
+        calls = []
+
+        def fake_completion(**kwargs):
+            calls.append(bool(kwargs.get("stream", False)))
+            if kwargs.get("stream", False):
+                chunk = SimpleNamespace(
+                    model=model_name,
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=(
+                                    "我先检查目录"
+                                    "<|tool_calls_section_begin|>"
+                                    "<|tool_call_begin|>functions.dir_list:0"
+                                    "<|tool_call_argument_begin|>{\"path\": \".\"}"
+                                ),
+                                reasoning_content="",
+                                tool_calls=[],
+                            ),
+                            finish_reason="stop",
+                        )
+                    ],
+                )
+                return iter([chunk])
+
+            response = SimpleNamespace(
+                model=model_name,
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                "我先检查目录"
+                                "<|tool_calls_section_begin|>"
+                                "<|tool_call_begin|>functions.dir_list:0"
+                                "<|tool_call_argument_begin|>{\"path\": \".\"}"
+                                "<|tool_call_end|><|tool_calls_section_end|>"
+                            ),
+                            reasoning_content="",
+                            tool_calls=[],
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+            return response
+
+        with patch("services.llm_client.completion", side_effect=fake_completion):
+            with patch.object(self.client, "_append_debug_record", lambda **kwargs: None):
+                with patch.object(self.client, "_build_tools_definition", lambda tool_list: [{"type": "function"}]):
+                    response = self.client._chat_internal(
+                        history=[],
+                        model=model_name,
+                        system_prompt="system",
+                        tool_list=["dir_list"],
+                        tool_choice="required",
+                        temperature=0,
+                        max_tokens=0,
+                    )
+
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(response.status, "success")
+        self.assertEqual(response.output, "我先检查目录")
+        self.assertEqual(len(response.tool_calls), 1)
+        self.assertEqual(response.tool_calls[0].id, "functions.dir_list:0")
+        self.assertEqual(response.tool_calls[0].name, "dir_list")
+        self.assertEqual(response.tool_calls[0].arguments, {"path": "."})
 
 if __name__ == "__main__":
     unittest.main()

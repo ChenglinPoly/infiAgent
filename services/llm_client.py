@@ -139,6 +139,30 @@ class _EmbeddedToolCallStreamState:
         return visible_tail, "".join(self._captured_parts)
 
 
+def _coerce_text_content(value: Any) -> str:
+    """Best-effort flattening for OpenAI-compatible message content payloads."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                    continue
+                if "text" in item:
+                    parts.append(str(item.get("text") or ""))
+                    continue
+            parts.append(str(item))
+        return "".join(parts)
+    return str(value)
+
+
 class SimpleLLMClient:
     """简化的LLM客户端 - 基于LiteLLM"""
     
@@ -292,6 +316,28 @@ class SimpleLLMClient:
         return self.default_tool_choice.get(category, "required")
 
     @staticmethod
+    def _is_kimi_tool_model(model: str, tool_count: int = 0) -> bool:
+        if int(tool_count or 0) <= 0:
+            return False
+        normalized = str(model or "").strip().lower()
+        if not normalized:
+            return False
+        return "kimi" in normalized or "moonshot" in normalized
+
+    @staticmethod
+    def _contains_embedded_tool_markup(text: str) -> bool:
+        value = str(text or "")
+        if not value:
+            return False
+        markers = (
+            "<|tool_calls_section_begin",
+            "<|tool_calls_section_end",
+            "<|tool_call_begin|>",
+            "<|tool_call_argument_begin|>",
+        )
+        return any(marker in value for marker in markers)
+
+    @staticmethod
     def _embedded_tool_name_from_id(raw_call_id: str) -> str:
         token = str(raw_call_id or "").strip()
         if not token:
@@ -347,6 +393,159 @@ class SimpleLLMClient:
             seen.add(fallback_key)
             merged.append(tool_call)
         return merged
+
+    def _extract_embedded_tool_calls_and_visible_text(
+        self,
+        content_text: str,
+        reasoning_text: str,
+    ) -> tuple[str, str, List[ToolCall], bool]:
+        content_state = _EmbeddedToolCallStreamState()
+        reasoning_state = _EmbeddedToolCallStreamState()
+
+        visible_content = content_state.feed(str(content_text or ""))
+        visible_content_tail, embedded_content_markup = content_state.finish()
+        visible_content += visible_content_tail
+
+        visible_reasoning = reasoning_state.feed(str(reasoning_text or ""))
+        visible_reasoning_tail, embedded_reasoning_markup = reasoning_state.finish()
+        visible_reasoning += visible_reasoning_tail
+
+        marker_seen = (
+            self._contains_embedded_tool_markup(content_text)
+            or self._contains_embedded_tool_markup(reasoning_text)
+        )
+
+        embedded_tool_calls = self._merge_tool_calls(
+            self._parse_embedded_tool_calls(embedded_content_markup),
+            self._parse_embedded_tool_calls(embedded_reasoning_markup),
+        )
+
+        if marker_seen and not embedded_tool_calls:
+            embedded_tool_calls = self._merge_tool_calls(
+                self._parse_embedded_tool_calls(str(content_text or "")),
+                self._parse_embedded_tool_calls(str(reasoning_text or "")),
+            )
+
+        return visible_content, visible_reasoning, embedded_tool_calls, marker_seen
+
+    def _parse_non_stream_tool_calls(self, tool_calls_payload: Any) -> List[ToolCall]:
+        final_tool_calls: List[ToolCall] = []
+        if not tool_calls_payload:
+            return final_tool_calls
+
+        for idx, tool_call in enumerate(tool_calls_payload):
+            tc_id = str(getattr(tool_call, "id", "") or (tool_call.get("id", "") if isinstance(tool_call, dict) else "")).strip()
+            function_payload = getattr(tool_call, "function", None)
+            if function_payload is None and isinstance(tool_call, dict):
+                function_payload = tool_call.get("function")
+
+            function_name = ""
+            function_arguments = ""
+
+            if function_payload is not None:
+                function_name = str(
+                    getattr(function_payload, "name", "")
+                    or (function_payload.get("name", "") if isinstance(function_payload, dict) else "")
+                ).strip()
+                function_arguments = str(
+                    getattr(function_payload, "arguments", "")
+                    or (function_payload.get("arguments", "") if isinstance(function_payload, dict) else "")
+                )
+
+            args: Dict[str, Any]
+            if not function_arguments:
+                args = {}
+            else:
+                try:
+                    args = json.loads(function_arguments)
+                except json.JSONDecodeError:
+                    args = self._try_fix_json(function_arguments) or {}
+
+            if not function_name:
+                continue
+
+            final_tool_calls.append(
+                ToolCall(
+                    id=tc_id or f"call_{idx}",
+                    name=function_name,
+                    arguments=args,
+                )
+            )
+
+        return final_tool_calls
+
+    def _chat_internal_non_stream(
+        self,
+        kwargs: Dict[str, Any],
+        model: str,
+        tools_definition: List[Dict[str, Any]],
+        debug_label: str,
+    ) -> LLMResponse:
+        safe_print(f"   🌊 正在调用LLM (non-stream fallback, timeout={kwargs['timeout']}s)...")
+        response = completion(**kwargs)
+
+        response_model = str(getattr(response, "model", "") or model)
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return LLMResponse(
+                status="error",
+                output="",
+                tool_calls=[],
+                model=response_model,
+                finish_reason="empty",
+                error_information="Empty non-stream response",
+            )
+
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is None and isinstance(choice, dict):
+            message = choice.get("message")
+
+        finish_reason = str(getattr(choice, "finish_reason", "") or (choice.get("finish_reason", "") if isinstance(choice, dict) else "") or "stop")
+        raw_content = _coerce_text_content(getattr(message, "content", None) if message is not None else None)
+        if not raw_content and isinstance(message, dict):
+            raw_content = _coerce_text_content(message.get("content"))
+
+        raw_reasoning = str(
+            (getattr(message, "reasoning_content", None) if message is not None else None)
+            or (message.get("reasoning_content") if isinstance(message, dict) else "")
+            or ""
+        )
+
+        structured_tool_calls = self._parse_non_stream_tool_calls(
+            getattr(message, "tool_calls", None) if message is not None else None
+        )
+        if not structured_tool_calls and isinstance(message, dict):
+            structured_tool_calls = self._parse_non_stream_tool_calls(message.get("tool_calls"))
+
+        visible_content, visible_reasoning, embedded_tool_calls, raw_marker_seen = self._extract_embedded_tool_calls_and_visible_text(
+            raw_content,
+            raw_reasoning,
+        )
+        final_tool_calls = self._merge_tool_calls(structured_tool_calls, embedded_tool_calls)
+
+        if final_tool_calls and finish_reason in {"", "unknown", "stop"}:
+            finish_reason = "tool_calls"
+
+        if self._is_kimi_tool_model(model, len(tools_definition)) and raw_marker_seen and not final_tool_calls:
+            return LLMResponse(
+                status="error",
+                output=visible_content,
+                tool_calls=[],
+                model=response_model,
+                finish_reason=finish_reason or "tool_calls_parse_failed",
+                error_information="Kimi raw tool-call markup detected but no executable tool call could be parsed",
+                reasoning_content=visible_reasoning,
+            )
+
+        return LLMResponse(
+            status="success",
+            output=visible_content,
+            tool_calls=final_tool_calls,
+            model=response_model,
+            finish_reason=finish_reason,
+            reasoning_content=visible_reasoning,
+        )
     def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
         debug_msgs = copy.deepcopy(messages)
@@ -692,12 +891,21 @@ class SimpleLLMClient:
             # 这里做一次“就地兼容重试”：第一次失败则移除 tool_choice，保持 tools 但不强制 required。
             # 这类报错文案在不同 provider/router 上差异很大，因此只要是 tool_choice=required
             # 且首轮失败信息明确指向 tool_choice 不兼容，就降级为 auto 重试一次。
-            for _compat_try in range(2):
+            tried_kimi_non_stream_fallback = False
+            for _compat_try in range(3):
                 safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
                 safe_print(f"   📨 请求模型: {model}")
                 safe_print(f"   🛠️ 工具数量: {len(tools_definition)}")
                 safe_print(f"   📝 消息数: {len(messages)}")
                 request_start_time = time.time()
+
+                if not kwargs.get("stream", True):
+                    return self._chat_internal_non_stream(
+                        kwargs=kwargs,
+                        model=model,
+                        tools_definition=tools_definition,
+                        debug_label=debug_label,
+                    )
 
                 # 累积变量
                 accumulated_content = ""
@@ -897,30 +1105,33 @@ class SimpleLLMClient:
                             arguments=args
                         ))
 
-                    embedded_tool_calls = self._merge_tool_calls(
-                        self._parse_embedded_tool_calls(embedded_content_markup),
-                        self._parse_embedded_tool_calls(embedded_reasoning_markup),
+                    sanitized_content, sanitized_reasoning, embedded_tool_calls, raw_marker_seen = self._extract_embedded_tool_calls_and_visible_text(
+                        accumulated_content,
+                        accumulated_reasoning_content,
                     )
-
-                    if not embedded_tool_calls and (
-                        "<|tool_call_begin|>" in accumulated_content or "<|tool_call_begin|>" in accumulated_reasoning_content
-                    ):
-                        embedded_tool_calls = self._merge_tool_calls(
-                            self._parse_embedded_tool_calls(accumulated_content),
-                            self._parse_embedded_tool_calls(accumulated_reasoning_content),
-                        )
-
                     final_tool_calls = self._merge_tool_calls(final_tool_calls, embedded_tool_calls)
                     if final_tool_calls and finish_reason in {"", "unknown", "stop"}:
                         finish_reason = "tool_calls"
 
+                    if (
+                        self._is_kimi_tool_model(model, len(tools_definition))
+                        and raw_marker_seen
+                        and not final_tool_calls
+                        and tools_definition
+                        and not tried_kimi_non_stream_fallback
+                    ):
+                        safe_print("⚠️ Kimi raw tool-call markup detected without parsed tool_calls; retrying once with non-stream mode...")
+                        kwargs["stream"] = False
+                        tried_kimi_non_stream_fallback = True
+                        continue
+
                     return LLMResponse(
                         status="success",
-                        output=visible_content,
+                        output=sanitized_content,
                         tool_calls=final_tool_calls,
                         model=response_model,
                         finish_reason=finish_reason,
-                        reasoning_content=visible_reasoning_content
+                        reasoning_content=sanitized_reasoning
                     )
 
                 except Exception as _compat_e:

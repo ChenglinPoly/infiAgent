@@ -6,7 +6,7 @@
   <h1>MLA V3 - 打造专属领域的 SOTA 级智能体</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.8-blue.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.0.10-blue.svg" alt="Version">
     <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python">
     <img src="https://img.shields.io/badge/license-GPL-blue.svg" alt="License: GPL">
   </p>
