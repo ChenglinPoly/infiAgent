@@ -56,6 +56,27 @@ class ToolHooksTests(unittest.TestCase):
             self.assertEqual(payload["agent_id"], "agent_demo")
             self.assertEqual(payload["agent_level"], 0)
 
+    def test_runtime_tool_defaults_are_merged_without_yaml_exposure(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        task_id = str((root / "task").resolve())
+        runtime_defaults = {
+            "final_output": {
+                "status": "success",
+                "output": "runtime injected output",
+            }
+        }
+        with runtime_env_scope({
+            "MLA_USER_DATA_ROOT": str(root),
+            "MLA_TOOL_RUNTIME_DEFAULTS_JSON": json.dumps(runtime_defaults, ensure_ascii=False),
+        }):
+            executor = ToolExecutor(ConfigLoader("OpenCowork"), get_hierarchy_manager(task_id))
+            executor.set_agent_context(agent_id="agent_demo", agent_name="alpha_agent")
+            result = executor.execute("final_output", {}, task_id)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["output"], "runtime injected output")
+
 
 if __name__ == "__main__":
     unittest.main()

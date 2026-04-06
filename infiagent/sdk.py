@@ -110,6 +110,7 @@ class InfiAgent:
         fresh_enabled: Optional[bool] = None,
         fresh_interval_sec: Optional[int] = None,
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
+        tool_runtime_defaults: Optional[Dict[str, Dict[str, Any]]] = None,
         tool_hooks: Optional[List[Dict[str, Any]]] = None,
         context_hooks: Optional[List[Dict[str, Any]]] = None,
         visible_skills: Optional[List[str]] = None,
@@ -173,6 +174,8 @@ class InfiAgent:
             self.runtime_env_overrides["MLA_FRESH_INTERVAL_SEC"] = str(max(0, int(fresh_interval_sec)))
         if mcp_servers is not None:
             self.runtime_env_overrides["MLA_MCP_CONFIG_JSON"] = json.dumps({"servers": mcp_servers}, ensure_ascii=False)
+        if tool_runtime_defaults is not None:
+            self.runtime_env_overrides["MLA_TOOL_RUNTIME_DEFAULTS_JSON"] = json.dumps(tool_runtime_defaults, ensure_ascii=False)
         if tool_hooks is not None:
             self.runtime_env_overrides["MLA_TOOL_HOOKS_JSON"] = json.dumps(tool_hooks, ensure_ascii=False)
         if context_hooks is not None:
@@ -199,6 +202,7 @@ class InfiAgent:
         self.fresh_enabled = fresh_enabled if fresh_enabled is not None else None
         self.fresh_interval_sec = max(0, int(fresh_interval_sec)) if fresh_interval_sec is not None else None
         self.mcp_servers = mcp_servers
+        self.tool_runtime_defaults = tool_runtime_defaults
         self.tool_hooks = tool_hooks
         self.context_hooks = context_hooks
         self.visible_skills = [str(item).strip() for item in visible_skills if str(item).strip()] if visible_skills is not None else None
@@ -258,6 +262,8 @@ class InfiAgent:
             config["fresh_interval_sec"] = self.fresh_interval_sec
         if self.mcp_servers is not None:
             config["mcp_servers"] = self.mcp_servers
+        if self.tool_runtime_defaults is not None:
+            config["tool_runtime_defaults"] = self.tool_runtime_defaults
         if self.tool_hooks is not None:
             config["tool_hooks"] = self.tool_hooks
         if self.context_hooks is not None:
@@ -320,8 +326,10 @@ class InfiAgent:
         user_history_compress_threshold_tokens: Optional[int] = None,
         user_history_recent_items: Optional[int] = None,
         max_turns: Optional[int] = None,
+        tool_runtime_defaults: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         target_task_id = self._resolve_task_id(task_id=task_id, workspace=workspace)
+        Path(target_task_id).mkdir(parents=True, exist_ok=True)
         target_agent_system = agent_system or self.default_agent_system
         target_agent_name = agent_name or self.default_agent_name
 
@@ -347,6 +355,8 @@ class InfiAgent:
             )
         if max_turns is not None:
             extra_runtime_overrides["MLA_MAX_TURNS"] = str(max(1, int(max_turns)))
+        if tool_runtime_defaults is not None:
+            extra_runtime_overrides["MLA_TOOL_RUNTIME_DEFAULTS_JSON"] = json.dumps(tool_runtime_defaults, ensure_ascii=False)
 
         with self._runtime_scope(extra_runtime_overrides or None):
             extra_event_handlers, collected_events = self._build_sdk_event_handler(

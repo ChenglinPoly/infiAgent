@@ -10,6 +10,7 @@ import time
 import uuid
 import asyncio
 import threading
+import os
 from typing import Dict, Any
 
 from tool_server_lite.registry import get_runtime_registry, get_runtime_registry_failures
@@ -57,6 +58,7 @@ class ToolExecutor:
         self.task_permissions = {}  # {task_id: {"auto_mode": True/False}}
         self.agent_id = ""
         self.agent_name = ""
+        self.tool_runtime_defaults = self._load_tool_runtime_defaults()
 
     def set_agent_context(self, *, agent_id: str = "", agent_name: str = ""):
         self.agent_id = str(agent_id or "")
@@ -69,6 +71,31 @@ class ToolExecutor:
             return int(((hierarchy.get(self.agent_id) or {}).get("level")) or 0)
         except Exception:
             return 0
+
+    def _load_tool_runtime_defaults(self) -> Dict[str, Dict[str, Any]]:
+        raw = os.environ.get("MLA_TOOL_RUNTIME_DEFAULTS_JSON", "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                result: Dict[str, Dict[str, Any]] = {}
+                for tool_name, defaults in parsed.items():
+                    if isinstance(defaults, dict):
+                        result[str(tool_name)] = dict(defaults)
+                return result
+        except Exception as exc:
+            safe_print(f"⚠️  解析 MLA_TOOL_RUNTIME_DEFAULTS_JSON 失败: {exc}")
+        return {}
+
+    def _merge_runtime_tool_defaults(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = self.tool_runtime_defaults.get(str(tool_name), {})
+        if not defaults:
+            return arguments
+        merged = dict(arguments or {})
+        for key, value in defaults.items():
+            merged[str(key)] = value
+        return merged
     
     def _init_tools_registry(self):
         """
@@ -250,12 +277,13 @@ class ToolExecutor:
         Returns:
             执行结果字典
         """
+        merged_arguments = self._merge_runtime_tool_defaults(tool_name, arguments)
         try:
             trigger_tool_hooks(
                 when="before",
                 tool_name=tool_name,
                 task_id=task_id,
-                arguments=arguments,
+                arguments=merged_arguments,
                 agent_id=self.agent_id,
                 agent_name=self.agent_name,
                 agent_level=self._agent_level(),
@@ -271,13 +299,13 @@ class ToolExecutor:
             # 特殊处理final_output
             if tool_name == "final_output":
                 result = {
-                    "status": arguments.get("status", "success"),
-                    "output": arguments.get("output", ""),
-                    "error_information": arguments.get("error_information", "")
+                    "status": merged_arguments.get("status", "success"),
+                    "output": merged_arguments.get("output", ""),
+                    "error_information": merged_arguments.get("error_information", "")
                 }
             elif tool_type == "tool_call_agent":
                 if tool_name in self.DANGEROUS_TOOLS and not self.is_auto_mode(task_id):
-                    approved = self._request_tool_confirmation(tool_name, arguments, task_id)
+                    approved = self._request_tool_confirmation(tool_name, merged_arguments, task_id)
                     if not approved:
                         result = {
                             "status": "error",
@@ -285,15 +313,15 @@ class ToolExecutor:
                             "error_information": f"工具执行被用户拒绝: {tool_name}"
                         }
                     elif tool_config.get("_mcp"):
-                        result = call_mcp_tool(tool_config, arguments)
+                        result = call_mcp_tool(tool_config, merged_arguments)
                     else:
-                        result = self._call_direct(tool_name, arguments, task_id)
+                        result = self._call_direct(tool_name, merged_arguments, task_id)
                 elif tool_config.get("_mcp"):
-                    result = call_mcp_tool(tool_config, arguments)
+                    result = call_mcp_tool(tool_config, merged_arguments)
                 else:
-                    result = self._call_direct(tool_name, arguments, task_id)
+                    result = self._call_direct(tool_name, merged_arguments, task_id)
             elif tool_type == "llm_call_agent":
-                result = self._execute_sub_agent(tool_name, tool_config, arguments, task_id)
+                result = self._execute_sub_agent(tool_name, tool_config, merged_arguments, task_id)
             else:
                 result = {
                     "status": "error",
@@ -312,7 +340,7 @@ class ToolExecutor:
                 when="after",
                 tool_name=tool_name,
                 task_id=task_id,
-                arguments=arguments,
+                arguments=merged_arguments,
                 result=result,
                 agent_id=self.agent_id,
                 agent_name=self.agent_name,

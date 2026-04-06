@@ -1,3 +1,54 @@
+Metadata-Version: 2.1
+Name: infiagent
+Version: 3.2.4
+Summary: InfiAgent multi-agent framework for long-running task automation
+Home-page: https://github.com/ChenglinPoly/Multi-Level-Agent
+Author: Chenglin Yu
+Author-email: yuchenglin96@qq.com
+License: MIT
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: litellm==1.82.6
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tiktoken>=0.5.0
+Requires-Dist: virtualenv>=20.0.0
+Requires-Dist: fastapi>=0.104.0
+Requires-Dist: uvicorn[standard]>=0.24.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: beautifulsoup4>=4.12.0
+Requires-Dist: chardet>=5.2.0
+Requires-Dist: mcp; python_version >= "3.10"
+Requires-Dist: pdfplumber>=0.10.0
+Requires-Dist: python-docx>=1.1.0
+Requires-Dist: crawl4ai>=0.3.0
+Requires-Dist: ddgs>=1.0.0
+Requires-Dist: arxiv>=2.0.0
+Requires-Dist: prompt_toolkit>=3.0.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: PyMuPDF
+Requires-Dist: playwright>=1.40.0
+Requires-Dist: docx2pdf
+Requires-Dist: litellm==1.82.6
+Requires-Dist: python-pptx>=0.6.21
+Requires-Dist: crawl4ai>=0.3.0
+Requires-Dist: ddgs>=1.0.0
+Requires-Dist: pyyaml>=6.0.0
+Requires-Dist: arxiv>=2.0.0
+Requires-Dist: prompt_toolkit>=3.0.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: psutil>=5.9.0
+
 <div align="center">
   <img src="assets/logo.png" alt="infiAgent Logo" width="200">
 

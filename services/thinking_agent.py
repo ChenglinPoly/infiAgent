@@ -18,13 +18,13 @@ class ThinkingAgent:
         # 使用简化的LLM客户端
         self.llm_client = SimpleLLMClient()
         runtime = get_runtime_settings()
-        self.window_steps = runtime.get("thinking_steps", runtime.get("action_window_steps", 10))
+        self.window_steps = runtime.get("action_window_steps", 10)
         self.preferred_model = preferred_model
         self.max_tokens = max_tokens
         
         # Thinking Agent的系统提示词
         self.system_prompt = f"""你是一个agent行动的上下文管理专家，这个 agent 每次在清除动作历史之前会请你进行上下文整理。
-        上下文中包括你上次清理的成果在<当前进度思考>标签内。你的任务是产出“写入<当前进度思考>标签内部的正文内容”，不要输出<当前进度思考>外层标签本身。无论是否首次构造，都统一遵循这一条。你必须要考虑到{self.window_steps}步后，历史动作会被立刻舍弃，因此
+        上下文中包括你上次清理的成果在<当前进度思考>标签内。按照下面格式返回整理后的上下文，如果<当前进度思考>标签内没有内容证明是首次进行构造，你的输出不需要包含<当前进度思考>标签。你必须要考虑到{self.window_steps}步后，历史动作会被立刻舍弃，因此
         你规划的<next_n_steps>必须足够具体，同时增量工作！
         '''例子‘’‘
         前面带#符号的为注释内容，是对你进行对应区域的原则指导的，不是实际内容。下面只是中文版样例，具体语言参考<用户最新输入>区域的语言。
@@ -154,7 +154,7 @@ class ThinkingAgent:
 agent可以调用的所有工具和参数信息
 {tools_info}
 按照被分析提示词中<用户最新输入>的语言使用对应语言输出,例如提示词中<用户最新输入>为英文，则<todo_list>区域等所有区域内内容使用英文构造。不要参考我使用的语言！
-如果是初始阶段，请你构造新的<当前进度思考>正文；否则请你更新已有的<当前进度思考>正文。始终只输出标签内部内容，不要输出<当前进度思考>外层标签，也不要输出任何额外解释。
+如果是初始阶段，请你构造新的<当前进度思考>上下文，否则请你更新<当前进度思考>。只需要输出<当前进度思考>内的内容即可！
 """
 
             # 构建 messages（支持多模态图片嵌入）
@@ -196,6 +196,7 @@ agent可以调用的所有工具和参数信息
                     "formatted_result": f"[🤖 初始规划]\n\n{response.output}",
                     "raw_output": response.output or "",
                     "raw_reasoning_content": response.reasoning_content or "",
+                    "usage": response.usage or {},
                     "model": response.model or thinking_model,
                     "finish_reason": response.finish_reason or "",
                     "error_information": "",
@@ -206,6 +207,7 @@ agent可以调用的所有工具和参数信息
                     "formatted_result": f"[初始规划失败: {response.error_information}]",
                     "raw_output": response.output or "",
                     "raw_reasoning_content": response.reasoning_content or "",
+                    "usage": response.usage or {},
                     "model": response.model or thinking_model,
                     "finish_reason": response.finish_reason or "",
                     "error_information": response.error_information or "",
@@ -353,6 +355,7 @@ Agent的完整上下文（包含系统角色、历史动作等）：
                     "formatted_result": f"[🤖 进度分析 - 第{tool_call_counter}轮]\n\n{response.output}",
                     "raw_output": response.output or "",
                     "raw_reasoning_content": response.reasoning_content or "",
+                    "usage": response.usage or {},
                     "model": response.model or thinking_model,
                     "finish_reason": response.finish_reason or "",
                     "error_information": "",
@@ -363,6 +366,7 @@ Agent的完整上下文（包含系统角色、历史动作等）：
                     "formatted_result": f"[进度分析失败: {response.error_information}]",
                     "raw_output": response.output or "",
                     "raw_reasoning_content": response.reasoning_content or "",
+                    "usage": response.usage or {},
                     "model": response.model or thinking_model,
                     "finish_reason": response.finish_reason or "",
                     "error_information": response.error_information or "",
@@ -375,6 +379,7 @@ Agent的完整上下文（包含系统角色、历史动作等）：
                 "formatted_result": f"[进度分析失败: {str(e)}]",
                 "raw_output": "",
                 "raw_reasoning_content": "",
+                "usage": {},
                 "model": "",
                 "finish_reason": "",
                 "error_information": str(e),

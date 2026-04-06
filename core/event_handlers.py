@@ -122,6 +122,18 @@ class ConsoleLogHandler:
     def _print_run_llm_end(self, event: LlmCallEndEvent):
         safe_print(f"📥 LLM输出: {event.llm_output[:100]}...")
         safe_print(f"🔧 工具调用数量: {len(event.tool_calls)}")
+        if event.usage:
+            safe_print(
+                f"🧮 本轮tokens: prompt={event.usage.get('prompt_tokens', 0)}, "
+                f"completion={event.usage.get('completion_tokens', 0)}, "
+                f"total={event.usage.get('total_tokens', 0)}"
+            )
+        if event.cumulative_usage:
+            safe_print(
+                f"📈 累计tokens: prompt={event.cumulative_usage.get('prompt_tokens', 0)}, "
+                f"completion={event.cumulative_usage.get('completion_tokens', 0)}, "
+                f"total={event.cumulative_usage.get('total_tokens', 0)}"
+            )
         
     def _print_run_tool_start(self, event: ToolCallStartEvent):
         safe_print(f"\n🔧 执行工具: {event.tool_name}")
@@ -141,6 +153,18 @@ class ConsoleLogHandler:
 
     def _print_run_thinking_end(self, event: ThinkingEndEvent):
         safe_print(f"[{event.agent_name}] Thinking分析已更新: {event.result}")
+        if event.usage:
+            safe_print(
+                f"🧮 Thinking本轮tokens: prompt={event.usage.get('prompt_tokens', 0)}, "
+                f"completion={event.usage.get('completion_tokens', 0)}, "
+                f"total={event.usage.get('total_tokens', 0)}"
+            )
+        if event.cumulative_usage:
+            safe_print(
+                f"📈 累计tokens: prompt={event.cumulative_usage.get('prompt_tokens', 0)}, "
+                f"completion={event.cumulative_usage.get('completion_tokens', 0)}, "
+                f"total={event.cumulative_usage.get('total_tokens', 0)}"
+            )
         
     def _print_run_thinking_fail(self, event: ThinkingFailEvent):
         safe_print(f"⚠️ Thinking触发失败: {event.error_message}")
@@ -230,13 +254,25 @@ class JsonlStreamHandler:
             "error": err[:1000] if err else ""
         })
 
+    def _stream_run_llm_end(self, event: LlmCallEndEvent):
+        self.jsonl_emitter.emit({
+            "type": "llm_end",
+            "model": event.model,
+            "finish_reason": event.finish_reason,
+            "usage": event.usage or {},
+            "cumulative_usage": event.cumulative_usage or {},
+            "request_budget": event.request_budget or {},
+        })
+
     def _stream_run_thinking_end(self, event: ThinkingEndEvent):
         # 发送完整 thinking 内容（thinking agent 独立 LLM 调用，token 不经过主 agent 事件流）
         self.jsonl_emitter.emit({
             "type": "thinking_end",
             "agent": event.agent_name,
             "is_initial": event.is_initial,
-            "result": event.result
+            "result": event.result,
+            "usage": event.usage or {},
+            "cumulative_usage": event.cumulative_usage or {},
         })
     
     def _stream_run_thinking_fail(self, event: ThinkingFailEvent):

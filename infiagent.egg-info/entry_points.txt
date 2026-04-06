@@ -1,0 +1,3 @@
+[console_scripts]
+infiagent = start:main
+mla-agent = start:main

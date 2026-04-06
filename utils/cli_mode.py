@@ -18,8 +18,11 @@ from datetime import datetime
 
 from utils.user_paths import (
     apply_runtime_env_defaults,
+    ensure_user_app_config_exists,
+    get_user_app_config_path,
     get_user_conversations_dir,
     get_user_agent_library_root,
+    load_user_app_config,
 )
 
 try:
@@ -53,6 +56,15 @@ TEXTS = {
         # System messages
         'select_agent_system': 'Select Agent System',
         'select_mode': 'Select Tool Execution Mode',
+        'use_last_defaults': 'Use last saved CLI defaults',
+        'last_defaults_summary': 'Last defaults',
+        'select_reasoning_mode': 'Select Reasoning Mode',
+        'thinking_mode': 'Thinking Mode - initial planning + execute N steps',
+        'react_mode': 'ReAct Mode - reflection before each action step',
+        'select_history_mode': 'Select History Memory Mode',
+        'history_all': 'All history - expose all historical task entries',
+        'history_recent': 'Recent history - expose only the latest N task entries',
+        'enter_recent_count': 'Enter recent history count',
         'auto_mode': 'Auto Mode - All tools execute automatically (fast, risky)',
         'manual_mode': 'Manual Mode - File write/code exec/pip install need confirmation (safe)',
         'mode_set_auto': 'Set to: Auto Mode',
@@ -136,6 +148,15 @@ TEXTS = {
         # System messages
         'select_agent_system': '选择 Agent 系统',
         'select_mode': '选择工具执行模式',
+        'use_last_defaults': '使用上次保存的 CLI 默认配置',
+        'last_defaults_summary': '上次默认配置',
+        'select_reasoning_mode': '选择推理模式',
+        'thinking_mode': 'Thinking 模式 - 初始规划 + 执行 N 步',
+        'react_mode': 'ReAct 模式 - 每次动作前先反思',
+        'select_history_mode': '选择历史记忆模式',
+        'history_all': '全量历史 - 暴露全部历史任务',
+        'history_recent': '最近历史 - 只暴露最近 N 条历史任务',
+        'enter_recent_count': '输入最近历史条数',
         'auto_mode': '自动模式 (Auto) - 所有工具自动执行（快速，但有风险）',
         'manual_mode': '手动模式 (Manual) - 文件写入、代码执行、包安装需要确认（安全）',
         'mode_set_auto': '已设置为: 自动模式 (Auto)',
@@ -598,13 +619,13 @@ class InteractiveCLI:
         def read_output():
             try:
                 import json
-                RESET = "\033[0m"
-                THINKING_COLOR = "\033[94m"
-                REASONING_COLOR = "\033[95m"
-                TOOL_PENDING_COLOR = "\033[33m"
-                TOOL_SUCCESS_COLOR = "\033[32m"
-                TOOL_ERROR_COLOR = "\033[31m"
                 stream_kind = None
+                latest_cumulative_usage = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "reasoning_tokens": 0,
+                }
 
                 def push_output_line(text: str):
                     self.output_lines.append(text)
@@ -625,12 +646,11 @@ class InteractiveCLI:
                     if stream_kind != kind:
                         flush_stream(force_newline=(stream_kind is not None))
                         if kind == "reasoning":
-                            sys.stdout.write(f"{REASONING_COLOR}[Model reasoning]{RESET}\n")
+                            sys.stdout.write("[Model reasoning]\n")
                         elif kind == "thinking":
-                            sys.stdout.write(f"{THINKING_COLOR}[Thinking agent]{RESET}\n")
+                            sys.stdout.write("[Thinking agent]\n")
                         stream_kind = kind
-                    color = THINKING_COLOR if kind == "thinking" else (REASONING_COLOR if kind == "reasoning" else "")
-                    sys.stdout.write(f"{color}{text}{RESET if color else ''}")
+                    sys.stdout.write(text)
                     sys.stdout.flush()
 
                 for line in self.current_process.stdout:
@@ -681,8 +701,27 @@ class InteractiveCLI:
                             flush_stream(force_newline=False)
 
                         elif event['type'] == 'thinking_end':
-                            # Thinking 已在流式 token 中完整输出，结束时只换行，避免重复显示
                             flush_stream()
+                            usage = event.get('usage', {}) or {}
+                            cumulative = event.get('cumulative_usage', {}) or {}
+                            if usage:
+                                line = (
+                                    "🧮 Thinking本轮tokens: "
+                                    f"prompt={usage.get('prompt_tokens', 0)}, "
+                                    f"completion={usage.get('completion_tokens', 0)}, "
+                                    f"total={usage.get('total_tokens', 0)}"
+                                )
+                                print(line)
+                                push_output_line(line)
+                            if cumulative:
+                                cumulative_line = (
+                                    "📈 累计tokens: "
+                                    f"prompt={cumulative.get('prompt_tokens', 0)}, "
+                                    f"completion={cumulative.get('completion_tokens', 0)}, "
+                                    f"total={cumulative.get('total_tokens', 0)}"
+                                )
+                                print(cumulative_line)
+                                push_output_line(cumulative_line)
 
                         elif event['type'] == 'tool_call':
                             flush_stream()
@@ -690,7 +729,7 @@ class InteractiveCLI:
                             arguments = event.get('arguments', {}) or {}
                             display_line = f"🔧 工具调用: {name}"
                             push_output_line(display_line)
-                            print(f"{TOOL_PENDING_COLOR}{display_line}{RESET}")
+                            print(display_line)
                             if arguments:
                                 for key, value in arguments.items():
                                     value_str = str(value)
@@ -707,13 +746,33 @@ class InteractiveCLI:
                             status_icon = "✅" if status == "success" else "❌"
                             display_line = f"{status_icon} 工具结果: {name} ({status})"
                             push_output_line(display_line)
-                            color = TOOL_SUCCESS_COLOR if status == "success" else TOOL_ERROR_COLOR
-                            print(f"{color}{display_line}{RESET}")
+                            print(display_line)
                             if error_text:
                                 print(f"   error: {error_text}")
                             elif preview:
                                 print(f"   output: {preview}")
-                        
+
+                        elif event['type'] == 'llm_end':
+                            flush_stream(force_newline=False)
+                            usage = event.get('usage', {}) or {}
+                            cumulative = event.get('cumulative_usage', {}) or {}
+                            latest_cumulative_usage.update(cumulative)
+                            line = (
+                                "🧮 本轮LLM tokens: "
+                                f"prompt={usage.get('prompt_tokens', 0)}, "
+                                f"completion={usage.get('completion_tokens', 0)}, "
+                                f"total={usage.get('total_tokens', 0)}"
+                            )
+                            cumulative_line = (
+                                "📈 累计 tokens: "
+                                f"prompt={latest_cumulative_usage.get('prompt_tokens', 0)}, "
+                                f"completion={latest_cumulative_usage.get('completion_tokens', 0)}, "
+                                f"total={latest_cumulative_usage.get('total_tokens', 0)}"
+                            )
+                            print(line)
+                            print(cumulative_line)
+                            push_output_line(line)
+
                         elif event['type'] == 'result':
                             flush_stream()
                             # 显示完整结果
@@ -1166,11 +1225,58 @@ def get_available_agent_systems():
         return ["Test_agent"]
 
 
+def _load_cli_defaults() -> dict:
+    cfg = load_user_app_config()
+    cli_cfg = cfg.get("cli", {}) if isinstance(cfg, dict) else {}
+    runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
+    context = cfg.get("context", {}) if isinstance(cfg, dict) else {}
+    return {
+        "agent_system": str(cli_cfg.get("last_agent_system") or "").strip(),
+        "auto_mode": cli_cfg.get("last_auto_mode"),
+        "thinking_enabled": bool(runtime.get("thinking_enabled", True)),
+        "user_history_recent_items": int(context.get("user_history_recent_items", 0) or 0),
+    }
+
+
+def _save_cli_defaults(*, agent_system: str, auto_mode: bool, thinking_enabled: bool, user_history_recent_items: int) -> None:
+    ensure_user_app_config_exists()
+    cfg = load_user_app_config()
+    runtime = cfg.setdefault("runtime", {})
+    context = cfg.setdefault("context", {})
+    cli_cfg = cfg.setdefault("cli", {})
+    runtime["thinking_enabled"] = bool(thinking_enabled)
+    context["user_history_recent_items"] = max(0, int(user_history_recent_items))
+    cli_cfg["last_agent_system"] = str(agent_system or "").strip()
+    cli_cfg["last_auto_mode"] = bool(auto_mode)
+    get_user_app_config_path().write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def start_cli_mode(agent_system: str = None, language: str = 'en'):
     """启动交互式 CLI 模式"""
     # task_id = 当前目录
     task_id = os.path.abspath(os.getcwd())
-    
+    cli_defaults = _load_cli_defaults()
+    chosen_auto_mode = cli_defaults.get("auto_mode")
+    chosen_thinking_enabled = cli_defaults.get("thinking_enabled", True)
+    chosen_history_recent_items = cli_defaults.get("user_history_recent_items", 0)
+
+    if cli_defaults.get("agent_system"):
+        print("\n" + "="*80)
+        print(f"⚙️ {t('last_defaults_summary', language)}")
+        print("="*80)
+        print(f"Agent System: {cli_defaults['agent_system']}")
+        print(f"Tool Mode: {'Auto' if cli_defaults.get('auto_mode') else 'Manual'}")
+        print(f"Reasoning: {'Thinking' if cli_defaults.get('thinking_enabled', True) else 'ReAct'}")
+        print(
+            "History Memory: "
+            + ("All" if int(cli_defaults.get("user_history_recent_items", 0) or 0) <= 0
+               else f"Recent {int(cli_defaults.get('user_history_recent_items', 0) or 0)}")
+        )
+        print("="*80)
+        use_last = input(f"{t('use_last_defaults', language)} [Y/n]: ").strip().lower()
+        if use_last in {"", "y", "yes"}:
+            agent_system = cli_defaults["agent_system"]
+
     # 如果没有指定 agent_system，让用户选择
     if agent_system is None:
         available_systems = get_available_agent_systems()
@@ -1205,9 +1311,74 @@ def start_cli_mode(agent_system: str = None, language: str = 'en'):
             print(f"✅ 已选择: {agent_system}\n")
         else:
             print(f"✅ Selected: {agent_system}\n")
+
+        print("\n" + "="*80)
+        print(f"🧠 {t('select_reasoning_mode', language)}")
+        print("="*80)
+        print(f"1. {t('thinking_mode', language)}")
+        print(f"2. {t('react_mode', language)}")
+        while True:
+            reasoning_choice = input(f"{t('invalid_choice', language)} [1/2] ({t('default', language)}: 1): ").strip()
+            if not reasoning_choice or reasoning_choice == "1":
+                chosen_thinking_enabled = True
+                break
+            if reasoning_choice == "2":
+                chosen_thinking_enabled = False
+                break
+            print(f"❌ {t('invalid_choice', language)} 1-{2}\n")
+
+        print("\n" + "="*80)
+        print(f"🗂️ {t('select_history_mode', language)}")
+        print("="*80)
+        print(f"1. {t('history_all', language)}")
+        print(f"2. {t('history_recent', language)}")
+        while True:
+            history_choice = input(f"{t('invalid_choice', language)} [1/2] ({t('default', language)}: 1): ").strip()
+            if not history_choice or history_choice == "1":
+                chosen_history_recent_items = 0
+                break
+            if history_choice == "2":
+                while True:
+                    recent_raw = input(f"{t('enter_recent_count', language)} (default: 3): ").strip()
+                    try:
+                        chosen_history_recent_items = max(1, int(recent_raw or 3))
+                        break
+                    except ValueError:
+                        print(f"❌ {t('invalid_choice', language)}\n")
+                break
+            print(f"❌ {t('invalid_choice', language)} 1-{2}\n")
     
     cli = InteractiveCLI(task_id, agent_system)
     cli.language = language  # 设置语言
+    cli.auto_mode = chosen_auto_mode
+
+    if chosen_auto_mode is None:
+        print("\n" + "="*80)
+        print(f"🔐 {t('select_mode', language)}")
+        print("="*80)
+        print(f"1. {t('auto_mode', language)}")
+        print(f"2. {t('manual_mode', language)}")
+        print("="*80)
+        while True:
+            mode_input = input(f"{t('invalid_choice', language)} [1/2] ({t('default', language)}: 2): ").strip()
+            if not mode_input or mode_input == '2':
+                cli.auto_mode = False
+                print(f"✅ {t('mode_set_manual', language)}\n")
+                break
+            if mode_input == '1':
+                cli.auto_mode = True
+                print(f"✅ {t('mode_set_auto', language)}\n")
+                break
+            print(f"❌ {t('invalid_choice', language)} 1 {t('default', language)} 2\n")
+
+    _save_cli_defaults(
+        agent_system=agent_system,
+        auto_mode=bool(cli.auto_mode),
+        thinking_enabled=bool(chosen_thinking_enabled),
+        user_history_recent_items=int(chosen_history_recent_items),
+    )
+    os.environ["MLA_THINKING_ENABLED"] = "true" if chosen_thinking_enabled else "false"
+    os.environ["MLA_USER_HISTORY_RECENT_ITEMS"] = str(int(chosen_history_recent_items))
     cli.run()
 
 

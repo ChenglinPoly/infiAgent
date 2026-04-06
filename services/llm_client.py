@@ -10,9 +10,8 @@ import yaml
 import time
 import json
 import copy
+import concurrent.futures
 import re
-import threading
-from queue import Empty, Queue
 from typing import Callable, List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +19,12 @@ from pathlib import Path
 from litellm import completion  # 直接导入completion函数
 import litellm
 
+from utils.token_budget import (
+    RequestBudget,
+    build_request_budget,
+    count_tokens_text,
+    count_tokens_value,
+)
 from utils.user_paths import (
     ensure_user_llm_config_exists,
     get_task_file_prefix,
@@ -55,6 +60,7 @@ class LLMResponse:
     error_information: str = ""
     reasoning_content: str = ""  # 模型的推理/思考内容（如 Claude thinking, Deepseek reasoning）
     thinking_blocks: Optional[List[Dict]] = None  # Anthropic 专用的 thinking_blocks
+    request_budget: Optional[Dict] = None
 
 
 _RAW_TOOL_CALLS_SECTION_BEGIN = "<|tool_calls_section_begin|>"
@@ -226,11 +232,11 @@ class SimpleLLMClient:
         self.multimodal = self.config.get("multimodal", False)
         self.compressor_multimodal = self.config.get("compressor_multimodal", False)
         
+        if not self.api_key:
+            raise ValueError("未配置API密钥")
+        
         if not self.models:
             raise ValueError("未配置可用模型列表")
-
-        if not self.api_key:
-            safe_print("⚠️ 未配置全局 API 密钥，将依赖模型级 api_key/base_url 或本地无密钥模型配置。")
         
         # 加载工具配置
         self.tools_config = {}
@@ -252,64 +258,71 @@ class SimpleLLMClient:
         safe_print(f"   超时配置: timeout={self.timeout}s, stream_timeout={self.stream_timeout}s, first_chunk_timeout={self.first_chunk_timeout}s")
         safe_print(f"   多模态: multimodal={self.multimodal}, compressor_multimodal={self.compressor_multimodal}")
 
-    def _emit_stream_reset(
-        self,
-        stream_callback: Optional[Callable[[Dict[str, Any]], None]],
-        *,
-        model: str,
-        debug_label: str,
-        attempt: int,
-        reason: str,
-    ) -> None:
-        if not stream_callback:
-            return
-        try:
-            stream_callback({
-                "kind": "reset",
-                "text": "",
-                "model": model,
-                "debug_label": debug_label,
-                "attempt": int(attempt or 1),
-                "reason": str(reason or "retry"),
-            })
-        except Exception:
-            pass
+    def count_text_tokens(self, text: str, *, force_exact: bool = False) -> int:
+        return count_tokens_text(text, force_exact=force_exact)
 
-    def _fetch_response_and_first_chunk_with_timeout(
+    def count_value_tokens(self, value: Any, *, force_exact: bool = False) -> int:
+        return count_tokens_value(value, force_exact=force_exact)
+
+    def build_request_budget(
         self,
         *,
-        kwargs: Dict[str, Any],
-        timeout_sec: int,
-    ):
-        """在 daemon 线程里获取 response iterator 和首包，避免超时后主线程被 executor join 卡住。"""
-        result_queue: Queue = Queue(maxsize=1)
-
-        def _worker():
-            try:
-                iterator = completion(**kwargs)
-                first = next(iterator)
-                result_queue.put(("ok", (iterator, first)))
-            except Exception as exc:
-                result_queue.put(("error", exc))
-
-        worker = threading.Thread(
-            target=_worker,
-            name="llm-first-chunk",
-            daemon=True,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools_definition: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: Optional[int] = None,
+        force_exact: bool = False,
+    ) -> RequestBudget:
+        return build_request_budget(
+            system_prompt=system_prompt,
+            messages=messages,
+            tools_definition=tools_definition or [],
+            context_limit=self.max_context_window,
+            max_tokens=max_tokens,
+            force_exact=force_exact,
         )
-        worker.start()
 
-        try:
-            status, payload = result_queue.get(timeout=timeout_sec)
-        except Empty:
-            raise TimeoutError(
-                f"连接建立或首包接收超时（超过 {timeout_sec}s）- 可能原因：httpx连接池死锁、网络断开、服务器无响应"
-            )
+    @staticmethod
+    def _normalize_usage(usage_obj: Any) -> Optional[Dict[str, Any]]:
+        if usage_obj is None:
+            return None
+        if hasattr(usage_obj, "model_dump"):
+            try:
+                usage_obj = usage_obj.model_dump()
+            except Exception:
+                pass
+        elif hasattr(usage_obj, "dict"):
+            try:
+                usage_obj = usage_obj.dict()
+            except Exception:
+                pass
+        elif hasattr(usage_obj, "__dict__") and not isinstance(usage_obj, dict):
+            try:
+                usage_obj = dict(usage_obj.__dict__)
+            except Exception:
+                pass
 
-        if status == "error":
-            raise payload
+        if not isinstance(usage_obj, dict):
+            return None
 
-        return payload
+        normalized = {
+            "prompt_tokens": int(usage_obj.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage_obj.get("completion_tokens", 0) or 0),
+            "total_tokens": int(usage_obj.get("total_tokens", 0) or 0),
+        }
+
+        prompt_details = usage_obj.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict) and prompt_details:
+            normalized["prompt_tokens_details"] = prompt_details
+        completion_details = usage_obj.get("completion_tokens_details")
+        if isinstance(completion_details, dict) and completion_details:
+            normalized["completion_tokens_details"] = completion_details
+            reasoning_tokens = completion_details.get("reasoning_tokens")
+            if reasoning_tokens is not None:
+                normalized["reasoning_tokens"] = int(reasoning_tokens or 0)
+        if usage_obj.get("cost") is not None:
+            normalized["cost"] = usage_obj.get("cost")
+        return normalized
     
     def _parse_models_config(self, models_config: List, target_list: List, category: str):
         """
@@ -605,6 +618,14 @@ class SimpleLLMClient:
             model=response_model,
             finish_reason=finish_reason,
             reasoning_content=visible_reasoning,
+            usage=self._normalize_usage(getattr(response, "usage", None)),
+            request_budget=self.build_request_budget(
+                system_prompt=kwargs["messages"][0]["content"],
+                messages=kwargs["messages"][1:],
+                tools_definition=tools_definition,
+                max_tokens=kwargs.get("max_tokens"),
+                force_exact=False,
+            ).to_dict(),
         )
     def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
@@ -745,13 +766,6 @@ class SimpleLLMClient:
             if retry_count > 0:
                 safe_print(f"   🔄 LLM重试 {retry_count}/{max_retries}...")
                 time.sleep(2 * retry_count)  # 指数退避：2秒, 4秒, 6秒
-                self._emit_stream_reset(
-                    stream_callback,
-                    model=model,
-                    debug_label=debug_label,
-                    attempt=retry_count + 1,
-                    reason="retry",
-                )
                 
                 # 根据上次错误生成提示（帮助 LLM 避免重复错误）
                 if last_error:
@@ -763,8 +777,7 @@ class SimpleLLMClient:
             # 调用内部实现
             response = self._chat_internal(
                 history, model, fixed_system_prompt, tool_list, 
-                tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback,
-                retry_count + 1,
+                tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
             )
             
             # 如果成功，直接返回
@@ -784,19 +797,11 @@ class SimpleLLMClient:
                     safe_print(f"   📝 已添加参数类型提示，立即重试...")
                     type_fix_attempted = True
                     last_error = response
-                    self._emit_stream_reset(
-                        stream_callback,
-                        model=model,
-                        debug_label=debug_label,
-                        attempt=retry_count + 1,
-                        reason="type_fix_retry",
-                    )
                     
                     # 立即重试，不计入retry_count
                     response = self._chat_internal(
                         history, model, fixed_system_prompt, tool_list, 
-                        tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback,
-                        retry_count + 1,
+                        tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
                     )
                     
                     if response.status == "success":
@@ -812,9 +817,9 @@ class SimpleLLMClient:
             safe_print(f"   ⚠️ {error_type} (第{retry_count + 1}次)")
             last_error = response
 
-            if not self._is_retriable_error(response.error_information):
-                safe_print(f"   ⛔ 非可恢复错误，停止重试")
-                raise Exception(f"LLM 调用失败（不可重试）: {response.error_information}")
+            if response.finish_reason == "context_limit_exceeded":
+                safe_print("   ⛔ 请求在发送前已确定超过上下文上限，停止重试")
+                raise Exception(f"LLM 请求超出上下文窗口: {response.error_information}")
             
             if retry_count < max_retries:
                 continue  # 继续重试
@@ -842,7 +847,6 @@ class SimpleLLMClient:
         debug_task_id: Optional[str] = None,
         debug_label: str = "execution",
         stream_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        attempt_index: int = 1,
     ) -> LLMResponse:
         """
         LLM调用的内部实现（使用 LiteLLM 原生超时机制）
@@ -857,7 +861,7 @@ class SimpleLLMClient:
         """
         try:
             def _emit_stream_chunk(kind: str, text: str, current_model: str):
-                if not stream_callback or (kind != "reset" and not text):
+                if not stream_callback or not text:
                     return
                 try:
                     stream_callback({
@@ -865,7 +869,6 @@ class SimpleLLMClient:
                         "text": text,
                         "model": current_model,
                         "debug_label": debug_label,
-                        "attempt": int(attempt_index or 1),
                     })
                 except Exception:
                     pass
@@ -885,6 +888,49 @@ class SimpleLLMClient:
                 else:
                     # 尝试 duck typing
                     messages.append({"role": msg.role, "content": msg.content})
+
+            # === 主调用前进行一次硬预算检查 ===
+            rough_budget = self.build_request_budget(
+                system_prompt=system_prompt,
+                messages=messages[1:],
+                tools_definition=tools_definition,
+                max_tokens=max_tokens,
+                force_exact=False,
+            )
+            budget = rough_budget
+            near_limit = rough_budget.total_with_reserved_tokens >= int(self.max_context_window * 0.7)
+            if near_limit:
+                budget = self.build_request_budget(
+                    system_prompt=system_prompt,
+                    messages=messages[1:],
+                    tools_definition=tools_definition,
+                    max_tokens=max_tokens,
+                    force_exact=True,
+                )
+
+            if budget.over_budget:
+                error_msg = (
+                    "Prompt exceeds max_context_window before request dispatch: "
+                    f"used_input={budget.used_input_tokens}, "
+                    f"available_input={budget.available_input_tokens}, "
+                    f"system={budget.system_prompt_tokens}, "
+                    f"messages={budget.message_tokens}, "
+                    f"tools={budget.tool_tokens}, "
+                    f"image_surcharge={budget.image_surcharge_tokens}, "
+                    f"reserved_output={budget.reserved_output_tokens}, "
+                    f"safety_margin={budget.safety_margin_tokens}, "
+                    f"context_limit={budget.context_limit}"
+                )
+                safe_print(f"❌ {error_msg}")
+                return LLMResponse(
+                    status="error",
+                    output="",
+                    tool_calls=[],
+                    model=model,
+                    finish_reason="context_limit_exceeded",
+                    error_information=error_msg,
+                    request_budget=budget.to_dict(),
+                )
             
             # 获取模型级别的配置（可覆盖全局 api_key 和 base_url）
             model_extra_params = self.model_configs.get(model, {})
@@ -901,6 +947,7 @@ class SimpleLLMClient:
                 # --- LiteLLM 原生超时设定（从配置文件读取）---
                 "timeout": self.timeout,              # 建立连接及整体响应的最大等待时间（秒）
                 "stream_timeout": self.stream_timeout,  # 两个流式数据块（chunk）之间的最大间隔时间（秒）
+                "stream_options": {"include_usage": True},
             }
             
             # 只在 base_url 非空时添加 api_base
@@ -997,6 +1044,7 @@ class SimpleLLMClient:
                 accumulated_tool_calls = {}  # index -> {id, name, arguments}
                 finish_reason = "unknown"
                 response_model = model
+                usage = None
                 chunk_count = 0
                 content_stream_state = _EmbeddedToolCallStreamState()
                 reasoning_stream_state = _EmbeddedToolCallStreamState()
@@ -1035,51 +1083,65 @@ class SimpleLLMClient:
                 try:
                     # --- 强制首包超时检测（包含 completion 调用以防止连接池死锁）---
                     try:
+                        # 定义完整的初始化和首包获取函数（防止 httpx 连接池锁死锁）
+                        def get_response_and_first_chunk():
+                            iterator = completion(**kwargs)
+                            first = next(iterator)
+                            return iterator, first
+
                         # 强制首包超时时间（秒），包含连接建立+首包接收，防止 httpx 连接池死锁
                         first_chunk_timeout = self.first_chunk_timeout  # 从配置文件读取
-                        response_iterator, first_chunk = self._fetch_response_and_first_chunk_with_timeout(
-                            kwargs=kwargs,
-                            timeout_sec=first_chunk_timeout,
-                        )
 
-                        # 处理首包
-                        chunk_count += 1
-                        latency = time.time() - request_start_time
-                        safe_print(f"   ⚡️ 首包延迟: {latency:.2f}s")
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                            future = executor.submit(get_response_and_first_chunk)
+                            try:
+                                # 强制等待整个初始化过程（包括 completion 调用）
+                                response_iterator, first_chunk = future.result(timeout=first_chunk_timeout)
 
-                        # 处理首包逻辑
-                        if hasattr(first_chunk, 'model'):
-                            response_model = first_chunk.model
+                                # 处理首包
+                                chunk_count += 1
+                                latency = time.time() - request_start_time
+                                safe_print(f"   ⚡️ 首包延迟: {latency:.2f}s")
 
-                        if first_chunk.choices:
-                            delta = first_chunk.choices[0].delta
-                            if hasattr(delta, 'content') and delta.content:
-                                accumulated_content += delta.content
-                                visible_piece = content_stream_state.feed(delta.content)
-                                visible_content += visible_piece
-                                _emit_visible_text("content", visible_piece)
+                                # 处理首包逻辑
+                                if hasattr(first_chunk, 'model'):
+                                    response_model = first_chunk.model
+                                normalized_usage = self._normalize_usage(getattr(first_chunk, "usage", None))
+                                if normalized_usage:
+                                    usage = normalized_usage
 
-                            # 累积 reasoning_content（thinking/reasoning 模型）
-                            if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                                accumulated_reasoning_content += delta.reasoning_content
-                                visible_reasoning_piece = reasoning_stream_state.feed(delta.reasoning_content)
-                                visible_reasoning_content += visible_reasoning_piece
-                                _emit_visible_text("reasoning", visible_reasoning_piece)
+                                if first_chunk.choices:
+                                    delta = first_chunk.choices[0].delta
+                                    if hasattr(delta, 'content') and delta.content:
+                                        accumulated_content += delta.content
+                                        visible_piece = content_stream_state.feed(delta.content)
+                                        visible_content += visible_piece
+                                        _emit_visible_text("content", visible_piece)
 
-                            if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                                for tc in delta.tool_calls:
-                                    idx = tc.index
-                                    if idx not in accumulated_tool_calls:
-                                        accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
-                                    if tc.id:
-                                        accumulated_tool_calls[idx]["id"] = tc.id
-                                    if tc.function and tc.function.name:
-                                        accumulated_tool_calls[idx]["name"] += tc.function.name
-                                    if tc.function and tc.function.arguments:
-                                        accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+                                    # 累积 reasoning_content（thinking/reasoning 模型）
+                                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                                        accumulated_reasoning_content += delta.reasoning_content
+                                        visible_reasoning_piece = reasoning_stream_state.feed(delta.reasoning_content)
+                                        visible_reasoning_content += visible_reasoning_piece
+                                        _emit_visible_text("reasoning", visible_reasoning_piece)
 
-                            if first_chunk.choices[0].finish_reason:
-                                finish_reason = first_chunk.choices[0].finish_reason
+                                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                                        for tc in delta.tool_calls:
+                                            idx = tc.index
+                                            if idx not in accumulated_tool_calls:
+                                                accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                                            if tc.id:
+                                                accumulated_tool_calls[idx]["id"] = tc.id
+                                            if tc.function and tc.function.name:
+                                                accumulated_tool_calls[idx]["name"] += tc.function.name
+                                            if tc.function and tc.function.arguments:
+                                                accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+
+                                    if first_chunk.choices[0].finish_reason:
+                                        finish_reason = first_chunk.choices[0].finish_reason
+
+                            except concurrent.futures.TimeoutError:
+                                raise TimeoutError(f"连接建立或首包接收超时（超过 {first_chunk_timeout}s）- 可能原因：httpx连接池死锁、网络断开、服务器无响应")
 
                     except StopIteration:
                         safe_print("   ⚠️ 响应为空（无数据块）")
@@ -1098,6 +1160,9 @@ class SimpleLLMClient:
 
                         if hasattr(chunk, 'model'):
                             response_model = chunk.model
+                        normalized_usage = self._normalize_usage(getattr(chunk, "usage", None))
+                        if normalized_usage:
+                            usage = normalized_usage
 
                         if not chunk.choices:
                             continue
@@ -1192,13 +1257,6 @@ class SimpleLLMClient:
                         and not tried_kimi_non_stream_fallback
                     ):
                         safe_print("⚠️ Kimi raw tool-call markup detected without parsed tool_calls; retrying once with non-stream mode...")
-                        self._emit_stream_reset(
-                            stream_callback,
-                            model=response_model,
-                            debug_label=debug_label,
-                            attempt=attempt_index,
-                            reason="kimi_non_stream_fallback",
-                        )
                         kwargs["stream"] = False
                         tried_kimi_non_stream_fallback = True
                         continue
@@ -1209,7 +1267,9 @@ class SimpleLLMClient:
                         tool_calls=final_tool_calls,
                         model=response_model,
                         finish_reason=finish_reason,
-                        reasoning_content=sanitized_reasoning
+                        reasoning_content=sanitized_reasoning,
+                        usage=usage,
+                        request_budget=budget.to_dict(),
                     )
 
                 except Exception as _compat_e:
@@ -1228,8 +1288,7 @@ class SimpleLLMClient:
         except Exception as e:
             # 捕获所有异常，包括 LiteLLM 抛出的超时异常
             error_msg = str(e)
-            lowered_error_msg = error_msg.lower()
-            is_timeout = any(keyword in lowered_error_msg for keyword in ["timeout", "timed out", "time out"]) or "超时" in error_msg
+            is_timeout = any(keyword in error_msg.lower() for keyword in ["timeout", "timed out", "time out"])
             
             if is_timeout:
                 safe_print(f"⏱️  LLM调用超时 (原生超时机制)")
@@ -1393,8 +1452,7 @@ class SimpleLLMClient:
         Returns:
             友好的错误类型描述
         """
-        lowered = error_info.lower()
-        if "timeout" in lowered or "timed out" in lowered or "time out" in lowered or "超时" in error_info:
+        if "timeout" in error_info.lower() or "timed out" in error_info.lower():
             return "连接超时"
         elif "Internal Server Error" in error_info:
             return "服务器内部错误"
@@ -1416,69 +1474,10 @@ class SimpleLLMClient:
             return "速率限制"
         elif "insufficient" in error_info.lower() or "quota" in error_info.lower():
             return "余额不足"
+        elif "context window" in error_info.lower() or "context_limit_exceeded" in error_info.lower() or "Prompt exceeds max_context_window" in error_info:
+            return "上下文超限"
         else:
             return "未知错误"
-
-    def _is_retriable_error(self, error_info: str) -> bool:
-        """
-        仅对更可能因网络/服务端抖动恢复的错误继续重试。
-        """
-        error_text = str(error_info or "")
-        lowered = error_text.lower()
-
-        non_retriable_markers = [
-            "invalid api key",
-            "incorrect api key",
-            "authentication",
-            "unauthorized",
-            "permission denied",
-            "forbidden",
-            "insufficient",
-            "quota",
-            "credit balance",
-            "payment required",
-            "model not found",
-            "no such model",
-            "unknown model",
-            "context length",
-            "maximum context length",
-            "prompt is too long",
-            "content policy",
-            "safety system",
-            "did not match schema",
-            "expected array, but got string",
-            "expected string, but got array",
-            "expected integer, but got null",
-            "not in request.tools",
-        ]
-        if any(marker in lowered for marker in non_retriable_markers):
-            return False
-
-        retriable_markers = [
-            "timeout",
-            "timed out",
-            "time out",
-            "internal server error",
-            "server error",
-            "service unavailable",
-            "bad gateway",
-            "gateway timeout",
-            "connection reset",
-            "connection aborted",
-            "connection refused",
-            "connection error",
-            "temporarily unavailable",
-            "temporarily overloaded",
-            "overloaded",
-            "rate limit",
-            "too many requests",
-            "httpx",
-        ]
-        if any(marker in lowered for marker in retriable_markers):
-            return True
-
-        # 对未知错误保守重试一次的价值通常高于直接放弃。
-        return True
     
     def _generate_retry_hint(self, error_info: str, retry_count: int) -> str:
         """
