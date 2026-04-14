@@ -146,6 +146,63 @@ tools:
           description: "保存搜索结果的相对路径（.md 文件），请保存在 temp/web_search目录中。"
       required: ["query","save_path"]
 
+  exa_search:
+    level: 0
+    type: tool_call_agent
+    name: "exa_search"
+    description: "Use Exa AI-powered search for high-quality web results. Supports content retrieval (highlights, full text, summaries), category filtering (company, research paper, news, etc.), domain filtering, and date ranges. Requires EXA_API_KEY."
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "Search query."
+        max_results:
+          type: "integer"
+          default: 10
+          description: "Maximum number of results, default 10."
+        search_type:
+          type: "string"
+          default: "auto"
+          description: "Search type: 'auto' (default), 'neural', 'fast', or 'instant'."
+        content_mode:
+          type: "string"
+          default: "highlights"
+          description: "Content retrieval mode: 'highlights' (default), 'text', 'summary', or 'none'."
+        category:
+          type: "string"
+          description: "Filter by category: 'company', 'research paper', 'news', 'personal site', 'financial report', 'people'."
+        include_domains:
+          type: "array"
+          items:
+            type: "string"
+          description: "Only include results from these domains."
+        exclude_domains:
+          type: "array"
+          items:
+            type: "string"
+          description: "Exclude results from these domains."
+        include_text:
+          type: "array"
+          items:
+            type: "string"
+          description: "Strings that must appear in page text."
+        exclude_text:
+          type: "array"
+          items:
+            type: "string"
+          description: "Strings to exclude from results."
+        start_published_date:
+          type: "string"
+          description: "ISO 8601 date; only results published after this date."
+        end_published_date:
+          type: "string"
+          description: "ISO 8601 date; only results published before this date."
+        save_path:
+          type: "string"
+          description: "Relative path to save results (.md file), save in temp/exa_search directory."
+      required: ["query"]
+
   google_scholar_search:
     level: 0
     type: tool_call_agent

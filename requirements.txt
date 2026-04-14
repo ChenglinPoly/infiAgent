@@ -18,6 +18,7 @@ pdfplumber>=0.10.0
 python-docx>=1.1.0
 crawl4ai>=0.3.0         # 网页爬取（会自动安装 playwright）
 ddgs>=1.0.0             # DuckDuckGo 搜索
+exa-py>=2.0.0           # Exa AI-powered search
 arxiv>=2.0.0            # arXiv API
 prompt_toolkit>=3.0.0   # CLI 交互
 rich>=13.0.0            # 终端美化

@@ -16,6 +16,8 @@ from .web_tools import (
     FileDownloadTool
 )
 
+from .exa_tools import ExaSearchTool
+
 from .arxiv_tools import ArxivSearchTool
 
 from .document_tools import ParseDocumentTool
@@ -129,4 +131,5 @@ __all__ = [
     "TaskShareContextPathTool",
     "ListTaskIdsTool",
     "TaskHistorySearchTool",
+    "ExaSearchTool",
 ]
