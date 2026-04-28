@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/polyuiislab-infiagent-badge.png)](https://mseep.ai/app/polyuiislab-infiagent)
+
 <div align="center">
   <img src="assets/logo.png" alt="infiAgent Logo" width="200">
 
