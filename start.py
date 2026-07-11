@@ -12,6 +12,7 @@ import os
 from datetime import datetime
 import json
 import threading
+from typing import Any, Dict
 
 # Windows控制台UTF-8编码支持（解决emoji显示问题）
 if sys.platform == 'win32':
@@ -88,11 +89,14 @@ def _configure_packaged_playwright_runtime() -> None:
 
 _configure_packaged_playwright_runtime()
 
-from utils.user_paths import apply_runtime_env_defaults, get_user_data_root
+from utils.user_paths import apply_runtime_env_defaults, get_seed_builtin_resources_enabled, get_user_data_root
 from utils.runtime_control import get_running_task, request_fresh
 from utils.config_loader import ConfigLoader
 from core.hierarchy_manager import get_hierarchy_manager
 from core.agent_executor import AgentExecutor
+from infiagent import infiagent
+from core.runtime_exceptions import InfiAgentRunError
+import utils.event_emitter as event_emitter_module
 
 # 统一运行时默认环境：用户目录配置 / agent_library / skills_library / command_mode
 apply_runtime_env_defaults()
@@ -121,8 +125,36 @@ def main():
     parser.add_argument('--force-new', action='store_true', help='强制清空所有状态，开始新任务')
     parser.add_argument('--auto-mode', type=str, choices=['true', 'false'], help='工具执行模式：true=自动执行，false=需要确认')
     parser.add_argument('--direct-tools', action='store_true', help='兼容旧参数；当前后端始终使用进程内 direct-tools 模式')
+    parser.add_argument('--system-add-path', type=str, help='任务级 system-add 文件或目录路径')
+    parser.add_argument('--auto-resume-attempts', type=int, default=None, help='异常中断后自动 resume 的最大次数，默认读取 MLA_AUTO_RESUME_ATTEMPTS 或 0')
+    parser.add_argument('--auto-resume-delay-sec', type=float, default=None, help='每次自动 resume 前等待秒数，默认读取 MLA_AUTO_RESUME_DELAY_SEC 或 1')
     
     args = parser.parse_args()
+
+    def _int_arg_or_env(arg_value, env_key: str, default: int = 0) -> int:
+        if arg_value is not None:
+            return max(0, int(arg_value))
+        raw = os.environ.get(env_key)
+        if raw in (None, ""):
+            return default
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return default
+
+    def _float_arg_or_env(arg_value, env_key: str, default: float = 1.0) -> float:
+        if arg_value is not None:
+            return max(0.0, float(arg_value))
+        raw = os.environ.get(env_key)
+        if raw in (None, ""):
+            return default
+        try:
+            return max(0.0, float(raw))
+        except Exception:
+            return default
+
+    auto_resume_attempts = _int_arg_or_env(args.auto_resume_attempts, "MLA_AUTO_RESUME_ATTEMPTS", 0)
+    auto_resume_delay_sec = _float_arg_or_env(args.auto_resume_delay_sec, "MLA_AUTO_RESUME_DELAY_SEC", 1.0)
     
     # Windows命令行参数编码修复
     if sys.platform == 'win32' and args.user_input:
@@ -272,6 +304,225 @@ def main():
         print("="*100 + "\n")
     
     try:
+        if args.jsonl:
+            class _SdkJsonlBridge:
+                def __init__(self, jsonl_emitter):
+                    self.enabled = False
+                    self.jsonl_emitter = jsonl_emitter
+
+                def emit(self, event: Dict[str, Any]):
+                    if not isinstance(event, dict):
+                        return
+                    event_type = str(event.get("type") or "").strip()
+                    if event_type in {"human_in_loop", "tool_confirmation"}:
+                        self.jsonl_emitter.emit(event)
+
+                def token(self, text: str):
+                    return
+
+                def progress(self, phase: str, pct: int):
+                    return
+
+                def notice(self, text: str):
+                    self.jsonl_emitter.emit({"type": "notice", "text": str(text or "")})
+
+                def warn(self, text: str):
+                    self.jsonl_emitter.emit({"type": "warn", "text": str(text or "")})
+
+                def error(self, text: str):
+                    self.jsonl_emitter.emit({"type": "error", "text": str(text or "")})
+
+                def artifact(self, kind: str, path: str = None, summary: str = None, preview: str = None):
+                    self.jsonl_emitter.emit({
+                        "type": "artifact",
+                        "kind": kind,
+                        "path": path,
+                        "summary": summary,
+                        "preview": preview,
+                    })
+
+                def human_in_loop(self, hil_id: str, title: str, message: str, ui: Dict[str, Any], timeout_sec: int = 1800, resume_hint: str = None):
+                    self.jsonl_emitter.emit({
+                        "type": "human_in_loop",
+                        "hil_id": hil_id,
+                        "title": title,
+                        "message": message,
+                        "ui": ui,
+                        "timeout_sec": timeout_sec,
+                        "resume_hint": resume_hint,
+                    })
+
+            event_emitter_module._event_emitter = _SdkJsonlBridge(emitter)
+
+            def _map_sdk_event(event: Dict[str, Any]) -> Dict[str, Any] | None:
+                event_type = str(event.get("event_type") or "")
+                payload = event.get("payload", {}) if isinstance(event.get("payload"), dict) else {}
+
+                if event_type == "agent.start":
+                    return {
+                        "type": "agent_start",
+                        "agent": payload.get("agent_name", ""),
+                        "task": payload.get("task_input", ""),
+                    }
+                if event_type == "agent.end":
+                    return {
+                        "type": "agent_end",
+                        "status": payload.get("status", ""),
+                    }
+                if event_type == "run.thinking.start":
+                    return {
+                        "type": "thinking_start",
+                        "agent": payload.get("agent_name", ""),
+                        "is_initial": bool(payload.get("is_initial")),
+                        "is_forced": bool(payload.get("is_forced")),
+                    }
+                if event_type == "run.thinking.end":
+                    return {
+                        "type": "thinking_end",
+                        "agent": payload.get("agent_name", ""),
+                        "result": payload.get("result", "") or payload.get("raw_output", ""),
+                        "model": payload.get("model", ""),
+                        "usage": payload.get("usage", {}) or {},
+                        "cumulative_usage": payload.get("cumulative_usage", {}) or {},
+                    }
+                if event_type == "run.thinking.token":
+                    return {
+                        "type": "thinking_token",
+                        "agent": payload.get("agent_name", ""),
+                        "model": payload.get("model", ""),
+                        "text": payload.get("text", ""),
+                        "debug_label": payload.get("debug_label", ""),
+                    }
+                if event_type == "run.thinking.reasoning_token":
+                    return {
+                        "type": "thinking_token",
+                        "agent": payload.get("agent_name", ""),
+                        "model": payload.get("model", ""),
+                        "text": payload.get("text", ""),
+                        "token_kind": "reasoning",
+                        "debug_label": payload.get("debug_label", ""),
+                    }
+                if event_type == "run.llm.token":
+                    return {
+                        "type": "token",
+                        "agent": payload.get("agent_name", ""),
+                        "model": payload.get("model", ""),
+                        "text": payload.get("text", ""),
+                        "debug_label": payload.get("debug_label", ""),
+                    }
+                if event_type == "run.llm.reasoning_token":
+                    return {
+                        "type": "reasoning_token",
+                        "agent": payload.get("agent_name", ""),
+                        "model": payload.get("model", ""),
+                        "text": payload.get("text", ""),
+                        "debug_label": payload.get("debug_label", ""),
+                    }
+                if event_type == "run.tool.start":
+                    return {
+                        "type": "tool_call",
+                        "name": payload.get("tool_name", ""),
+                        "tool_name": payload.get("tool_name", ""),
+                        "arguments": payload.get("arguments", {}) or {},
+                    }
+                if event_type == "run.tool.end":
+                    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+                    error_text = str(result.get("error_information") or result.get("error") or "")
+                    preview = str(result.get("output", "") or "")
+                    return {
+                        "type": "tool_result",
+                        "name": payload.get("tool_name", ""),
+                        "tool_name": payload.get("tool_name", ""),
+                        "status": payload.get("status", ""),
+                        "output_preview": preview[:2000],
+                        "error": error_text,
+                    }
+                if event_type == "run.llm.end":
+                    return {
+                        "type": "llm_end",
+                        "usage": payload.get("usage", {}) or {},
+                        "cumulative_usage": payload.get("cumulative_usage", {}) or {},
+                        "request_budget": payload.get("request_budget", {}) or {},
+                    }
+                return None
+
+            def _on_sdk_event(event: Dict[str, Any]) -> None:
+                mapped = _map_sdk_event(event)
+                if mapped:
+                    emitter.emit(mapped)
+
+            agent = infiagent(
+                user_data_root=str(get_user_data_root()),
+                llm_config_path=os.environ.get("MLA_LLM_CONFIG_PATH"),
+                agent_library_dir=os.environ.get("MLA_AGENT_LIBRARY_DIR"),
+                skills_dir=os.environ.get("MLA_SKILLS_LIBRARY_DIR"),
+                tools_dir=os.environ.get("MLA_TOOLS_LIBRARY_DIR"),
+                default_agent_system=args.agent_system,
+                default_agent_name=args.agent_name,
+                seed_builtin_resources=get_seed_builtin_resources_enabled(),
+                direct_tools=getattr(args, 'direct_tools', False),
+            )
+
+            result = agent.run(
+                args.user_input,
+                task_id=args.task_id,
+                agent_system=args.agent_system,
+                agent_name=args.agent_name,
+                force_new=bool(args.force_new),
+                collect_events=False,
+                on_event=_on_sdk_event,
+                include_trace=False,
+                raise_on_error=True,
+                stream_llm_tokens=True,
+                auto_mode=(args.auto_mode == 'true') if args.auto_mode is not None else None,
+                auto_resume_attempts=auto_resume_attempts,
+                auto_resume_delay_sec=auto_resume_delay_sec,
+                system_add_path=args.system_add_path,
+            )
+            ok = str(result.get("status") or "") == "success"
+            summary = str(result.get("output") or result.get("error") or result.get("error_information") or "")
+            emitter.result(ok, summary)
+            emitter.end("ok" if ok else "error")
+            return 0 if ok else 1
+
+        # 非 JSONL 路线也统一走 SDK，但保留现有控制台输出风格
+        agent = infiagent(
+            user_data_root=str(get_user_data_root()),
+            llm_config_path=os.environ.get("MLA_LLM_CONFIG_PATH"),
+            agent_library_dir=os.environ.get("MLA_AGENT_LIBRARY_DIR"),
+            skills_dir=os.environ.get("MLA_SKILLS_LIBRARY_DIR"),
+            tools_dir=os.environ.get("MLA_TOOLS_LIBRARY_DIR"),
+            default_agent_system=args.agent_system,
+            default_agent_name=args.agent_name,
+            seed_builtin_resources=get_seed_builtin_resources_enabled(),
+            direct_tools=getattr(args, 'direct_tools', False),
+        )
+        result = agent.run(
+            args.user_input,
+            task_id=args.task_id,
+            agent_system=args.agent_system,
+            agent_name=args.agent_name,
+            force_new=bool(args.force_new),
+            collect_events=False,
+            include_trace=False,
+            raise_on_error=True,
+            stream_llm_tokens=False,
+            auto_mode=(args.auto_mode == 'true') if args.auto_mode is not None else None,
+            auto_resume_attempts=auto_resume_attempts,
+            auto_resume_delay_sec=auto_resume_delay_sec,
+            system_add_path=args.system_add_path,
+        )
+
+        print(f"\n{'='*100}")
+        print("📊 执行结果")
+        print(f"{'='*100}")
+        print(f"状态: {result.get('status', 'unknown')}")
+        print(f"输出: {result.get('output', 'N/A')}")
+        if result.get('error_information'):
+            print(f"错误信息: {result.get('error_information')}")
+        print(f"{'='*100}\n")
+        return 0 if result.get('status') == 'success' else 1
+        
         # 初始化配置加载器
         if args.jsonl:
             emitter.token("加载配置...")
@@ -303,17 +554,8 @@ def main():
         if args.force_new:
             if not args.jsonl:
                 print("🗑️  --force-new: 清空所有状态，开始新任务")
-            context = hierarchy_manager._load_context()
-            context["current"] = {
-                "instructions": [],
-                "hierarchy": {},
-                "agents_status": {},
-                "start_time": datetime.now().isoformat(),
-                "last_updated": datetime.now().isoformat()
-            }
             # 保留全局 history/agent_time_history 等其他字段不动
-            hierarchy_manager._save_context(context)
-            hierarchy_manager._save_stack([])
+            hierarchy_manager.clear_current_state()
         else:
             from core.state_cleaner import clean_before_start
             clean_before_start(args.task_id, args.user_input)
@@ -394,6 +636,14 @@ def main():
         print("\n\n⚠️  用户中断执行")
         return 130
     
+    except InfiAgentRunError as e:
+        if args.jsonl:
+            text = str(e.result.get("error") or e.result.get("error_information") or str(e))
+            emitter.error(text)
+            emitter.end("error")
+        else:
+            print(f"\n\n❌ 执行失败: {e}")
+        return 1
     except Exception as e:
         if args.jsonl:
             emitter.error(str(e))

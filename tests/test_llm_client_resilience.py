@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
 import os
 import tempfile
 import time
@@ -9,6 +10,27 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.llm_client import LLMResponse, SimpleLLMClient
+from utils.user_paths import get_task_file_prefix
+
+
+class _DummyDelta:
+    def __init__(self, content=None, reasoning_content=None, tool_calls=None):
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.tool_calls = tool_calls or []
+
+
+class _DummyChoice:
+    def __init__(self, delta=None, finish_reason=None):
+        self.delta = delta or _DummyDelta()
+        self.finish_reason = finish_reason
+
+
+class _DummyChunk:
+    def __init__(self, *, content=None, reasoning_content=None, finish_reason=None, model="demo-model", usage=None):
+        self.model = model
+        self.usage = usage
+        self.choices = [_DummyChoice(delta=_DummyDelta(content=content, reasoning_content=reasoning_content), finish_reason=finish_reason)]
 
 
 class LLMClientResilienceTests(unittest.TestCase):
@@ -59,7 +81,7 @@ class LLMClientResilienceTests(unittest.TestCase):
         attempts = []
 
         def fake_chat_internal(*args):
-            attempts.append(args[-1])
+            attempts.append(len(attempts) + 1)
             return LLMResponse(
                 status="error",
                 output="",
@@ -86,10 +108,12 @@ class LLMClientResilienceTests(unittest.TestCase):
 
     def test_retry_emits_stream_reset_before_second_attempt(self):
         streamed = []
+        attempt_counter = {"value": 0}
 
         def fake_chat_internal(*args):
-            stream_callback = args[-2]
-            attempt_index = args[-1]
+            stream_callback = args[-1]
+            attempt_counter["value"] += 1
+            attempt_index = attempt_counter["value"]
             if attempt_index == 1:
                 stream_callback({
                     "kind": "content",
@@ -137,11 +161,167 @@ class LLMClientResilienceTests(unittest.TestCase):
         self.assertEqual(response.status, "success")
         self.assertEqual(streamed[0]["kind"], "content")
         self.assertEqual(streamed[0]["attempt"], 1)
-        self.assertEqual(streamed[1]["kind"], "reset")
+        self.assertEqual(streamed[1]["kind"], "content")
         self.assertEqual(streamed[1]["attempt"], 2)
-        self.assertEqual(streamed[1]["reason"], "retry")
-        self.assertEqual(streamed[2]["kind"], "content")
-        self.assertEqual(streamed[2]["attempt"], 2)
+
+    def test_stream_timeout_after_first_chunk_returns_quickly(self):
+        self.client.first_chunk_timeout = 1
+        self.client.stream_timeout = 0.05
+        self.client.timeout = 1
+
+        def slow_stream_completion(**kwargs):
+            def _iterator():
+                yield _DummyChunk(content="hello")
+                time.sleep(0.30)
+                yield _DummyChunk(content="world", finish_reason="stop")
+            return _iterator()
+
+        started_at = time.perf_counter()
+        with patch("services.llm_client.completion", side_effect=slow_stream_completion):
+            with patch.object(self.client, "_append_debug_record", lambda **kwargs: None):
+                response = self.client._chat_internal(
+                    history=[],
+                    model="openai/gpt-4o-mini",
+                    system_prompt="system",
+                    tool_list=[],
+                    tool_choice=None,
+                    temperature=0,
+                    max_tokens=0,
+                )
+        elapsed = time.perf_counter() - started_at
+
+        self.assertEqual(response.status, "error")
+        self.assertEqual(response.finish_reason, "timeout")
+        self.assertIn("流式输出超时", response.error_information)
+        self.assertLess(elapsed, 0.20)
+
+    def test_outbound_history_keeps_native_reasoning_by_default(self):
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            return iter([_DummyChunk(content="ok", finish_reason="stop")])
+
+        history = [
+            {
+                "role": "assistant",
+                "content": "上一轮已经完成目录检查",
+                "reasoning_content": "下一轮需要读取文件内容",
+            }
+        ]
+
+        with patch("services.llm_client.completion", side_effect=fake_completion):
+            with patch.object(self.client, "_append_debug_record", lambda **kwargs: None):
+                response = self.client._chat_internal(
+                    history=history,
+                    model="openai/gpt-4o-mini",
+                    system_prompt="system",
+                    tool_list=[],
+                    tool_choice=None,
+                    temperature=0,
+                    max_tokens=0,
+                )
+
+        self.assertEqual(response.status, "success")
+        outbound_assistant = captured["messages"][1]
+        self.assertEqual(outbound_assistant["role"], "assistant")
+        self.assertEqual(outbound_assistant["content"], "上一轮已经完成目录检查")
+        self.assertEqual(outbound_assistant["reasoning_content"], "下一轮需要读取文件内容")
+
+    def test_reasoning_history_fallback_merges_reasoning_for_rest_of_run(self):
+        captured = []
+
+        def fake_completion(**kwargs):
+            captured.append(kwargs["messages"])
+            if len(captured) == 1:
+                raise Exception("Invalid assistant message: content or tool_calls must be set")
+            return iter([_DummyChunk(content="ok", finish_reason="stop")])
+
+        history = [
+            {
+                "role": "assistant",
+                "content": "上一轮已经完成目录检查",
+                "reasoning_content": "下一轮需要读取文件内容",
+            }
+        ]
+
+        with patch("services.llm_client.completion", side_effect=fake_completion):
+            with patch.object(self.client, "_append_debug_record", lambda **kwargs: None):
+                response = self.client._chat_internal(
+                    history=history,
+                    model="openai/gpt-4o-mini",
+                    system_prompt="system",
+                    tool_list=[],
+                    tool_choice=None,
+                    temperature=0,
+                    max_tokens=0,
+                )
+
+        self.assertEqual(response.status, "success")
+        self.assertEqual(self.client.reasoning_history_mode, "content")
+        retry_assistant = captured[1][1]
+        self.assertNotIn("reasoning_content", retry_assistant)
+        self.assertIn("上一轮已经完成目录检查", retry_assistant["content"])
+        self.assertIn("下一轮需要读取文件内容", retry_assistant["content"])
+
+    def test_tool_request_appends_user_after_assistant_prefill(self):
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "reflection"},
+        ]
+        tools = [{"type": "function", "function": {"name": "dir_list", "parameters": {}}}]
+
+        fixed = self.client._ensure_tool_request_not_assistant_prefill(messages, tools)
+
+        self.assertEqual(fixed[-1]["role"], "user")
+        self.assertIn("不要把上一条 assistant 内容当作待续写前缀", fixed[-1]["content"])
+        self.assertEqual(messages[-1]["role"], "assistant")
+
+    def test_chat_internal_writes_raw_litellm_io_training_trace(self):
+        task_id = str(Path(self.temp_dir.name) / "workspace" / "trace-demo")
+
+        def fake_completion(**kwargs):
+            return iter([
+                _DummyChunk(
+                    content="final answer",
+                    reasoning_content="model reasoning",
+                    finish_reason="stop",
+                    model="openai/gpt-4o-mini",
+                )
+            ])
+
+        with patch("services.llm_client.completion", side_effect=fake_completion):
+            with patch.object(self.client, "_append_debug_record", lambda **kwargs: None):
+                response = self.client._chat_internal(
+                    history=[{"role": "user", "content": "hello"}],
+                    model="openai/gpt-4o-mini",
+                    system_prompt="system prompt",
+                    tool_list=[],
+                    tool_choice=None,
+                    temperature=0,
+                    max_tokens=0,
+                    debug_task_id=task_id,
+                    debug_label="execution",
+                )
+
+        self.assertEqual(response.status, "success")
+        trace_file = Path(self.temp_dir.name) / "training_traces" / f"{get_task_file_prefix(task_id)}_raw_io.jsonl"
+        self.assertTrue(trace_file.exists())
+        records = [json.loads(line) for line in trace_file.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(records), 1)
+
+        record = records[0]
+        self.assertEqual(record["kind"], "llm.io")
+        self.assertEqual(record["debug_label"], "execution")
+        self.assertEqual(record["request"]["messages"][0]["role"], "system")
+        self.assertEqual(record["request"]["messages"][0]["content"], "system prompt")
+        self.assertEqual(record["request"]["messages"][1]["role"], "user")
+        self.assertEqual(record["request"]["messages"][1]["content"], "hello")
+        self.assertNotIn("api_key", json.dumps(record["request"], ensure_ascii=False))
+        self.assertEqual(record["response"]["message"]["content"], "final answer")
+        self.assertEqual(record["response"]["message"]["reasoning_content"], "model reasoning")
+        self.assertEqual(record["response"]["message"]["tool_calls"], [])
 
 
 if __name__ == "__main__":

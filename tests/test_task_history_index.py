@@ -93,6 +93,49 @@ class TaskHistoryIndexTests(unittest.TestCase):
             self.assertTrue(result["results"])
             self.assertIn("summary.md", result["output"])
 
+    def test_task_history_search_handles_symbol_heavy_keyword(self):
+        task_id = str((self.root / "task_symbol_keyword").resolve())
+        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(self.root)}):
+            context = self._sample_context(task_id)
+            context["history"][0]["instructions"][0]["instruction"] = "继续处理 /tmp/demo:a-b(1)/result.md 相关任务"
+            context["history"][0]["agents_status"]["alpha_agent_1"]["final_output"] = "已修复 /tmp/demo:a-b(1)/result.md"
+            sync_task_history_from_context(task_id, context)
+
+            tool = TaskHistorySearchTool()
+            result = tool.execute(task_id, {"keyword": "/tmp/demo:a-b(1)/result.md"})
+            self.assertEqual(result["status"], "success")
+            self.assertTrue(result["results"])
+            self.assertIn("result.md", result["output"])
+
+    def test_task_history_search_supports_simple_round_range(self):
+        task_id = str((self.root / "task_round_range").resolve())
+        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(self.root)}):
+            context = self._sample_context(task_id)
+            context["history"].append(
+                {
+                    "instructions": [{"instruction": "第二轮：继续补充文档"}],
+                    "start_time": "2026-03-02T10:00:00+08:00",
+                    "completion_time": "2026-03-02T10:05:00+08:00",
+                    "hierarchy": {"alpha_agent_2": {"parent": None, "children": [], "level": 0}},
+                    "agents_status": {
+                        "alpha_agent_2": {
+                            "agent_name": "alpha_agent",
+                            "status": "completed",
+                            "final_output": "第二轮输出写入 summary_v2.md",
+                            "latest_thinking": "继续补充结论部分。",
+                        }
+                    },
+                }
+            )
+            sync_task_history_from_context(task_id, context)
+
+            tool = TaskHistorySearchTool()
+            result = tool.execute(task_id, {"round_range": "-1"})
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(len(result["results"]), 1)
+            self.assertIn("第二轮", result["output"])
+
     def test_task_history_records_default_returns_all_entries_for_task(self):
         task_id = str((self.root / "task_c").resolve())
         with runtime_env_scope({"MLA_USER_DATA_ROOT": str(self.root)}):
@@ -159,6 +202,23 @@ class TaskHistoryIndexTests(unittest.TestCase):
             self.assertEqual(visible_count, 1)
             self.assertEqual(total_count, 3)
             self.assertEqual(selected, [{"c": 3}])
+
+    def test_agent_system_specific_system_add_takes_precedence_over_default(self):
+        task_id = str((self.root / "task_system_add").resolve())
+        task_dir = Path(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "system-add.md").write_text("DEFAULT_SYSTEM_ADD", encoding="utf-8")
+        (task_dir / "system-add.OpenCowork.md").write_text("SYSTEM_SCOPE_ADD", encoding="utf-8")
+        (task_dir / "system-add.alpha_agent.md").write_text("ALPHA_SYSTEM_ADD", encoding="utf-8")
+
+        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(self.root)}):
+            hierarchy = _DummyHierarchyManager({"history": [], "current": {}, "runtime": {}})
+            builder = ContextBuilder(hierarchy, {}, _DummyConfigLoader(), llm_client=None)
+            content = builder._build_task_system_add(task_id, "alpha_agent")
+
+        self.assertIn("SYSTEM_SCOPE_ADD", content)
+        self.assertNotIn("ALPHA_SYSTEM_ADD", content)
+        self.assertNotIn("DEFAULT_SYSTEM_ADD", content)
 
 
 if __name__ == "__main__":

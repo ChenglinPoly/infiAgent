@@ -6,11 +6,13 @@ from utils.windows_compat import safe_print
 """
 
 import json
+import hashlib
 import time
 import uuid
 import asyncio
 import threading
-from typing import Dict, Any
+import os
+from typing import Dict, Any, List
 
 from tool_server_lite.registry import get_runtime_registry, get_runtime_registry_failures
 from utils.mcp_manager import call_mcp_tool
@@ -57,6 +59,8 @@ class ToolExecutor:
         self.task_permissions = {}  # {task_id: {"auto_mode": True/False}}
         self.agent_id = ""
         self.agent_name = ""
+        self.tool_runtime_defaults = self._load_tool_runtime_defaults()
+        self.tool_runtime_defaults_log_mode = self._load_tool_runtime_defaults_log_mode()
 
     def set_agent_context(self, *, agent_id: str = "", agent_name: str = ""):
         self.agent_id = str(agent_id or "")
@@ -69,6 +73,126 @@ class ToolExecutor:
             return int(((hierarchy.get(self.agent_id) or {}).get("level")) or 0)
         except Exception:
             return 0
+
+    def _load_tool_runtime_defaults(self) -> Dict[str, Any]:
+        raw = os.environ.get("MLA_TOOL_RUNTIME_DEFAULTS_JSON", "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                result: Dict[str, Any] = {}
+                for tool_name, defaults in parsed.items():
+                    if isinstance(defaults, dict):
+                        result[str(tool_name)] = dict(defaults)
+                return result
+        except Exception as exc:
+            safe_print(f"⚠️  解析 MLA_TOOL_RUNTIME_DEFAULTS_JSON 失败: {exc}")
+        return {}
+
+    def _merge_runtime_tool_defaults(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = self._resolve_runtime_tool_defaults(tool_name)
+        merged = dict(arguments or {})
+        if not defaults:
+            return merged
+        for key, value in defaults.items():
+            merged[str(key)] = value
+        return merged
+
+    def _resolve_runtime_tool_defaults(self, tool_name: str) -> Dict[str, Any]:
+        raw = self.tool_runtime_defaults
+        if not isinstance(raw, dict):
+            return {}
+        tool_name = str(tool_name or "").strip()
+        system_name = str(getattr(self.config_loader, "agent_system_name", "") or "").strip()
+
+        # Backward compatibility: old flat structure {tool_name: {...}}
+        if tool_name in raw and isinstance(raw.get(tool_name), dict):
+            return dict(raw.get(tool_name) or {})
+
+        merged: Dict[str, Any] = {}
+        global_section = raw.get("global")
+        if isinstance(global_section, dict) and isinstance(global_section.get(tool_name), dict):
+            merged.update(global_section.get(tool_name) or {})
+
+        system_section = raw.get("agent_systems")
+        if isinstance(system_section, dict) and system_name:
+            scoped = system_section.get(system_name)
+            if isinstance(scoped, dict) and isinstance(scoped.get(tool_name), dict):
+                merged.update(scoped.get(tool_name) or {})
+
+        return merged
+
+    def _load_tool_runtime_defaults_log_mode(self) -> str:
+        mode = str(os.environ.get("MLA_TOOL_RUNTIME_DEFAULTS_LOG_MODE", "fingerprint") or "fingerprint").strip().lower()
+        if mode not in {"plaintext", "redact", "fingerprint"}:
+            return "fingerprint"
+        return mode
+
+    @staticmethod
+    def _fingerprint_runtime_value(value: Any) -> str:
+        try:
+            normalized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            normalized = repr(value)
+        return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+    def _hidden_runtime_placeholder(self, key: str, value: Any) -> str:
+        mode = self.tool_runtime_defaults_log_mode
+        if mode == "plaintext":
+            return str(value)
+        if mode == "redact":
+            return f"[RUNTIME_HIDDEN_PARAM:{key}:REDACTED]"
+
+        value_type = type(value).__name__
+        if isinstance(value, str):
+            shape = f"type=str len={len(value)}"
+        elif isinstance(value, (list, tuple, set)):
+            shape = f"type={value_type} size={len(value)}"
+        elif isinstance(value, dict):
+            shape = f"type=dict keys={len(value)}"
+        else:
+            shape = f"type={value_type}"
+        return f"[RUNTIME_HIDDEN_PARAM:{key} {shape} fp={self._fingerprint_runtime_value(value)}]"
+
+    def _sanitize_runtime_tool_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = self._resolve_runtime_tool_defaults(tool_name)
+        if not defaults:
+            return dict(arguments or {})
+        sanitized = dict(arguments or {})
+        for key, value in defaults.items():
+            if str(key) in sanitized:
+                sanitized[str(key)] = self._hidden_runtime_placeholder(str(key), value)
+        return sanitized
+
+    def _sanitize_runtime_tool_result(self, tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = self._resolve_runtime_tool_defaults(tool_name)
+        if not defaults:
+            return dict(result or {})
+        if self.tool_runtime_defaults_log_mode == "plaintext":
+            return dict(result or {})
+
+        secret_strings: List[tuple[str, str]] = []
+        for key, value in defaults.items():
+            if isinstance(value, str) and value:
+                secret_strings.append((value, self._hidden_runtime_placeholder(str(key), value)))
+
+        def _walk(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: _walk(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_walk(v) for v in obj]
+            if isinstance(obj, tuple):
+                return tuple(_walk(v) for v in obj)
+            if isinstance(obj, str):
+                text = obj
+                for secret, placeholder in secret_strings:
+                    if secret in text:
+                        text = text.replace(secret, placeholder)
+                return text
+            return obj
+
+        return _walk(dict(result or {}))
     
     def _init_tools_registry(self):
         """
@@ -250,12 +374,14 @@ class ToolExecutor:
         Returns:
             执行结果字典
         """
+        merged_arguments = self._merge_runtime_tool_defaults(tool_name, arguments)
+        logged_arguments = self._sanitize_runtime_tool_arguments(tool_name, merged_arguments)
         try:
             trigger_tool_hooks(
                 when="before",
                 tool_name=tool_name,
                 task_id=task_id,
-                arguments=arguments,
+                arguments=logged_arguments,
                 agent_id=self.agent_id,
                 agent_name=self.agent_name,
                 agent_level=self._agent_level(),
@@ -271,13 +397,13 @@ class ToolExecutor:
             # 特殊处理final_output
             if tool_name == "final_output":
                 result = {
-                    "status": arguments.get("status", "success"),
-                    "output": arguments.get("output", ""),
-                    "error_information": arguments.get("error_information", "")
+                    "status": merged_arguments.get("status", "success"),
+                    "output": merged_arguments.get("output", ""),
+                    "error_information": merged_arguments.get("error_information", "")
                 }
             elif tool_type == "tool_call_agent":
                 if tool_name in self.DANGEROUS_TOOLS and not self.is_auto_mode(task_id):
-                    approved = self._request_tool_confirmation(tool_name, arguments, task_id)
+                    approved = self._request_tool_confirmation(tool_name, merged_arguments, task_id)
                     if not approved:
                         result = {
                             "status": "error",
@@ -285,15 +411,15 @@ class ToolExecutor:
                             "error_information": f"工具执行被用户拒绝: {tool_name}"
                         }
                     elif tool_config.get("_mcp"):
-                        result = call_mcp_tool(tool_config, arguments)
+                        result = call_mcp_tool(tool_config, merged_arguments)
                     else:
-                        result = self._call_direct(tool_name, arguments, task_id)
+                        result = self._call_direct(tool_name, merged_arguments, task_id)
                 elif tool_config.get("_mcp"):
-                    result = call_mcp_tool(tool_config, arguments)
+                    result = call_mcp_tool(tool_config, merged_arguments)
                 else:
-                    result = self._call_direct(tool_name, arguments, task_id)
+                    result = self._call_direct(tool_name, merged_arguments, task_id)
             elif tool_type == "llm_call_agent":
-                result = self._execute_sub_agent(tool_name, tool_config, arguments, task_id)
+                result = self._execute_sub_agent(tool_name, tool_config, merged_arguments, task_id)
             else:
                 result = {
                     "status": "error",
@@ -307,13 +433,14 @@ class ToolExecutor:
                 "error_information": f"工具执行失败: {str(e)}"
             }
 
+        logged_result = self._sanitize_runtime_tool_result(tool_name, result)
         try:
             trigger_tool_hooks(
                 when="after",
                 tool_name=tool_name,
                 task_id=task_id,
-                arguments=arguments,
-                result=result,
+                arguments=logged_arguments,
+                result=logged_result,
                 agent_id=self.agent_id,
                 agent_name=self.agent_name,
                 agent_level=self._agent_level(),

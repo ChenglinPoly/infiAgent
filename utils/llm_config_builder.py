@@ -83,6 +83,11 @@ def build_model_entry(profile: Dict[str, Any]) -> Dict[str, Any] | str:
     if isinstance(extra_provider, dict) and extra_provider:
         entry["provider"] = deepcopy(extra_provider)
 
+    # 多部署路由（缓存亲和 + 故障转移）：原样透传给 llm_client
+    deployments = profile.get("deployments")
+    if isinstance(deployments, list) and deployments:
+        entry["deployments"] = deepcopy(deployments)
+
     if set(entry.keys()) == {"name"}:
         return model_name
     return entry

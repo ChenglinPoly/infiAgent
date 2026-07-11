@@ -50,6 +50,18 @@ class ThinkingPromptContractTests(unittest.TestCase):
         self.assertIn("不要输出<当前进度思考>外层标签本身", prompt)
         self.assertNotIn("首次进行构造，你的输出不需要包含<当前进度思考>标签", prompt)
 
+    def test_thinking_prompt_uses_canonical_action_window_from_legacy_env(self):
+        with patch.dict(os.environ, {
+            "MLA_ACTION_WINDOW_STEPS": "",
+            "MLA_THINKING_STEPS": "2",
+            "MLA_THINKING_INTERVAL": "2",
+        }, clear=False):
+            with patch("services.thinking_agent.SimpleLLMClient", return_value=_StubThinkingLLMClient()):
+                agent = ThinkingAgent()
+
+        self.assertIn("2步后", agent.system_prompt)
+        self.assertNotIn("30步后", agent.system_prompt)
+
     def test_initial_analysis_request_requires_inner_content_only(self):
         with patch("services.thinking_agent.SimpleLLMClient", return_value=_StubThinkingLLMClient()):
             agent = ThinkingAgent()

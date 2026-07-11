@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from .file_tools import BaseTool
 from utils.task_runtime import (
@@ -196,13 +196,57 @@ class TaskHistorySearchTool(BaseTool):
 
     name = "task_history_search"
 
+    @staticmethod
+    def _parse_round_range(raw_value: Any) -> Tuple[int, int, int, str]:
+        """Return start_round, end_round, latest_count, error."""
+        text = str(raw_value or "").strip()
+        if not text:
+            return 0, 0, 0, ""
+
+        text = (
+            text.replace("：", ":")
+            .replace("—", "-")
+            .replace("–", "-")
+            .replace("至", "-")
+            .replace("到", "-")
+        )
+        if text.startswith("-") and text[1:].isdigit():
+            return 0, 0, max(1, int(text[1:])), ""
+
+        separator = ":" if ":" in text else "-" if "-" in text else ""
+        if not separator:
+            if text.isdigit():
+                value = max(1, int(text))
+                return value, value, 0, ""
+            return 0, 0, 0, f"无法解析 round_range={raw_value!r}，请使用 '1-3'、'4' 或 '-2'。"
+
+        left, right = [part.strip() for part in text.split(separator, 1)]
+        start_round = int(left) if left.isdigit() else 0
+        end_round = int(right) if right.isdigit() else 0
+        if start_round <= 0 and end_round <= 0:
+            return 0, 0, 0, f"无法解析 round_range={raw_value!r}，请使用 '1-3'、'4' 或 '-2'。"
+        if start_round > 0 and end_round > 0 and start_round > end_round:
+            start_round, end_round = end_round, start_round
+        return start_round, end_round, 0, ""
+
     def execute(self, task_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         keyword = str(parameters.get("keyword") or "").strip()
-        relevance_query_text = str(parameters.get("relevance_query_text") or "").strip()
-        start_time_from = str(parameters.get("start_time_from") or "").strip()
-        start_time_to = str(parameters.get("start_time_to") or "").strip()
+        round_range = str(parameters.get("round_range") or parameters.get("range") or "").strip()
         start_round = int(parameters.get("start_round") or 0)
-        enable_vector_search = bool(parameters.get("enable_vector_search", False))
+        end_round = int(parameters.get("end_round") or 0)
+        latest_count = 0
+        if round_range:
+            start_round, end_round, latest_count, parse_error = self._parse_round_range(round_range)
+            if parse_error:
+                return {
+                    "status": "error",
+                    "output": "",
+                    "error": parse_error,
+                    "results": [],
+                }
+        elif start_round < 0:
+            latest_count = abs(start_round)
+            start_round = 0
 
         try:
             if task_id:
@@ -213,31 +257,43 @@ class TaskHistorySearchTool(BaseTool):
             payload = search_task_history_records(
                 task_id=task_id,
                 keyword=keyword,
-                relevance_query_text=relevance_query_text,
-                start_time_from=start_time_from,
-                start_time_to=start_time_to,
                 start_round=start_round,
-                enable_vector_search=enable_vector_search,
+                end_round=end_round,
             )
             results = payload.get("results", [])
-            semantic_error = payload.get("semantic_error") or ""
-            if enable_vector_search and relevance_query_text and semantic_error:
-                return {
-                    "status": "error",
-                    "output": "",
-                    "error": semantic_error,
-                    "results": results,
-                }
+            keyword_search_error = payload.get("keyword_search_error") or ""
+            warnings = []
+            if keyword_search_error:
+                warnings.append(f"关键词 FTS 检索失败，已自动切换到 LIKE 兜底: {keyword_search_error}")
+            if latest_count > 0:
+                results = results[-latest_count:]
 
             if not results:
+                output = "没有检索到匹配的历史任务信息。"
+                if warnings:
+                    output += "\n" + "\n".join(f"warning: {item}" for item in warnings)
                 return {
                     "status": "success",
-                    "output": "没有检索到匹配的历史任务信息。",
+                    "output": output,
                     "error": "",
                     "results": [],
+                    "warnings": warnings,
                 }
 
             lines = []
+            if warnings:
+                lines.extend(f"warning: {item}" for item in warnings)
+            query_desc = []
+            if round_range:
+                query_desc.append(f"round_range={round_range}")
+            elif latest_count:
+                query_desc.append(f"round_range=-{latest_count}")
+            elif start_round or end_round:
+                query_desc.append(f"round_range={start_round or ''}-{end_round or ''}")
+            if keyword:
+                query_desc.append(f"keyword={keyword}")
+            if query_desc:
+                lines.append("query: " + " | ".join(query_desc))
             for idx, item in enumerate(results, 1):
                 lines.append(
                     f"{idx}. 第{item.get('round')}条历史任务 | start={item.get('start_time','')} | completion={item.get('completion_time','')}"
@@ -257,6 +313,7 @@ class TaskHistorySearchTool(BaseTool):
                 "output": "\n".join(lines),
                 "error": "",
                 "results": results,
+                "warnings": warnings,
             }
         except Exception as e:
             return {

@@ -37,7 +37,7 @@ tools:
         3. 使用coder_agent完成实验（如果是代码实验）
         4. 使用create_figures_agent将实验数据转换为图表，该 agent 也可以生成框架图，写实图像等各种类型的图像。
         5. 使用material_to_document_agent工具将实验数据和图表转换为论文
-        6. 使用judge_agent工具判断论文是否符合要求
+        6. 在形成论文、报告或其他正式文稿后，必须调用 judge_agent 进行最终审查，不允许跳过。
         7. 使用final_output工具输出自己已经完成任务的情况
         如果用户不是传统的学术论文写作需求（一般来说报告类需求最好有丰富好看的图表），你应该自己编排选择合适的工具完成,基于你的经验和任务难度，有时候并不是所有任务都要用到上述所有智能体功能。你作为直接和用户接触的 agent，还可能遇到基于历史任务和文件空间的单纯的聊天，询问等需求，使用human_in_loop工具和用户进行对话交互。
         这种时候直接调用 final_output工具完成即可。如果用户在需求确认和探讨阶段，你也可以调用 human_in_loop工具和用户进行对话交互。
@@ -68,13 +68,13 @@ tools:
       - get_data_from_google_scholar
       - get_data_from_arxiv
       - get_data_from_web_search
-      - judge_agent
       - final_output
       - file_read
       - file_write
       - file_move
       - dir_list
       - dir_create
+      - execute_command
       - answer_from_papers
       - write_report
       - reference_list
@@ -130,13 +130,13 @@ tools:
     level: 2
     type: llm_call_agent
     available_tools:
-      - judge_agent
       - final_output
       - file_read
       - file_write
       - file_move
       - dir_list
       - dir_create
+      - execute_command
       - answer_from_papers
       - reference_list
       - reference_add
@@ -165,7 +165,7 @@ tools:
 
         **第二阶段：引用与自检**
         - 整理所有参考文献，按照学术规范列于文末。
-        - 调用 `judge_agent`（如有）或自我评估是否满足 10,000 字要求。
+        - 自我评估是否满足篇幅、结构与引用要求，并把可供顶层 alpha_agent 审查的结果整理清楚。
 
         ### 注意事项：
         - 严禁简单复制粘贴，所有资料必须经过你的逻辑消化后，以“分析者”的口吻写出。
@@ -188,4 +188,3 @@ tools:
       required: ["task_id", "task_input"]
 
          
-

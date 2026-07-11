@@ -12,6 +12,7 @@ tools:
       - dir_list
       - dir_create
       - file_write
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -53,6 +54,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -67,7 +69,7 @@ tools:
           1. 更具任务所需的搜索内容，拟定词条关键词，或基于任务制定的搜索词条。
           2. 使用crawl_page基于https://en.wikipedia.org/wiki/keyword 和 https://zh.wikipedia.org/wiki/关键词 搜索内容。
           3. 如果中英文都不存在，则放弃该关键词，并在 final_out中报告
-          4. 如果存在关键词，且符合需求，则更新（append） reference.bib，重复操作完成所有关键词搜索。
+          4. 如果存在关键词，且符合需求，则使用 reference_add 更新 reference.bib，重复操作完成所有关键词搜索。
     name: "get_data_from_wiki"
     description: "收集维基百科中的词条内容，记录需要使用的关键信息，一般用于查明事实信息。"
     parameters:
@@ -95,6 +97,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -111,7 +114,7 @@ tools:
         **参考流程:**
           attention:pdf文件应该使用 file_download 下载.
           1.基于你的需求搜索谷歌学术的信息。如需详细信息，可以使用crawl_page获取详细信息，如果无返回内容，证明该篇文章网络人机验证，则只使用搜索信息即可。
-          2.如果有有效信息且符合需求，及时记录在 reference.bib 中。
+          2.如果有有效信息且符合需求，及时使用 reference_add 记录到 reference.bib 中。
           3.如果需求明确要用到文章原文，在收集所有所需文章列表后，使用human_in_loop请求人类下载原文到文件空间。
     name: "get_data_from_google_scholar"
     description: "收集谷歌学术中的论文标题，doi，摘要，作者，出版年份，引用次数等信息"
@@ -144,6 +147,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -157,7 +161,7 @@ tools:
       agent_workflow: |
         **参考流程:**
           1. 使用arxiv_search搜索拟定或给定的关键词。
-          2. 分析结果，保留符合需求的文献信息，增量更新（append）到 reference.bib中。
+          2. 分析结果，保留符合需求的文献信息，使用 reference_add 更新到 reference.bib 中。
           3. 使用 file_download 下载文献到对应文件夹（如 papers,如果没有此类专门的文件夹则自己新建一个）。
     name: "get_data_from_arxiv"
     description: "收集arxiv 中的论文，并下载相关文献。"
@@ -186,6 +190,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -200,7 +205,7 @@ tools:
         **参考流程:**
           1.分析任务，拟定或使用给定的关键词进行搜索引擎搜索。
           2.对于需要深度探索的任务，使用crawl_page进行深度探索。
-          3.一旦找到所需信息，更新 reference.bib文件。
+          3.一旦找到所需信息，使用 reference_add 更新 reference.bib 文件。
     name: "get_data_from_web_search"
     description: "基于搜索引擎搜索公开资料"
     parameters:
@@ -347,6 +352,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - file_replace_lines
       - reference_list
       - reference_add
@@ -447,6 +453,7 @@ tools:
       - dir_list
       - dir_create
       - file_move
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -530,6 +537,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -571,6 +579,7 @@ tools:
       - file_write
       - dir_list
       - dir_create
+      - execute_command
       - reference_list
       - reference_add
       - reference_delete
@@ -611,6 +620,7 @@ tools:
       - dir_create
       - file_read
       - file_write
+      - execute_command
       - web_search
       - google_scholar_search
       - crawl_page
@@ -665,6 +675,7 @@ tools:
       - dir_create
       - file_read
       - file_write
+      - execute_command
       - image_read
       - answer_from_papers
       - reference_list

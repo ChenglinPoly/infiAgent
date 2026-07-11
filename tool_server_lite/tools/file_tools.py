@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional
 import shutil
 import chardet
 
+from utils.sandbox_policy import apply_file_tool_path_policy
+
 
 class BaseTool:
     """工具基类"""
@@ -29,10 +31,18 @@ def get_abs_path(task_id: str, relative_path: str) -> Path:
     Returns:
         绝对路径
     """
+    rel_text = str(relative_path or "").strip()
+    if rel_text == "":
+        rel_text = "."
+    sandbox_path = apply_file_tool_path_policy(task_id, rel_text, allow_empty=True)
+    if sandbox_path is not None:
+        return sandbox_path
     workspace = Path(task_id)
-    # 移除开头的 / 或 ./
-    rel_path = str(relative_path).lstrip('/').lstrip('./')
-    return workspace / rel_path
+    if rel_text.startswith("/"):
+        rel_text = rel_text.lstrip("/")
+    elif rel_text.startswith("./"):
+        rel_text = rel_text[2:]
+    return workspace / rel_text
 
 
 def detect_encoding(file_path: Path) -> str:
@@ -584,4 +594,3 @@ class FileDeleteTool(BaseTool):
                 "output": "",
                 "error": str(e)
             }
-

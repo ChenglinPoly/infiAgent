@@ -72,6 +72,8 @@ class ThinkingEndEvent(AgentEvent):
     raw_output: str = ""
     raw_reasoning_content: str = ""
     finish_reason: str = ""
+    usage: Dict[str, Any] = field(default_factory=dict)
+    cumulative_usage: Dict[str, Any] = field(default_factory=dict)
     # Default arguments last
     is_forced: bool = False 
     timestamp: float = field(default_factory=time.time)
@@ -107,6 +109,9 @@ class LlmCallEndEvent(AgentEvent):
     model: str = ""
     reasoning_content: str = ""
     finish_reason: str = ""
+    usage: Dict[str, Any] = field(default_factory=dict)
+    cumulative_usage: Dict[str, Any] = field(default_factory=dict)
+    request_budget: Dict[str, Any] = field(default_factory=dict)
     # Default arguments last
     timestamp: float = field(default_factory=time.time)
 

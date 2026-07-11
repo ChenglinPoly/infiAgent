@@ -135,13 +135,13 @@ class TestFileWriteTool:
         assert result["status"] == "success"
         assert (Path(workspace) / "a/b/c/deep.txt").read_text(encoding="utf-8") == "deep"
 
-    def test_write_reference_bib_forbidden(self, workspace):
-        """测试禁止写入 reference.bib"""
+    def test_write_reference_bib_is_allowed(self, workspace):
+        """reference.bib 是否允许写入由 agent system 决定；底层 file_write 不强制阻止。"""
         tool = FileWriteTool()
         result = tool.execute(workspace, {"path": "reference.bib", "content": "test"})
 
-        assert result["status"] == "error"
-        assert "reference.bib" in result["error"]
+        assert result["status"] == "success"
+        assert (Path(workspace) / "reference.bib").read_text(encoding="utf-8") == "test"
 
     def test_replace_lines_file_not_found(self, workspace):
         """测试行替换时文件不存在"""
@@ -219,6 +219,30 @@ class TestDirListTool:
 
         assert result["status"] == "error"
         assert "not a directory" in result["error"].lower()
+
+    def test_dir_list_hidden_directory_path(self, workspace):
+        hidden = Path(workspace) / ".skills" / "demo"
+        hidden.mkdir(parents=True)
+        (hidden / "SKILL.md").write_text("skill", encoding="utf-8")
+
+        tool = DirListTool()
+        result = tool.execute(workspace, {"path": ".skills", "recursive": True})
+
+        assert result["status"] == "success"
+        assert "[dir] demo" in result["output"]
+        assert "[file] SKILL.md" in result["output"]
+
+
+def test_file_read_hidden_directory_path(workspace):
+    hidden_file = Path(workspace) / ".skills" / "demo" / "SKILL.md"
+    hidden_file.parent.mkdir(parents=True)
+    hidden_file.write_text("demo skill", encoding="utf-8")
+
+    tool = FileReadTool()
+    result = tool.execute(workspace, {"path": ".skills/demo/SKILL.md", "show_line_numbers": False})
+
+    assert result["status"] == "success"
+    assert result["output"] == "demo skill"
 
     def test_list_empty_directory(self, workspace):
         """测试空目录"""

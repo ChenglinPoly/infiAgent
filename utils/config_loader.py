@@ -34,6 +34,14 @@ class ConfigLoader:
         
         if not os.path.exists(self.agent_config_dir):
             raise FileNotFoundError(f"Agent配置目录不存在: {self.agent_config_dir}")
+
+        # Agent-system requirements are no longer auto-installed. Installing
+        # into a hidden venv but executing arbitrary commands elsewhere creates
+        # confusing dependency behavior, so dependency setup is now explicit.
+        self.agent_system_requirements_status = {
+            "status": "disabled",
+            "reason": "agent_system_requirements_auto_install_removed",
+        }
         
         # 加载所有配置
         self.general_prompts = self._load_general_prompts()
@@ -104,45 +112,67 @@ class ConfigLoader:
     def _inject_framework_default_tools(self):
         """注入框架级默认工具，无需逐个 agent_system 重复声明。"""
         self.all_tools.setdefault(
+            "load_skill",
+            {
+                "level": 0,
+                "type": "tool_call_agent",
+                "name": "load_skill",
+                "description": "将指定 skill 部署到当前 task 的 .skills/<skill_name>/ 目录，并把对应 SKILL.md 注入当前 agent 的上下文。部署后，execute_command 默认就在 task 根目录执行，因此可直接读取或运行 .skills/<skill_name>/ 下的文件与脚本。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "要加载的 skill 名称，例如 pptx、pdf、webapp-testing。",
+                        }
+                    },
+                    "required": ["skill_name"],
+                },
+            },
+        )
+        self.all_tools.setdefault(
+            "offload_skill",
+            {
+                "level": 0,
+                "type": "tool_call_agent",
+                "name": "offload_skill",
+                "description": "从当前 agent 的上下文中卸载已经加载的 skill 内容，不删除 task 工作目录中的 .skills/<skill_name>/ 文件。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "要卸载的 skill 名称。",
+                        }
+                    },
+                    "required": ["skill_name"],
+                },
+            },
+        )
+        self.all_tools.setdefault(
             "task_history_search",
             {
                 "level": 0,
                 "type": "tool_call_agent",
                 "name": "task_history_search",
-                "description": "检索当前用户数据根目录下的历史任务数据库。支持 sql 和 semantic 两种模式。sql 模式推荐把 SELECT 语句放在 sql 字段，也支持直接把 SELECT 写进 query 字段；可查询只读视图 task_history。semantic 模式会返回与查询语义最接近的历史 instruction bundle / task summary。",
+                "description": "检索当前 task_id 已归档的历史任务记录。只保留两种查询能力：1) round_range 按历史轮次查，例如 '1-3' 查第1到第3轮，'4' 查第4轮，'-2' 查最近两轮；2) keyword 全字段关键词查，会同时检索用户输入、agent final_output、thinking 和文件名/路径。keyword 可以是中文、文件名、路径或关键短语。两个参数同时提供时取交集。",
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "round_range": {
+                            "type": "string",
+                            "description": "可选。按历史轮次查询。'1-3' 表示第1到第3轮，'4' 表示第4轮，'-2' 表示最近两轮。轮次从1开始，按任务归档顺序计算。",
+                        },
                         "keyword": {
                             "type": "string",
-                            "description": "关键词检索文本。适合精确查找文件名、任务关键词、输出中的关键短语。",
-                        },
-                        "relevance_query_text": {
-                            "type": "string",
-                            "description": "相关性检索文本。只有在 enable_vector_search=true 时才会生效，用于语义匹配历史任务。",
-                        },
-                        "start_time_from": {
-                            "type": "string",
-                            "description": "可选。历史任务开始时间下界（ISO 时间字符串）。",
-                        },
-                        "start_time_to": {
-                            "type": "string",
-                            "description": "可选。历史任务开始时间上界（ISO 时间字符串）。",
-                        },
-                        "start_round": {
-                            "type": "integer",
-                            "description": "可选。从第几条历史任务开始检索，按历史顺序从 1 开始计数。",
-                        },
-                        "enable_vector_search": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": "是否启用向量/语义检索。关闭时 relevance_query_text 会被忽略。",
+                            "description": "可选。全字段关键词检索文本。会同时检索历史用户输入、agent 输出、thinking、文件名和路径；可以包含中文、斜杠、冒号、括号等普通文本。",
                         },
                     },
                     "required": [],
                 },
             },
         )
+        # （公开版）程序图工具族不随本仓库分发，相关兜底注入已移除。
     
     def get_tool_config(self, tool_name: str) -> Dict:
         """
@@ -189,9 +219,10 @@ class ConfigLoader:
             "image_generation_model": ["image_generation_model", "figure_model", "generate_figure_model"],
             "read_figure_model": ["read_figure_model", "vision_model"],
             "max_tokens": ["max_tokens"],
-            "action_window_steps": ["action_window_steps"],
-            "thinking_interval": ["thinking_interval"],
+            "action_window_steps": ["action_window_steps", "thinking_steps", "thinking_interval"],
+            "thinking_interval": ["thinking_interval", "thinking_steps", "action_window_steps"],
             "thinking_steps": ["thinking_steps", "thinking_interval", "action_window_steps"],
+            "reasoning_mode": ["reasoning_mode", "reasoning"],
             "thinking_enabled": ["thinking_enabled"],
             "no_tool_retry_limit": ["no_tool_retry_limit"],
         }

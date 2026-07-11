@@ -1,0 +1,614 @@
+tools:
+#所有主要内置工具
+  # ==================== 文件操作工具 ====================
+  file_read:
+    level: 0
+    type: tool_call_agent
+    name: "file_read"
+    description: "读取指定文本文件的内容。path 默认相对于当前 task 根目录，不要传绝对路径。支持读取隐藏目录，例如 '.skills/demo/SKILL.md'。单个文件传 ['main.tex']，多个文件传 ['sec1.md', 'sec2.md']。默认返回带行号的 JSON 格式。警告：不要读取二进制文件（如 pdf、docx、图片等）。"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "array"
+          items:
+            type: "string"
+          description: "文件相对路径数组，基于当前 workspace/task 根目录解析。示例：['main.tex']、['notes/summary.md']、['.skills/pptx/SKILL.md']。不要传绝对路径；只允许读取文本文件，不要读取二进制文件。"
+        start_line:
+          type: "integer"
+          description: "读取起始行号（从1开始），可选。多文件模式下应用于所有文件。"
+        end_line:
+          type: "integer"
+          description: "读取结束行号（包含），可选。多文件模式下应用于所有文件。"
+        encoding:
+          type: "string"
+          description: "文件编码，可选。不指定时自动检测。"
+        show_line_numbers:
+          type: "boolean"
+          default: true
+          description: "是否显示行号。true 返回 JSON 格式（含行号），false 返回纯文本。默认 true。"
+      required: ["path"]
+
+  file_write:
+    level: 0
+    type: tool_call_agent
+    name: "file_write"
+    description: "向指定文本文件写入内容。path 默认相对于当前 workspace/task 根目录，不要传绝对路径。示例：'notes/result.md'、'code_run/main.py'、'.skills/local_note.md'。如果文件不存在会自动创建；如果存在可以选择覆盖或追加，也支持替换指定行。维护 reference.bib 时优先使用 reference_add/reference_delete。"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "文件的相对路径，例如 'src/main.py'、'notes/output.md'、'.skills/demo/README.md'，相对于当前 workspace/task 根目录解析。不要传绝对路径。写入前建议先用 dir_list 检查是否已有同名文件。"
+        content:
+          type: "string"
+          description: "要写入的文本内容。"
+        mode:
+          type: "string"
+          enum: ["write", "append"]
+          default: "write"
+          description: "写入模式。'write' 覆盖整个文件，'append' 追加到文件末尾。"
+        start_line:
+          type: "integer"
+          description: "行替换模式 - 起始行号（从1开始），可选。"
+        end_line:
+          type: "integer"
+          description: "行替换模式 - 结束行号，可选。"
+      required: ["path", "content"]
+  
+  dir_list:
+    level: 0
+    type: tool_call_agent
+    name: "dir_list"
+    description: "列出指定目录的内容。path 默认相对于当前 workspace/task 根目录；不传时默认列出任务根目录。支持列出隐藏目录，例如 '.skills'。可以递归列出所有子目录和文件（自动排除 code_env 目录）。"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          default: "."
+          description: "要列出的目录相对路径，相对于当前 workspace/task 根目录解析。示例：'.'、'sections'、'.skills'。不指定时列出任务根目录。"
+        recursive:
+          type: "boolean"
+          default: false
+          description: "是否递归列出子目录，默认 false。"
+      required: []
+
+  dir_create:
+    level: 0
+    type: tool_call_agent
+    name: "dir_create"
+    description: "创建新目录。path 默认相对于当前 workspace/task 根目录。如果父目录不存在会自动创建。示例：'charts'、'notes/drafts'、'.skills/local_cache'。"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "要创建的目录相对路径，相对于当前 workspace/task 根目录解析。示例：'charts'、'notes/drafts'、'.skills/local_cache'。"
+      required: ["path"]
+
+  file_move:
+    level: 0
+    type: tool_call_agent
+    name: "file_move"
+    description: "移动或复制文件/目录。source 和 destination 都应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。示例：source=['drafts/a.md'] destination='archive/a.md'。"
+    parameters:
+      type: "object"
+      properties:
+        source:
+          # type: "string"
+          # description: "源文件或目录的相对路径。"
+          # path:
+          type: "array"
+          items:
+            type: "string"
+          description: "源文件或目录的相对路径组，相对于当前 workspace/task 根目录解析。示例：['drafts/a.md']、['fig1.png', 'fig2.png']。"
+        destination:
+          type: "string"
+          description: "目标相对路径，相对于当前 workspace/task 根目录解析。示例：'archive/a.md'、'figures/'。"
+        copy:
+          type: "boolean"
+          default: false
+          description: "是否复制（保留原文件），默认 false（移动）。"
+      required: ["source", "destination"]
+
+  file_delete:
+    level: 0
+    type: tool_call_agent
+    name: "file_delete"
+    description: "删除指定的文件或目录。path 应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。示例：'temp/output.log'、'.skills/demo'。"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "要删除的文件或目录的相对路径，相对于当前 workspace/task 根目录解析。示例：'temp/output.log'、'.skills/demo'。"
+      required: ["path"]
+
+  # ==================== 网络工具 ====================
+
+  web_search:
+    level: 0
+    type: tool_call_agent
+    name: "web_search"
+    description: "使用 DuckDuckGo 进行网络搜索。结果会保存为 Markdown 格式。"
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "搜索关键词或问题。"
+        max_results:
+          type: "integer"
+          default: 10
+          description: "返回的最大结果数，默认 10。"
+        save_path:
+          type: "string"
+          description: "保存搜索结果的相对路径（.md 文件），请保存在 temp/web_search目录中。"
+      required: ["query","save_path"]
+
+  google_scholar_search:
+    level: 0
+    type: tool_call_agent
+    name: "google_scholar_search"
+    description: "在 Google Scholar 上搜索学术论文。支持年份筛选和分页。搜索结果保存为 Markdown 文件。"
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "搜索关键词或主题。"
+        year_low:
+          type: "integer"
+          description: "筛选论文的起始年份，可选。"
+        year_high:
+          type: "integer"
+          description: "筛选论文的结束年份，可选。"
+        pages:
+          type: "integer"
+          default: 1
+          description: "爬取的搜索结果页数，每页约10篇论文。"
+        save_path:
+          type: "string"
+          description: "保存搜索结果的相对路径（.md 文件)。请保存在 temp/scholar_search目录中。"
+      required: ["query","save_path"]
+
+  arxiv_search:
+    level: 0
+    type: tool_call_agent
+    name: "arxiv_search"
+    description: "搜索 arXiv 预印本论文库。返回论文标题、作者、摘要、PDF 下载地址等信息。"
+    parameters:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "搜索关键词，例如 'transformer neural network'。"
+        max_results:
+          type: "integer"
+          default: 10
+          description: "返回的最大结果数，默认 10。"
+        sort_by:
+          type: "string"
+          enum: ["relevance", "lastUpdatedDate", "submittedDate"]
+          default: "relevance"
+          description: "排序方式：relevance（相关性）、lastUpdatedDate（更新时间）、submittedDate（提交时间）。"
+        sort_order:
+          type: "string"
+          enum: ["descending", "ascending"]
+          default: "descending"
+          description: "排序顺序：descending（降序）、ascending（升序）。"
+        save_path:
+          type: "string"
+          description: "保存搜索结果的相对路径（.md 文件）。请保存在 temp/arxiv_search目录中。"
+      required: ["query","save_path"]
+
+  crawl_page:
+    level: 0
+    type: tool_call_agent
+    name: "crawl_page"
+    description: "爬取指定 URL 的网页内容，转换为 Markdown 格式。使用 crawl4ai 智能提取。"
+    parameters:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+          description: "要爬取的网页完整 URL。"
+        save_path:
+          type: "string"
+          description: "保存 Markdown 文件的相对路径，必选。不指定则直接返回内容。请保存在 temp/crawl_page目录中。"
+        download_images:
+          type: "boolean"
+          default: false
+          description: "是否下载图片，默认 false（移除图片）。"
+      required: ["url","save_path"]
+
+  file_download:
+    level: 0
+    type: tool_call_agent
+    name: "file_download"
+    description: "从 URL 下载文件到本地。"
+    parameters:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+          description: "要下载的文件 URL。"
+        save_path:
+          type: "string"
+          description: "保存文件的相对路径，例如 'upload/file.pdf'。"
+      required: ["url", "save_path"]
+
+  # ==================== 参考文献管理工具 ====================
+
+  reference_list:
+    level: 0
+    type: tool_call_agent
+    name: "reference_list"
+    description: "列出 reference.bib 文件中的所有参考文献（显示原文）。"
+    parameters:
+      type: "object"
+      properties:
+        bib_path:
+          type: "string"
+          default: "reference.bib"
+          description: "bib文件相对路径，默认 'reference.bib'。"
+      required: []
+
+  reference_add:
+    level: 0
+    type: tool_call_agent
+    name: "reference_add"
+    description: "向 reference.bib 添加或更新参考文献。若 citekey 已存在，则只更新该条目；若不存在，则追加新条目。"
+    parameters:
+      type: "object"
+      properties:
+        entries:
+          type: "array"
+          items:
+            type: "string"
+          description: "参考文献字符串数组，每个元素是一条完整的bib条目。例如：['@article{key1,...}', '@book{key2,...}']"
+        bib_path:
+          type: "string"
+          default: "reference.bib"
+          description: "bib文件相对路径，默认 'reference.bib'。"
+      required: ["entries"]
+
+  reference_delete:
+    level: 0
+    type: tool_call_agent
+    name: "reference_delete"
+    description: "从 reference.bib 按 citekey 精确删除指定的参考文献。"
+    parameters:
+      type: "object"
+      properties:
+        keys:
+          type: "array"
+          items:
+            type: "string"
+          description: "要删除的引用键（如 'sun2023blockchain'）或引用键数组。"
+        bib_path:
+          type: "string"
+          default: "reference.bib"
+          description: "bib文件相对路径，默认 'reference.bib'。"
+      required: ["keys"]
+
+  # ==================== 文档处理工具 ====================
+
+  parse_document:
+    level: 0
+    type: tool_call_agent
+    name: "parse_document"
+    description: "解析二进制文档为纯文本文件，不提供总结，分析服务。支持 PDF、Word、Markdown 格式。"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "要解析的文档相对路径。"
+        save_path:
+          type: "string"
+          description: "保存解析结果的相对路径。请保存在 temp/parse_document目录中。"
+      required: ["path","save_path"]
+
+
+  image_read:
+    level: 0
+    type: tool_call_agent
+    name: "image_read"
+    description: "读取并分析图片内容（支持同时读取多张）。如果主模型支持多模态，图片会直接嵌入到对话中由主模型分析；否则会调用 Vision LLM 进行分析并返回文字描述。适用于查看实验结果图表、分析截图、理解图片内容等场景。"
+    parameters:
+      type: "object"
+      properties:
+        image_paths:
+          type: "array"
+          items:
+            type: "string"
+          description: "图片文件相对路径数组（相对于任务目录）。读取单张图片传单元素数组，如 [\"result.png\"]。支持 jpg/jpeg/png/gif/webp/bmp 格式。"
+        query:
+          type: "string"
+          description: "关于图片的问题或分析要求，例如'这些图表显示了什么趋势？'。不指定则默认描述图片内容。"
+        save_path:
+          type: "string"
+          description: "可选，保存分析结果的相对路径（仅在 text-only 模式下有效）。"
+      required: ["image_paths"]
+
+  create_image:
+    level: 0
+    type: tool_call_agent
+    name: "create_image"
+    description: "根据提示词生成图片，或基于参考图进行图片编辑/融合/风格迁移。支持最多 14 张参考图（Gemini 3 Pro）。"
+    parameters:
+      type: "object"
+      properties:
+        prompt:
+          type: "string"
+          description: "图片的描述提示词或编辑指令。纯生成时描述要生成的图片；有参考图时描述如何处理参考图（如'融合这两张图'、'将第一张图转为梵高风格'）。"
+        image_path:
+          type: "string"
+          description: "生成图片保存的相对路径（例如 'temp/generated_image.png'）。"
+        reference_images:
+          type: "array"
+          items:
+            type: "string"
+          description: "参考图片相对路径列表，可选。用于图片编辑、风格迁移、多图融合等。不提供则为纯文本生成图片。"
+        size:
+          type: "string"
+          default: "1024x1024"
+          description: "生成图片尺寸，默认 '1024x1024'。支持 '1792x1024'（16:9）等。"
+        n:
+          type: "integer"
+          default: 1
+          description: "生成图片数量，默认 1。"
+      required: ["prompt", "image_path"]
+
+
+
+  # ==================== 人类交互工具 ====================
+
+  human_in_loop:
+    level: 0
+    type: tool_call_agent
+    name: "human_in_loop"
+    description: "创建人类任务并等待完成。用于需要人工干预的场景（如上传文件、确认结果等）或者和用户进行交互。异步挂起，不阻塞服务器。"
+    parameters:
+      type: "object"
+      properties:
+        hil_id:
+          type: "string"
+          description: "人类任务的唯一ID，用于后续查询和完成任务。"
+        instruction:
+          type: "string"
+          description: "给人类的任务指令描述。"
+        # timeout:
+        #   type: "integer"
+        #   description: "超时时间（秒），不指定则无限等待。请都选择无限等待。"
+      required: ["hil_id", "instruction"]
+
+  # ==================== 代码执行工具 ====================
+
+  execute_command:
+    level: 0
+    type: tool_call_agent
+    name: "execute_command"
+    description: "执行命令行命令。可选后台执行并将输出重定向到文件。"
+    parameters:
+      type: "object"
+      properties:
+        command:
+          type: "string"
+          description: "要执行的 shell 命令，例如 'ls -la'、'python script.py'、'pip install -r requirements.txt'。"
+        working_dir:
+          type: "string"
+          default: "."
+          description: "命令执行的工作目录相对路径，默认为任务根目录。"
+        timeout:
+          type: "integer"
+          default: 30
+          description: "命令执行超时时间（秒），默认 30。"
+        background:
+          type: "boolean"
+          default: false
+          description: "是否后台执行（不阻塞），默认 false。后台执行时必须指定 output_file。"
+        output_file:
+          type: "string"
+          description: "输出重定向到文件的相对路径。后台执行时必需，非后台执行时可选。"
+      required: ["command"]
+
+  # ==================== Skill 工具 ====================
+
+  load_skill:
+    level: 0
+    type: tool_call_agent
+    name: "load_skill"
+    description: "将指定的 Agent Skill 从全局技能库部署到当前 workspace 的 .skills/ 目录，并把对应 SKILL.md 注入当前上下文。部署后可通过 execute_command 运行技能包含的脚本。"
+    parameters:
+      type: "object"
+      properties:
+        skill_name:
+          type: "string"
+          description: "要部署的 skill 名称，对应 <available_skills> 中列出的 name。"
+      required: ["skill_name"]
+
+  offload_skill:
+    level: 0
+    type: tool_call_agent
+    name: "offload_skill"
+    description: "从当前上下文中卸载某个已加载 skill 的 SKILL.md 内容，但不删除磁盘上的 .skills 文件。"
+    parameters:
+      type: "object"
+      properties:
+        skill_name:
+          type: "string"
+          description: "要从当前上下文中卸载的 skill 名称。"
+      required: ["skill_name"]
+
+  fresh:
+    level: 0
+    type: tool_call_agent
+    name: "fresh"
+    description: "在安全点刷新运行时配置、工具注册、skills 与提示词缓存。默认刷新当前 task；若指定 task_id，则刷新对应 task。这里的 task_id 应为绝对路径。仅当你刚创建/安装了新工具或新 skills 时才使用。"
+    parameters:
+      type: "object"
+      properties:
+        reason:
+          type: "string"
+          description: "触发 fresh 的原因说明，例如“刚安装了新工具”或“刚安装了新 skill”。"
+        task_id:
+          type: "string"
+          description: "可选。目标任务的 task_id，必须是绝对路径。省略时 fresh 当前任务；指定后会 fresh 对应任务，若该任务未在运行则会重载配置并后台 resume。"
+
+  # ==================== 进程级智能体调用工具 ====================
+
+  add_message:
+    level: 0
+    type: tool_call_agent
+    name: "add_message"
+    description: "向指定 task 的 current.instructions 追加一条新消息。若目标 task 正在运行，它会在下一轮看到这条消息；若未运行，可选择后台 resume。task_id 应为绝对路径；省略时默认当前 task。适合对同一任务做需求补充或变更。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "可选。目标任务的 task_id，必须是绝对路径。省略时默认当前 task。"
+        message:
+          type: "string"
+          description: "要追加给该 task 的消息内容。"
+        source:
+          type: "string"
+          description: "消息来源标记，例如 agent / user / system。默认 agent。"
+        resume_if_needed:
+          type: "boolean"
+          default: false
+          description: "当目标 task 当前未运行时，是否在追加消息后后台 resume。默认 false。"
+      required: ["message"]
+
+  start_background_task:
+    level: 0
+    type: tool_call_agent
+    name: "start_background_task"
+    description: "后台启动一个新的 task 进程。适合把独立子任务交给另一个 workspace/task 在后台异步运行。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "必需。新任务的 task_id，建议使用绝对路径作为 workspace。"
+        user_input:
+          type: "string"
+          description: "必需。新任务的需求描述。"
+        agent_system:
+          type: "string"
+          description: "可选。Agent system，默认 OpenCowork。"
+        agent_name:
+          type: "string"
+          description: "可选。启动的 agent 名称，默认 alpha_agent。"
+        force_new:
+          type: "boolean"
+          default: false
+          description: "是否强制清空该 task 的旧状态后再启动。"
+        direct_tools:
+          type: "boolean"
+          default: true
+          description: "是否启用 direct-tools。默认 true。"
+        config:
+          type: "object"
+          description: "可选。类似 SDK 的运行配置。当前支持 llm_config_path、user_data_root、agent_library_dir/library_dir、skills_dir、tools_dir、action_window_steps、thinking_interval、max_turns、fresh_enabled、fresh_interval_sec、mcp_servers、auto_mode、force_new、direct_tools。"
+      required: ["task_id", "user_input"]
+
+  task_share_context_path:
+    level: 0
+    type: tool_call_agent
+    name: "task_share_context_path"
+    description: "返回指定 task 的 share_context 和 stack 文件路径，不直接返回内容。task_id 应为绝对路径；拿到路径后，如有需要请再自行读取。"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "可选。目标任务的 task_id，必须是绝对路径。省略时默认当前 task。"
+      required: []
+
+  list_task_ids:
+    level: 0
+    type: tool_call_agent
+    name: "list_task_ids"
+    description: "列出当前已知的 task_id 列表，来源于 share_context 持久化记录。可选只返回当前运行中的 task。"
+    parameters:
+      type: "object"
+      properties:
+        only_running:
+          type: "boolean"
+          default: false
+          description: "是否只返回当前运行中的 task。默认 false。"
+      required: []
+
+  # ==================== PG 程序工具 ====================
+
+  final_output:
+    level: 0
+    type: tool_call_agent
+    name: "final_output"
+    description: "智能体输出最终结果的工具。当智能体完成任务或需要终止执行时调用此工具。你的非工具调用输出不会停止智能体循环，你的非工具调用输出并不是最终输出，你必须通过这个工具结束执行任务！"
+    parameters:
+      type: "object"
+      properties:
+        task_id:
+          type: "string"
+          description: "任务的唯一ID。"
+        status:
+          type: "string"
+          enum: ["success", "error"]
+          description: "任务执行状态：'success' 表示成功完成，'error' 表示执行失败。"
+        output:
+          type: "string"
+          description: "成功或失败的说明。如果输出包含文件，必须提供文件的相对路径和描述（不要重复文件中已有的内容），并包含 judge agent 的反馈。"
+        error_information:
+          type: "string"
+          description: "错误信息，仅在 status 为 'error' 时必需。"
+      required: ["task_id", "status", "output"]
+
+ # ==================== 经验工具/记忆 ====================
+
+  write_experience:
+    level: 0
+    type: tool_call_agent
+    name: "write_experience"
+    description: "统一经验工具。可向当前 task 或全局经验区追加、查看、替换或删除经验（并发安全，scope=both 事务一致）。只有 status=active 的经验会注入上下文。append 返回新条目 ID、文件 revision 与被淘汰的 entry_id 列表；list 返回文件 revision，可配合 expected_revision/expected_updated_at 做乐观并发检查。"
+    parameters:
+      type: "object"
+      properties:
+        operation:
+          type: "string"
+          enum: ["append", "list", "replace", "delete"]
+          default: "append"
+          description: "经验操作类型。"
+        content:
+          type: "string"
+          description: "追加或替换时要写入的经验内容。推荐写成稳定映射、SQL 模板经验、失败排障经验或业务口径说明。"
+        scope:
+          type: "string"
+          enum: ["task", "global", "both"]
+          default: "task"
+          description: "经验写入范围。task=当前会话经验；global=全项目经验；both=两者都写。"
+        source:
+          type: "string"
+          default: "agent"
+          description: "经验来源标记。"
+        entry_id:
+          type: "string"
+          description: "replace/delete 时要操作的经验 ID。"
+        target_agent_name:
+          type: "string"
+          description: "可选。经验归属的 agent 名称，默认当前 agent。"
+        max_tokens:
+          type: "integer"
+          default: 10000
+          description: "可选。append 时经验文件内容的 token 预算；超出时从最旧条目开始淘汰（不会淘汰本次新增条目），被淘汰的 entry_id 会随结果返回。"
+        expected_revision:
+          type: "integer"
+          description: "可选。replace/delete 的乐观并发检查：与当前文件 revision 不一致则拒绝执行。仅支持单一 scope（task 或 global）。"
+        expected_updated_at:
+          type: "string"
+          description: "可选。replace/delete 的乐观并发检查：与目标条目当前 updated_at 不一致则拒绝执行。"
+      required: []

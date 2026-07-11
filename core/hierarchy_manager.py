@@ -9,11 +9,24 @@ from utils.windows_compat import safe_print
 import os
 import json
 import threading
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
 
 from utils.user_paths import get_user_conversations_dir
+
+
+_state_thread_locks = {}
+_state_thread_locks_guard = threading.Lock()
+
+
+def _get_state_thread_lock(lock_file: Path) -> threading.RLock:
+    lock_key = str(lock_file)
+    with _state_thread_locks_guard:
+        if lock_key not in _state_thread_locks:
+            _state_thread_locks[lock_key] = threading.RLock()
+        return _state_thread_locks[lock_key]
 
 
 class HierarchyManager:
@@ -27,7 +40,6 @@ class HierarchyManager:
             task_id: 任务ID
         """
         self.task_id = task_id
-        self.lock = threading.Lock()
         
         # 文件路径 - 使用用户主目录（跨平台）
         conversations_dir = get_user_conversations_dir()
@@ -42,24 +54,25 @@ class HierarchyManager:
         
         self.stack_file = conversations_dir / f'{task_name}_stack.json'
         self.context_file = conversations_dir / f'{task_name}_share_context.json'
+        self.lock_file = conversations_dir / f'{task_name}.lock'
+        self.lock = _get_state_thread_lock(self.lock_file)
         
         # 初始化文件
         self._initialize_files()
     
     def _initialize_files(self):
         """初始化栈文件和共享上下文文件"""
-        # 初始化栈文件
-        if not self.stack_file.exists():
-            with open(self.stack_file, 'w', encoding='utf-8') as f:
-                json.dump({
+        with self._process_lock():
+            # 初始化栈文件
+            if not self.stack_file.exists():
+                self._atomic_write_json(self.stack_file, {
                     "stack": [],
                     "created_at": datetime.now().isoformat()
-                }, f, indent=2, ensure_ascii=False)
-        
-        # 初始化共享上下文文件
-        if not self.context_file.exists():
-            with open(self.context_file, 'w', encoding='utf-8') as f:
-                json.dump({
+                })
+
+            # 初始化共享上下文文件
+            if not self.context_file.exists():
+                self._atomic_write_json(self.context_file, {
                     "task_id": self.task_id,
                     "runtime": {},
                     "current": {
@@ -73,7 +86,69 @@ class HierarchyManager:
                     "history": [],
                     "created_at": datetime.now().isoformat(),
                     "last_updated": datetime.now().isoformat()
-                }, f, indent=2, ensure_ascii=False)
+                })
+
+    @contextmanager
+    def _process_lock(self):
+        """跨进程串行化同一 task 的 stack/share_context 读改写。"""
+        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.lock_file, 'a+', encoding='utf-8') as lock_handle:
+            locked = False
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    lock_handle.seek(0)
+                    if not lock_handle.read(1):
+                        lock_handle.seek(0)
+                        lock_handle.write("0")
+                        lock_handle.flush()
+                    lock_handle.seek(0)
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                locked = True
+            except Exception as e:
+                safe_print(f"⚠️ 获取任务状态文件锁失败，将继续执行: {e}")
+
+            try:
+                yield
+            finally:
+                if locked:
+                    try:
+                        if os.name == "nt":
+                            import msvcrt
+                            lock_handle.seek(0)
+                            msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                    except Exception as e:
+                        safe_print(f"⚠️ 释放任务状态文件锁失败: {e}")
+
+    @contextmanager
+    def _state_lock(self):
+        """同一进程线程锁 + 跨进程文件锁。"""
+        with self.lock:
+            with self._process_lock():
+                yield
+
+    def _atomic_write_json(self, path: Path, data):
+        tmp_path = path.with_name(
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
     
     def _load_stack(self) -> List[Dict]:
         """加载当前栈状态"""
@@ -88,11 +163,10 @@ class HierarchyManager:
     def _save_stack(self, stack: List[Dict]):
         """保存栈状态"""
         try:
-            with open(self.stack_file, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "stack": stack,
-                    "last_updated": datetime.now().isoformat()
-                }, f, indent=2, ensure_ascii=False)
+            self._atomic_write_json(self.stack_file, {
+                "stack": stack,
+                "last_updated": datetime.now().isoformat()
+            })
         except Exception as e:
             safe_print(f"⚠️ 保存栈文件失败: {e}")
     
@@ -118,10 +192,34 @@ class HierarchyManager:
         """保存共享上下文"""
         try:
             context["last_updated"] = datetime.now().isoformat()
-            with open(self.context_file, 'w', encoding='utf-8') as f:
-                json.dump(context, f, indent=2, ensure_ascii=False)
+            self._atomic_write_json(self.context_file, context)
         except Exception as e:
             safe_print(f"⚠️ 保存共享上下文失败: {e}")
+
+    def _new_current_context(self) -> Dict:
+        return {
+            "instructions": [],
+            "hierarchy": {},
+            "agents_status": {},
+            "start_time": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat()
+        }
+
+    def update_context(self, updater):
+        """在同一把 task 状态锁内读取、修改并保存共享上下文。"""
+        with self._state_lock():
+            context = self._load_context()
+            result = updater(context)
+            self._save_context(context)
+            return result
+
+    def clear_current_state(self):
+        """清空 current 和 stack，保留 history/runtime 等 task 级字段。"""
+        with self._state_lock():
+            context = self._load_context()
+            context["current"] = self._new_current_context()
+            self._save_context(context)
+            self._save_stack([])
     
     def start_new_instruction(self, instruction: str) -> str:
         """
@@ -144,7 +242,7 @@ class HierarchyManager:
             dedupe: 是否按完全相同文本去重
             source: 来源标记，例如 user / agent / system
         """
-        with self.lock:
+        with self._state_lock():
             import hashlib
             context = self._load_context()
 
@@ -182,7 +280,7 @@ class HierarchyManager:
 
     def set_runtime_metadata(self, **metadata):
         """写入 task 级运行时元数据（如 agent_system / agent_name / user_input）。"""
-        with self.lock:
+        with self._state_lock():
             context = self._load_context()
             runtime = context.get("runtime", {})
             if not isinstance(runtime, dict):
@@ -208,7 +306,7 @@ class HierarchyManager:
         Returns:
             生成的agent_id
         """
-        with self.lock:
+        with self._state_lock():
             import hashlib
             
             # 生成agent_id
@@ -220,6 +318,33 @@ class HierarchyManager:
             # 加载当前状态
             stack = self._load_stack()
             context = self._load_context()
+
+            # Resume path: the same top-level agent may already be in the stack
+            # after an interrupted/error run. Reuse that stack entry instead of
+            # appending a duplicate and accidentally making the agent its own
+            # parent.
+            existing_entry = None
+            for entry in stack:
+                if entry.get("agent_id") == agent_id:
+                    existing_entry = entry
+                    break
+            if existing_entry is not None:
+                agent_status = context.get("current", {}).get("agents_status", {}).get(agent_id)
+                if isinstance(agent_status, dict):
+                    agent_status["status"] = "running"
+                    agent_status["resumed_at"] = datetime.now().isoformat()
+                    agent_status.setdefault("agent_name", agent_name)
+                    agent_status.setdefault("initial_input", user_input)
+                if "agent_time_history" not in context:
+                    context["agent_time_history"] = {}
+                context["agent_time_history"].setdefault(agent_id, {
+                    "start_time": existing_entry.get("start_time") or datetime.now().isoformat(),
+                    "end_time": None
+                })
+                context["agent_time_history"][agent_id]["end_time"] = None
+                self._save_context(context)
+                safe_print(f"📚 Agent恢复入栈: {agent_name} (ID: {agent_id}, Level: {existing_entry.get('level', 0)})")
+                return agent_id
             
             # 获取父Agent（栈顶）
             parent_id = None
@@ -289,7 +414,7 @@ class HierarchyManager:
             agent_id: Agent ID
             final_output: 最终输出内容
         """
-        with self.lock:
+        with self._state_lock():
             stack = self._load_stack()
             
             # 从栈中移除
@@ -327,7 +452,7 @@ class HierarchyManager:
             agent_id: Agent ID
             thinking: thinking内容
         """
-        with self.lock:
+        with self._state_lock():
             context = self._load_context()
             
             if agent_id in context["current"]["agents_status"]:
@@ -344,7 +469,7 @@ class HierarchyManager:
 
     def add_loaded_skill(self, agent_id: str, skill_info: Dict):
         """向当前 agent 的上下文挂载一个 skill。"""
-        with self.lock:
+        with self._state_lock():
             context = self._load_context()
             agent_info = context.get("current", {}).get("agents_status", {}).get(agent_id)
             if not agent_info:
@@ -360,7 +485,7 @@ class HierarchyManager:
 
     def remove_loaded_skill(self, agent_id: str, skill_name: str):
         """从当前 agent 的上下文卸载一个 skill。"""
-        with self.lock:
+        with self._state_lock():
             context = self._load_context()
             agent_info = context.get("current", {}).get("agents_status", {}).get(agent_id)
             if not agent_info:
@@ -425,13 +550,7 @@ class HierarchyManager:
         context["history"].append(history_entry)
         
         # 清空current
-        context["current"] = {
-            "instructions": [],
-            "hierarchy": {},
-            "agents_status": {},
-            "start_time": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat()
-        }
+        context["current"] = self._new_current_context()
         
         # 清空栈（保持幂等）
         self._save_stack([])

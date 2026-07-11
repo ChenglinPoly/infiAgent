@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import hashlib
+import shutil
+import time
 from copy import deepcopy
 from datetime import datetime
 from functools import partial
@@ -29,11 +31,13 @@ from core.runtime_exceptions import InfiAgentRunError
 from core.state_cleaner import clean_before_start
 from utils.config_loader import ConfigLoader
 from utils.llm_config_builder import build_llm_config_from_profiles
+from utils.reasoning_modes import normalize_reasoning_mode, reasoning_mode_to_thinking_enabled
 from utils.runtime_control import is_task_running, request_fresh
 from utils.task_runtime import (
     append_task_message,
     get_task_share_paths,
     launch_task_process,
+    load_task_resume_meta,
     list_known_tasks,
     reset_task_state,
     resume_task_with_fresh,
@@ -70,6 +74,23 @@ def _as_root_dir(path: Optional[str], expected_leaf: Optional[str] = None) -> Op
     return normalized
 
 
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return max(1, int(value))
+    except Exception:
+        return None
+
+
+def _resolve_action_window_override(*values: Optional[int]) -> Optional[int]:
+    parsed = [_positive_int_or_none(value) for value in values]
+    parsed = [value for value in parsed if value is not None]
+    if not parsed:
+        return None
+    return max(parsed)
+
+
 def _materialize_inline_llm_config(
     *,
     user_data_root: Optional[str],
@@ -83,6 +104,60 @@ def _materialize_inline_llm_config(
     path = cfg_root / f"llm_config_{digest}.yaml"
     path.write_text(raw, encoding="utf-8")
     return str(path)
+
+
+def _is_system_add_filename(name: str) -> bool:
+    name = str(name or "").strip()
+    if name == "system-add.md":
+        return True
+    return name.startswith("system-add.") and name.endswith(".md")
+
+
+def _clear_materialized_system_add_files(task_dir: Path) -> None:
+    if not task_dir.exists():
+        return
+    for item in task_dir.iterdir():
+        if item.is_file() and _is_system_add_filename(item.name):
+            item.unlink()
+
+
+def _materialize_system_add(
+    *,
+    task_dir: Path,
+    system_add_path: Optional[str] = None,
+    system_add_content: Optional[str] = None,
+) -> None:
+    if system_add_path and system_add_content is not None:
+        raise ValueError("system_add_path 与 system_add_content 只能二选一")
+
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    if system_add_path is None and system_add_content is None:
+        return
+
+    _clear_materialized_system_add_files(task_dir)
+
+    if system_add_content is not None:
+        (task_dir / "system-add.md").write_text(str(system_add_content), encoding="utf-8")
+        return
+
+    src = Path(str(system_add_path)).expanduser().resolve()
+    if not src.exists():
+        raise FileNotFoundError(f"system_add_path 不存在: {src}")
+
+    if src.is_dir():
+        candidates = [p for p in sorted(src.iterdir()) if p.is_file() and _is_system_add_filename(p.name)]
+        if not candidates:
+            raise FileNotFoundError(f"system_add_path 目录中未找到 system-add.md 或 system-add.<agent_name>.md: {src}")
+        default_files = [p for p in candidates if p.name == "system-add.md"]
+        if len(default_files) > 1:
+            raise ValueError(f"system_add_path 目录中包含多个 system-add.md: {src}")
+        for file_path in candidates:
+            shutil.copy2(file_path, task_dir / file_path.name)
+        return
+
+    target_name = src.name if _is_system_add_filename(src.name) else "system-add.md"
+    shutil.copy2(src, task_dir / target_name)
 
 
 class InfiAgent:
@@ -102,14 +177,19 @@ class InfiAgent:
         action_window_steps: Optional[int] = None,
         thinking_interval: Optional[int] = None,
         thinking_enabled: Optional[bool] = None,
+        reasoning_mode: Optional[str] = None,
         thinking_steps: Optional[int] = None,
         no_tool_retry_limit: Optional[int] = None,
         user_history_compress_threshold_tokens: Optional[int] = None,
         user_history_recent_items: Optional[int] = None,
         max_turns: Optional[int] = None,
+        auto_resume_attempts: Optional[int] = None,
+        auto_resume_delay_sec: float = 1.0,
         fresh_enabled: Optional[bool] = None,
         fresh_interval_sec: Optional[int] = None,
         mcp_servers: Optional[List[Dict[str, Any]]] = None,
+        tool_runtime_defaults: Optional[Dict[str, Any]] = None,
+        tool_runtime_defaults_log_mode: str = "fingerprint",
         tool_hooks: Optional[List[Dict[str, Any]]] = None,
         context_hooks: Optional[List[Dict[str, Any]]] = None,
         visible_skills: Optional[List[str]] = None,
@@ -151,14 +231,28 @@ class InfiAgent:
             self.runtime_env_overrides["MLA_SKILLS_LIBRARY_DIR"] = _normalize_path(skills_dir)
         if tools_dir:
             self.runtime_env_overrides["MLA_TOOLS_LIBRARY_DIR"] = _normalize_path(tools_dir)
-        if action_window_steps is not None:
-            self.runtime_env_overrides["MLA_ACTION_WINDOW_STEPS"] = str(max(1, int(action_window_steps)))
-        if thinking_interval is not None:
-            self.runtime_env_overrides["MLA_THINKING_INTERVAL"] = str(max(1, int(thinking_interval)))
-        if thinking_enabled is not None:
+        resolved_action_window_steps = _resolve_action_window_override(
+            action_window_steps,
+            thinking_interval,
+            thinking_steps,
+        )
+        if resolved_action_window_steps is not None:
+            window_value = str(resolved_action_window_steps)
+            self.runtime_env_overrides["MLA_ACTION_WINDOW_STEPS"] = window_value
+            # 兼容旧启动器/旧配置读取方；三者始终写成同一个值，不再分叉。
+            self.runtime_env_overrides["MLA_THINKING_INTERVAL"] = window_value
+            self.runtime_env_overrides["MLA_THINKING_STEPS"] = window_value
+        resolved_reasoning_mode = normalize_reasoning_mode(
+            reasoning_mode,
+            thinking_enabled=thinking_enabled,
+        ) if reasoning_mode is not None else None
+        if resolved_reasoning_mode is not None:
+            self.runtime_env_overrides["MLA_REASONING_MODE"] = resolved_reasoning_mode
+            self.runtime_env_overrides["MLA_THINKING_ENABLED"] = (
+                "true" if reasoning_mode_to_thinking_enabled(resolved_reasoning_mode) else "false"
+            )
+        elif thinking_enabled is not None:
             self.runtime_env_overrides["MLA_THINKING_ENABLED"] = "true" if thinking_enabled else "false"
-        if thinking_steps is not None:
-            self.runtime_env_overrides["MLA_THINKING_STEPS"] = str(max(1, int(thinking_steps)))
         if no_tool_retry_limit is not None:
             self.runtime_env_overrides["MLA_NO_TOOL_RETRY_LIMIT"] = str(max(1, int(no_tool_retry_limit)))
         if user_history_compress_threshold_tokens is not None:
@@ -167,12 +261,17 @@ class InfiAgent:
             self.runtime_env_overrides["MLA_USER_HISTORY_RECENT_ITEMS"] = str(max(0, int(user_history_recent_items)))
         if max_turns is not None:
             self.runtime_env_overrides["MLA_MAX_TURNS"] = str(max(1, int(max_turns)))
+        if auto_resume_attempts is not None:
+            self.runtime_env_overrides["MLA_AUTO_RESUME_ATTEMPTS"] = str(max(0, int(auto_resume_attempts)))
         if fresh_enabled is not None:
             self.runtime_env_overrides["MLA_FRESH_ENABLED"] = "true" if fresh_enabled else "false"
         if fresh_interval_sec is not None:
             self.runtime_env_overrides["MLA_FRESH_INTERVAL_SEC"] = str(max(0, int(fresh_interval_sec)))
         if mcp_servers is not None:
             self.runtime_env_overrides["MLA_MCP_CONFIG_JSON"] = json.dumps({"servers": mcp_servers}, ensure_ascii=False)
+        if tool_runtime_defaults is not None:
+            self.runtime_env_overrides["MLA_TOOL_RUNTIME_DEFAULTS_JSON"] = json.dumps(tool_runtime_defaults, ensure_ascii=False)
+        self.runtime_env_overrides["MLA_TOOL_RUNTIME_DEFAULTS_LOG_MODE"] = str(tool_runtime_defaults_log_mode or "fingerprint").strip().lower() or "fingerprint"
         if tool_hooks is not None:
             self.runtime_env_overrides["MLA_TOOL_HOOKS_JSON"] = json.dumps(tool_hooks, ensure_ascii=False)
         if context_hooks is not None:
@@ -188,17 +287,22 @@ class InfiAgent:
         self.agent_library_root = explicit_agent_library_root
         self.skills_dir = _normalize_path(skills_dir)
         self.tools_dir = _normalize_path(tools_dir)
-        self.action_window_steps = max(1, int(action_window_steps)) if action_window_steps is not None else None
-        self.thinking_interval = max(1, int(thinking_interval)) if thinking_interval is not None else None
+        self.action_window_steps = resolved_action_window_steps
+        self.thinking_interval = resolved_action_window_steps
+        self.reasoning_mode = resolved_reasoning_mode
         self.thinking_enabled = bool(thinking_enabled) if thinking_enabled is not None else None
-        self.thinking_steps = max(1, int(thinking_steps)) if thinking_steps is not None else None
+        self.thinking_steps = resolved_action_window_steps
         self.no_tool_retry_limit = max(1, int(no_tool_retry_limit)) if no_tool_retry_limit is not None else None
         self.user_history_compress_threshold_tokens = max(0, int(user_history_compress_threshold_tokens)) if user_history_compress_threshold_tokens is not None else None
         self.user_history_recent_items = max(0, int(user_history_recent_items)) if user_history_recent_items is not None else None
         self.max_turns = max(1, int(max_turns)) if max_turns is not None else None
+        self.auto_resume_attempts = max(0, int(auto_resume_attempts)) if auto_resume_attempts is not None else None
+        self.auto_resume_delay_sec = max(0.0, float(auto_resume_delay_sec or 0.0))
         self.fresh_enabled = fresh_enabled if fresh_enabled is not None else None
         self.fresh_interval_sec = max(0, int(fresh_interval_sec)) if fresh_interval_sec is not None else None
         self.mcp_servers = mcp_servers
+        self.tool_runtime_defaults = tool_runtime_defaults
+        self.tool_runtime_defaults_log_mode = str(tool_runtime_defaults_log_mode or "fingerprint").strip().lower() or "fingerprint"
         self.tool_hooks = tool_hooks
         self.context_hooks = context_hooks
         self.visible_skills = [str(item).strip() for item in visible_skills if str(item).strip()] if visible_skills is not None else None
@@ -240,6 +344,8 @@ class InfiAgent:
             config["action_window_steps"] = self.action_window_steps
         if self.thinking_interval is not None:
             config["thinking_interval"] = self.thinking_interval
+        if self.reasoning_mode is not None:
+            config["reasoning_mode"] = self.reasoning_mode
         if self.thinking_enabled is not None:
             config["thinking_enabled"] = self.thinking_enabled
         if self.thinking_steps is not None:
@@ -252,12 +358,19 @@ class InfiAgent:
             config["user_history_recent_items"] = self.user_history_recent_items
         if self.max_turns is not None:
             config["max_turns"] = self.max_turns
+        if self.auto_resume_attempts is not None:
+            config["auto_resume_attempts"] = self.auto_resume_attempts
+            config["auto_resume_delay_sec"] = self.auto_resume_delay_sec
         if self.fresh_enabled is not None:
             config["fresh_enabled"] = self.fresh_enabled
         if self.fresh_interval_sec is not None:
             config["fresh_interval_sec"] = self.fresh_interval_sec
         if self.mcp_servers is not None:
             config["mcp_servers"] = self.mcp_servers
+        if self.tool_runtime_defaults is not None:
+            config["tool_runtime_defaults"] = self.tool_runtime_defaults
+        if self.tool_runtime_defaults_log_mode:
+            config["tool_runtime_defaults_log_mode"] = self.tool_runtime_defaults_log_mode
         if self.tool_hooks is not None:
             config["tool_hooks"] = self.tool_hooks
         if self.context_hooks is not None:
@@ -314,22 +427,45 @@ class InfiAgent:
         raise_on_error: bool = False,
         stream_llm_tokens: bool = False,
         thinking_enabled: Optional[bool] = None,
+        reasoning_mode: Optional[str] = None,
+        action_window_steps: Optional[int] = None,
         thinking_steps: Optional[int] = None,
         no_tool_retry_limit: Optional[int] = None,
         visible_skills: Optional[List[str]] = None,
         user_history_compress_threshold_tokens: Optional[int] = None,
         user_history_recent_items: Optional[int] = None,
         max_turns: Optional[int] = None,
+        auto_resume_attempts: Optional[int] = None,
+        auto_resume_delay_sec: Optional[float] = None,
+        auto_mode: Optional[bool] = None,
+        tool_runtime_defaults: Optional[Dict[str, Any]] = None,
+        tool_runtime_defaults_log_mode: Optional[str] = None,
+        system_add_path: Optional[str] = None,
+        system_add_content: Optional[str] = None,
     ) -> Dict[str, Any]:
         target_task_id = self._resolve_task_id(task_id=task_id, workspace=workspace)
+        Path(target_task_id).mkdir(parents=True, exist_ok=True)
         target_agent_system = agent_system or self.default_agent_system
         target_agent_name = agent_name or self.default_agent_name
 
         extra_runtime_overrides: Dict[str, Any] = {}
-        if thinking_enabled is not None:
+        if reasoning_mode is not None:
+            resolved_reasoning_mode = normalize_reasoning_mode(
+                reasoning_mode,
+                thinking_enabled=thinking_enabled,
+            )
+            extra_runtime_overrides["MLA_REASONING_MODE"] = resolved_reasoning_mode
+            extra_runtime_overrides["MLA_THINKING_ENABLED"] = (
+                "true" if reasoning_mode_to_thinking_enabled(resolved_reasoning_mode) else "false"
+            )
+        elif thinking_enabled is not None:
             extra_runtime_overrides["MLA_THINKING_ENABLED"] = "true" if thinking_enabled else "false"
-        if thinking_steps is not None:
-            extra_runtime_overrides["MLA_THINKING_STEPS"] = str(max(1, int(thinking_steps)))
+        resolved_action_window_steps = _resolve_action_window_override(action_window_steps, thinking_steps)
+        if resolved_action_window_steps is not None:
+            window_value = str(resolved_action_window_steps)
+            extra_runtime_overrides["MLA_ACTION_WINDOW_STEPS"] = window_value
+            extra_runtime_overrides["MLA_THINKING_INTERVAL"] = window_value
+            extra_runtime_overrides["MLA_THINKING_STEPS"] = window_value
         if no_tool_retry_limit is not None:
             extra_runtime_overrides["MLA_NO_TOOL_RETRY_LIMIT"] = str(max(1, int(no_tool_retry_limit)))
         if visible_skills is not None:
@@ -347,6 +483,27 @@ class InfiAgent:
             )
         if max_turns is not None:
             extra_runtime_overrides["MLA_MAX_TURNS"] = str(max(1, int(max_turns)))
+        resolved_auto_resume_attempts = (
+            max(0, int(auto_resume_attempts))
+            if auto_resume_attempts is not None
+            else (self.auto_resume_attempts if self.auto_resume_attempts is not None else 0)
+        )
+        resolved_auto_resume_delay = (
+            max(0.0, float(auto_resume_delay_sec))
+            if auto_resume_delay_sec is not None
+            else self.auto_resume_delay_sec
+        )
+        if resolved_auto_resume_attempts:
+            extra_runtime_overrides["MLA_AUTO_RESUME_ATTEMPTS"] = str(resolved_auto_resume_attempts)
+        if tool_runtime_defaults is not None:
+            extra_runtime_overrides["MLA_TOOL_RUNTIME_DEFAULTS_JSON"] = json.dumps(tool_runtime_defaults, ensure_ascii=False)
+        if tool_runtime_defaults_log_mode is not None:
+            extra_runtime_overrides["MLA_TOOL_RUNTIME_DEFAULTS_LOG_MODE"] = str(tool_runtime_defaults_log_mode or "fingerprint").strip().lower() or "fingerprint"
+        _materialize_system_add(
+            task_dir=Path(target_task_id),
+            system_add_path=system_add_path,
+            system_add_content=system_add_content,
+        )
 
         with self._runtime_scope(extra_runtime_overrides or None):
             extra_event_handlers, collected_events = self._build_sdk_event_handler(
@@ -371,16 +528,7 @@ class InfiAgent:
             hierarchy_manager = get_hierarchy_manager(target_task_id)
 
             if force_new:
-                context = hierarchy_manager._load_context()
-                context["current"] = {
-                    "instructions": [],
-                    "hierarchy": {},
-                    "agents_status": {},
-                    "start_time": datetime.now().isoformat(),
-                    "last_updated": datetime.now().isoformat(),
-                }
-                hierarchy_manager._save_context(context)
-                hierarchy_manager._save_stack([])
+                hierarchy_manager.clear_current_state()
             else:
                 clean_before_start(target_task_id, user_input)
 
@@ -389,24 +537,69 @@ class InfiAgent:
             agent_config = config_loader.get_tool_config(target_agent_name)
             if agent_config.get("type") != "llm_call_agent":
                 raise ValueError(f"{target_agent_name} 不是一个 LLM Agent")
-            agent = AgentExecutor(
-                agent_name=target_agent_name,
-                agent_config=agent_config,
-                config_loader=config_loader,
-                hierarchy_manager=hierarchy_manager,
-                direct_tools=self.direct_tools,
-                extra_event_handlers=extra_event_handlers,
-                exit_on_error=False,
-                raise_on_error=raise_on_error,
-                stream_llm_tokens=stream_llm_tokens,
-            )
-            try:
-                result = agent.run(target_task_id, user_input)
-            except InfiAgentRunError as exc:
-                exc.events = list(collected_events or exc.events or [])
-                if include_trace:
-                    exc.trace = self.task_trace(task_id=target_task_id)
-                raise
+            current_agent_name = target_agent_name
+            current_user_input = user_input
+            auto_resume_used = 0
+            result: Dict[str, Any] = {}
+            while True:
+                agent = AgentExecutor(
+                    agent_name=current_agent_name,
+                    agent_config=agent_config,
+                    config_loader=config_loader,
+                    hierarchy_manager=hierarchy_manager,
+                    direct_tools=self.direct_tools,
+                    extra_event_handlers=extra_event_handlers,
+                    exit_on_error=False,
+                    raise_on_error=False,
+                    stream_llm_tokens=stream_llm_tokens,
+                )
+                if auto_mode is not None:
+                    agent.tool_executor.set_task_permission(target_task_id, bool(auto_mode))
+                try:
+                    result = agent.run(target_task_id, current_user_input)
+                except InfiAgentRunError as exc:
+                    exc.events = list(collected_events or exc.events or [])
+                    if include_trace:
+                        exc.trace = self.task_trace(task_id=target_task_id)
+                    raise
+
+                if result.get("status") == "success":
+                    if resolved_auto_resume_attempts:
+                        hierarchy_manager.set_runtime_metadata(auto_resume={
+                            "attempts": 0,
+                            "max_attempts": resolved_auto_resume_attempts,
+                            "cleared_at": datetime.now().isoformat(),
+                            "reason": "task_completed",
+                        })
+                    break
+
+                if auto_resume_used >= resolved_auto_resume_attempts:
+                    break
+
+                meta, resume_error = load_task_resume_meta(
+                    target_task_id,
+                    fallback_agent_system=target_agent_system,
+                )
+                if not meta:
+                    result.setdefault("auto_resume", {
+                        "attempts": auto_resume_used,
+                        "max_attempts": resolved_auto_resume_attempts,
+                        "stopped_reason": resume_error,
+                    })
+                    break
+
+                auto_resume_used += 1
+                hierarchy_manager.set_runtime_metadata(auto_resume={
+                    "attempts": auto_resume_used,
+                    "max_attempts": resolved_auto_resume_attempts,
+                    "last_error": result.get("error_message") or result.get("error") or result.get("error_information") or "",
+                    "last_attempt_at": datetime.now().isoformat(),
+                })
+                current_agent_name = meta["agent_name"]
+                current_user_input = meta["user_input"]
+                agent_config = config_loader.get_tool_config(current_agent_name)
+                if resolved_auto_resume_delay:
+                    time.sleep(resolved_auto_resume_delay)
 
             enriched_result = self._attach_optional_run_artifacts(
                 result,
@@ -501,11 +694,17 @@ class InfiAgent:
         force_new: bool = False,
         direct_tools: Optional[bool] = None,
         max_turns: Optional[int] = None,
+        auto_resume_attempts: Optional[int] = None,
+        auto_resume_delay_sec: Optional[float] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         merged_config = self._build_launch_config()
         if max_turns is not None:
             merged_config["max_turns"] = max(1, int(max_turns))
+        if auto_resume_attempts is not None:
+            merged_config["auto_resume_attempts"] = max(0, int(auto_resume_attempts))
+        if auto_resume_delay_sec is not None:
+            merged_config["auto_resume_delay_sec"] = max(0.0, float(auto_resume_delay_sec))
         if config:
             merged_config.update(config)
         with self._runtime_scope():
@@ -728,6 +927,21 @@ class InfiAgent:
             return {"status": "error", "task_id": target_task_id, **payload}
         return {"status": "success", **payload}
 
+    def pause_task(
+        self,
+        *,
+        task_id: str,
+        reason: str = "",
+        preserve_history: bool = True,
+        kill_background_processes: bool = True,
+    ) -> Dict[str, Any]:
+        return self.reset_task(
+            task_id=task_id,
+            preserve_history=preserve_history,
+            kill_background_processes=kill_background_processes,
+            reason=reason or "manual pause",
+        )
+
     async def run_async(
         self,
         user_input: str,
@@ -743,6 +957,8 @@ class InfiAgent:
         raise_on_error: bool = False,
         stream_llm_tokens: bool = False,
         thinking_enabled: Optional[bool] = None,
+        reasoning_mode: Optional[str] = None,
+        action_window_steps: Optional[int] = None,
         thinking_steps: Optional[int] = None,
         no_tool_retry_limit: Optional[int] = None,
         visible_skills: Optional[List[str]] = None,
@@ -764,6 +980,8 @@ class InfiAgent:
             raise_on_error=raise_on_error,
             stream_llm_tokens=stream_llm_tokens,
             thinking_enabled=thinking_enabled,
+            reasoning_mode=reasoning_mode,
+            action_window_steps=action_window_steps,
             thinking_steps=thinking_steps,
             no_tool_retry_limit=no_tool_retry_limit,
             visible_skills=visible_skills,
@@ -861,6 +1079,22 @@ class InfiAgent:
             preserve_history=preserve_history,
             kill_background_processes=kill_background_processes,
             reason=reason,
+        )
+
+    async def pause_task_async(
+        self,
+        *,
+        task_id: str,
+        reason: str = "",
+        preserve_history: bool = True,
+        kill_background_processes: bool = True,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self.pause_task,
+            task_id=task_id,
+            reason=reason,
+            preserve_history=preserve_history,
+            kill_background_processes=kill_background_processes,
         )
 
 

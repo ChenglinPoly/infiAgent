@@ -48,11 +48,14 @@ from .reference_tools import (
     ReferenceDeleteTool
 )
 
+from .experience_tools import (
+    WriteExperienceTool,
+)
+
 from .powerpoint_tools import ImagesToPptTool
 
 from .skill_tools import LoadSkillTool, OffloadSkillTool, FreshTool
 from .task_tools import AddMessageTool, StartBackgroundTaskTool, TaskShareContextPathTool, ListTaskIdsTool, TaskHistorySearchTool
-
 from .browser_tools import (
     BrowserLaunchTool,
     BrowserCloseTool,
@@ -103,6 +106,7 @@ __all__ = [
     "ReferenceListTool",
     "ReferenceAddTool",
     "ReferenceDeleteTool",
+    "WriteExperienceTool",
     "ImagesToPptTool",
     "BrowserLaunchTool",
     "BrowserCloseTool",
@@ -129,4 +133,8 @@ __all__ = [
     "TaskShareContextPathTool",
     "ListTaskIdsTool",
     "TaskHistorySearchTool",
+    "PGProgramStepTool",
+    "InfiAgentProgramStepTool",
+    "PGResourceLookupTool",
+    "InfiAgentResourceLookupTool",
 ]

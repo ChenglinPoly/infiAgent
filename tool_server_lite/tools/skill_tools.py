@@ -94,7 +94,9 @@ class LoadSkillTool(BaseTool):
                 f"   位置: ./.skills/{skill_name}/\n"
                 f"   文件数: {file_count}\n"
                 f"   结构:\n{structure_str}\n\n"
-                f"📖 下一步: 使用 file_read 读取 ./.skills/{skill_name}/SKILL.md 获取详细指令"
+                f"📖 下一步: 使用 file_read 读取 .skills/{skill_name}/SKILL.md 获取详细指令\n"
+                f"💡 提示: 该 skill 已部署到当前 task 的本地目录中，不是全局目录。\n"
+                f"💡 提示: execute_command 默认工作目录就是 task 根目录，因此可以直接访问 .skills/{skill_name}/ 下的脚本和资源。"
             )
             
             skill_md_text = source_skill_md.read_text(encoding='utf-8')

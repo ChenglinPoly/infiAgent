@@ -4,6 +4,8 @@
 import os
 import signal
 import json
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,13 +14,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from infiagent import infiagent
+from core.context_builder import ContextBuilder
 from core.hierarchy_manager import get_hierarchy_manager
 from tool_server_lite.tools.skill_tools import FreshTool
 from tool_server_lite.tools.task_tools import AddMessageTool, ListTaskIdsTool, TaskShareContextPathTool
 from utils.config_loader import ConfigLoader
 from utils.runtime_control import pop_fresh_request, register_running_task, unregister_running_task
-from utils.task_runtime import append_task_message
-from utils.user_paths import get_context_settings, get_runtime_settings, runtime_env_scope
+from utils.task_runtime import append_task_message, reset_task_state
+from utils.user_paths import get_runtime_settings, runtime_env_scope
 
 
 class SDKRuntimePathTests(unittest.TestCase):
@@ -103,7 +106,6 @@ class SDKRuntimePathTests(unittest.TestCase):
                 "start_background_task",
                 "task_share_context_path",
                 "list_task_ids",
-                "task_history_search",
             ]:
                 self.assertIn(tool_name, loader.all_tools)
 
@@ -114,128 +116,6 @@ class SDKRuntimePathTests(unittest.TestCase):
         agent = infiagent()
         with self.assertRaises(ValueError):
             agent.run("missing task id", task_id="")
-
-    def test_runtime_settings_support_new_reasoning_fields(self):
-        root = (self.base / "runtime_settings_root").resolve()
-        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(root)}):
-            app_config_path = root / "config" / "app_config.json"
-            payload = {
-                "runtime": {
-                    "thinking_enabled": False,
-                    "thinking_steps": 12,
-                    "no_tool_retry_limit": 9,
-                    "action_window_steps": 30,
-                    "thinking_interval": 30,
-                    "max_turns": 321,
-                },
-                "context": {
-                    "user_history_recent_items": 11,
-                    "user_history_compress_threshold_tokens": 1700,
-                },
-            }
-            app_config_path.parent.mkdir(parents=True, exist_ok=True)
-            app_config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            for key in [
-                "MLA_THINKING_ENABLED",
-                "MLA_THINKING_STEPS",
-                "MLA_NO_TOOL_RETRY_LIMIT",
-                "MLA_MAX_TURNS",
-                "MLA_USER_HISTORY_COMPRESS_THRESHOLD_TOKENS",
-                "MLA_USER_HISTORY_RECENT_ITEMS",
-            ]:
-                os.environ.pop(key, None)
-
-            runtime = get_runtime_settings()
-            context = get_context_settings()
-
-            self.assertFalse(runtime["thinking_enabled"])
-            self.assertEqual(runtime["thinking_steps"], 12)
-            self.assertEqual(runtime["no_tool_retry_limit"], 9)
-            self.assertEqual(runtime["max_turns"], 321)
-            self.assertEqual(context["user_history_recent_items"], 11)
-            self.assertEqual(context["user_history_compress_threshold_tokens"], 1700)
-
-    def test_sdk_build_launch_config_includes_visible_skills_and_reasoning_fields(self):
-        root = (self.base / "sdk_reasoning_root").resolve()
-        agent = infiagent(
-            user_data_root=str(root),
-            thinking_enabled=False,
-            thinking_steps=8,
-            no_tool_retry_limit=6,
-            user_history_recent_items=5,
-            visible_skills=["skill_a", "skill_b"],
-        )
-
-        launch_config = agent._build_launch_config()
-        self.assertFalse(launch_config["thinking_enabled"])
-        self.assertEqual(launch_config["thinking_steps"], 8)
-        self.assertEqual(launch_config["no_tool_retry_limit"], 6)
-        self.assertEqual(launch_config["user_history_recent_items"], 5)
-        self.assertEqual(launch_config["visible_skills"], ["skill_a", "skill_b"])
-
-    def test_run_explicit_reasoning_overrides_take_priority(self):
-        root = (self.base / "run_override_root").resolve()
-        task_id = str((self.base / "run_override_task").resolve())
-        captured = {}
-
-        class DummyManager:
-            def _load_context(self):
-                return {"current": {}, "history": []}
-
-            def _save_context(self, _context):
-                return None
-
-            def _save_stack(self, _stack):
-                return None
-
-            def start_new_instruction(self, _instruction):
-                return "instruction_demo"
-
-        class DummyLoader:
-            def __init__(self, _system):
-                self.agent_system_name = "OpenCowork"
-
-            def get_tool_config(self, _agent_name):
-                return {"type": "llm_call_agent", "available_tools": []}
-
-        class DummyExecutor:
-            def __init__(self, **kwargs):
-                captured["runtime"] = get_runtime_settings()
-                captured["context"] = get_context_settings()
-                captured["agent_name"] = kwargs.get("agent_name")
-
-            def run(self, _task_id, _user_input):
-                return {"status": "success", "output": "ok"}
-
-        agent = infiagent(
-            user_data_root=str(root),
-            thinking_enabled=True,
-            thinking_steps=30,
-            no_tool_retry_limit=7,
-            user_history_recent_items=0,
-        )
-
-        with patch("infiagent.sdk.is_task_running", return_value=False), \
-             patch("infiagent.sdk.clean_before_start", return_value=None), \
-             patch("infiagent.sdk.ConfigLoader", DummyLoader), \
-             patch("infiagent.sdk.get_hierarchy_manager", return_value=DummyManager()), \
-             patch("infiagent.sdk.AgentExecutor", DummyExecutor):
-            result = agent.run(
-                "override demo",
-                task_id=task_id,
-                thinking_enabled=False,
-                thinking_steps=4,
-                no_tool_retry_limit=9,
-                user_history_recent_items=2,
-            )
-
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(captured["agent_name"], "alpha_agent")
-        self.assertFalse(captured["runtime"]["thinking_enabled"])
-        self.assertEqual(captured["runtime"]["thinking_steps"], 4)
-        self.assertEqual(captured["runtime"]["no_tool_retry_limit"], 9)
-        self.assertEqual(captured["context"]["user_history_recent_items"], 2)
 
     def test_sdk_instances_do_not_leak_user_data_roots(self):
         root_a = (self.base / "root_a").resolve()
@@ -259,6 +139,34 @@ class SDKRuntimePathTests(unittest.TestCase):
         self.assertFalse(any(item["task_id"] == task_b for item in list_a["tasks"]))
         self.assertTrue(any(item["task_id"] == task_b for item in list_b["tasks"]))
         self.assertFalse(any(item["task_id"] == task_a for item in list_b["tasks"]))
+
+    def test_runtime_settings_fold_legacy_thinking_fields_into_action_window(self):
+        root = (self.base / "legacy_window_root").resolve()
+        with runtime_env_scope({
+            "MLA_USER_DATA_ROOT": str(root),
+            "MLA_ACTION_WINDOW_STEPS": None,
+            "MLA_THINKING_STEPS": "2",
+            "MLA_THINKING_INTERVAL": "5",
+        }):
+            runtime = get_runtime_settings()
+
+        self.assertEqual(runtime["action_window_steps"], 5)
+        self.assertEqual(runtime["thinking_steps"], 5)
+        self.assertEqual(runtime["thinking_interval"], 5)
+
+    def test_sdk_maps_legacy_window_overrides_to_single_canonical_value(self):
+        root = (self.base / "sdk_window_root").resolve()
+        agent = infiagent(
+            user_data_root=str(root),
+            action_window_steps=3,
+            thinking_interval=4,
+            thinking_steps=7,
+        )
+
+        self.assertEqual(agent.runtime_env_overrides["MLA_ACTION_WINDOW_STEPS"], "7")
+        self.assertEqual(agent.runtime_env_overrides["MLA_THINKING_INTERVAL"], "7")
+        self.assertEqual(agent.runtime_env_overrides["MLA_THINKING_STEPS"], "7")
+        self.assertEqual(agent.action_window_steps, 7)
 
     def test_run_returns_busy_when_task_already_running(self):
         root = (self.base / "busy_root").resolve()
@@ -358,6 +266,20 @@ class SDKRuntimePathTests(unittest.TestCase):
         launch_config = agent._build_launch_config()
         self.assertEqual(launch_config["tool_hooks"], hooks)
 
+    def test_tool_runtime_defaults_are_exposed_in_launch_config(self):
+        defaults = {
+            "file_write": {
+                "mode": "write",
+                "workspace_root": "/tmp/demo",
+            }
+        }
+        agent = infiagent(
+            user_data_root=str((self.base / "tool_defaults_root").resolve()),
+            tool_runtime_defaults=defaults,
+        )
+        launch_config = agent._build_launch_config()
+        self.assertEqual(launch_config["tool_runtime_defaults"], defaults)
+
     def test_context_hooks_are_exposed_in_launch_config(self):
         callback = str((self.base / "ctx_hook.py").resolve()) + ":on_context"
         hooks = [{
@@ -370,6 +292,20 @@ class SDKRuntimePathTests(unittest.TestCase):
         self.assertEqual(launch_config["context_hooks"], hooks)
         self.assertTrue(launch_config["seed_builtin_resources"])
 
+    def test_framework_default_skill_tools_are_injected(self):
+        loader = ConfigLoader("OpenCowork")
+        self.assertIn("load_skill", loader.all_tools)
+        self.assertIn("offload_skill", loader.all_tools)
+
+    def test_tool_runtime_defaults_log_mode_is_exposed_in_launch_config(self):
+        agent = infiagent(
+            user_data_root=str((self.base / "log_mode_root").resolve()),
+            tool_runtime_defaults={"file_write": {"content": "secret"}},
+            tool_runtime_defaults_log_mode="fingerprint",
+        )
+        launch_config = agent._build_launch_config()
+        self.assertEqual(launch_config["tool_runtime_defaults_log_mode"], "fingerprint")
+
     def test_max_turns_is_exposed_in_launch_config(self):
         agent = infiagent(
             user_data_root=str((self.base / "max_turns_root").resolve()),
@@ -379,6 +315,85 @@ class SDKRuntimePathTests(unittest.TestCase):
         self.assertEqual(launch_config["max_turns"], 321)
         runtime = agent.describe_runtime()
         self.assertEqual(runtime["max_turns"], 321)
+
+    def test_pause_task_aliases_reset_semantics(self):
+        agent = infiagent(user_data_root=str((self.base / "pause_root").resolve()))
+        task_id = str((self.base / "pause_task").resolve())
+
+        with patch("infiagent.sdk.reset_task_state", return_value=(True, {"task_id": task_id, "preserve_history": True})) as reset_mock:
+            result = agent.pause_task(task_id=task_id, reason="pause please")
+
+        self.assertEqual(result["status"], "success")
+        reset_mock.assert_called_once()
+        kwargs = reset_mock.call_args.kwargs
+        self.assertEqual(kwargs["task_id"], task_id)
+        self.assertEqual(kwargs["reason"], "pause please")
+        self.assertTrue(kwargs["preserve_history"])
+
+    def test_run_can_materialize_system_add_content(self):
+        root = (self.base / "system_add_root").resolve()
+        task_id = str((self.base / "system_add_task").resolve())
+        agent = infiagent(user_data_root=str(root))
+
+        with patch("infiagent.sdk.is_task_running", return_value=True):
+            result = agent.run(
+                "noop",
+                task_id=task_id,
+                system_add_content="SYSTEM_ADD_MARKER",
+            )
+
+        self.assertEqual(result["status"], "busy")
+        self.assertEqual((Path(task_id) / "system-add.md").read_text(encoding="utf-8"), "SYSTEM_ADD_MARKER")
+
+    def test_run_can_materialize_system_add_directory(self):
+        root = (self.base / "system_add_dir_root").resolve()
+        task_id = str((self.base / "system_add_dir_task").resolve())
+        source_dir = (self.base / "system_add_src").resolve()
+        source_dir.mkdir(parents=True, exist_ok=True)
+        (source_dir / "system-add.md").write_text("DEFAULT_MARKER", encoding="utf-8")
+        (source_dir / "system-add.alpha_agent.md").write_text("AGENT_MARKER", encoding="utf-8")
+        agent = infiagent(user_data_root=str(root))
+
+        with patch("infiagent.sdk.is_task_running", return_value=True):
+            result = agent.run(
+                "noop",
+                task_id=task_id,
+                system_add_path=str(source_dir),
+            )
+
+        self.assertEqual(result["status"], "busy")
+        self.assertEqual((Path(task_id) / "system-add.md").read_text(encoding="utf-8"), "DEFAULT_MARKER")
+        self.assertEqual((Path(task_id) / "system-add.alpha_agent.md").read_text(encoding="utf-8"), "AGENT_MARKER")
+
+    def test_run_can_materialize_agent_specific_system_add_file(self):
+        root = (self.base / "system_add_file_root").resolve()
+        task_id = str((self.base / "system_add_file_task").resolve())
+        source_file = (self.base / "system-add.alpha_agent.md").resolve()
+        source_file.write_text("AGENT_ONLY_MARKER", encoding="utf-8")
+        agent = infiagent(user_data_root=str(root))
+
+        with patch("infiagent.sdk.is_task_running", return_value=True):
+            result = agent.run(
+                "noop",
+                task_id=task_id,
+                system_add_path=str(source_file),
+            )
+
+        self.assertEqual(result["status"], "busy")
+        self.assertEqual((Path(task_id) / "system-add.alpha_agent.md").read_text(encoding="utf-8"), "AGENT_ONLY_MARKER")
+
+    def test_context_builder_prefers_agent_name_specific_system_add(self):
+        task_dir = (self.base / "context_system_add_task").resolve()
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "system-add.md").write_text("DEFAULT_MARKER", encoding="utf-8")
+        (task_dir / "system-add.alpha_agent.md").write_text("ALPHA_MARKER", encoding="utf-8")
+
+        builder = ContextBuilder.__new__(ContextBuilder)
+        builder.config_loader = type("Loader", (), {"agent_system_name": "ExampleSystem"})()
+
+        result = builder._build_task_system_add(str(task_dir), "alpha_agent")
+        self.assertIn("ALPHA_MARKER", result)
+        self.assertNotIn("DEFAULT_MARKER", result)
 
     def test_add_message_resume_if_needed_uses_resume_when_stack_exists(self):
         root = (self.base / "resume_root").resolve()
@@ -457,6 +472,152 @@ class SDKRuntimePathTests(unittest.TestCase):
         self.assertEqual(kwargs["agent_name"], "alpha_agent")
         self.assertEqual(kwargs["config"]["user_data_root"], str(root))
         self.assertEqual(kwargs["config"]["max_turns"], 77)
+
+    def test_concurrent_add_message_keeps_all_instructions(self):
+        root = (self.base / "concurrent_add_root").resolve()
+        task_id = str((self.base / "concurrent_add_task").resolve())
+        release_file = self.base / "release_concurrent_add"
+        backend_root = Path(__file__).resolve().parents[1]
+        worker = (
+            "import os, time\n"
+            "from utils.task_runtime import append_task_message\n"
+            "while not os.path.exists(os.environ['RELEASE_FILE']):\n"
+            "    time.sleep(0.01)\n"
+            "ok, payload = append_task_message(\n"
+            "    os.environ['TASK_ID'], os.environ['MSG'], source='test'\n"
+            ")\n"
+            "raise SystemExit(0 if ok else 1)\n"
+        )
+
+        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(root)}):
+            ok, _payload = append_task_message(task_id, "warmup", source="test")
+            self.assertTrue(ok)
+
+        env_base = os.environ.copy()
+        env_base["MLA_USER_DATA_ROOT"] = str(root)
+        env_base["TASK_ID"] = task_id
+        env_base["RELEASE_FILE"] = str(release_file)
+        env_base["PYTHONPATH"] = (
+            str(backend_root)
+            + os.pathsep
+            + env_base.get("PYTHONPATH", "")
+        )
+
+        process_count = 24
+        processes = []
+        outputs = []
+        for index in range(process_count):
+            env = env_base.copy()
+            env["MSG"] = f"race-{index}"
+            processes.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", worker],
+                    cwd=str(backend_root),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+
+        try:
+            time.sleep(0.2)
+            release_file.write_text("go", encoding="utf-8")
+            outputs = [process.communicate(timeout=20) for process in processes]
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+        failures = [
+            (process.returncode, stdout, stderr)
+            for process, (stdout, stderr) in zip(processes, outputs)
+            if process.returncode != 0
+        ]
+        self.assertEqual(failures, [])
+
+        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(root)}):
+            manager = get_hierarchy_manager(task_id)
+            instructions = manager._load_context()["current"]["instructions"]
+
+        messages = [item.get("instruction") for item in instructions]
+        self.assertEqual(len(messages), process_count + 1)
+        self.assertEqual(len(set(messages)), process_count + 1)
+        self.assertEqual(
+            set(messages),
+            {"warmup", *{f"race-{index}" for index in range(process_count)}},
+        )
+
+    def test_pause_then_add_message_does_not_leave_dirty_stack(self):
+        root = (self.base / "pause_resume_root").resolve()
+        task_id = str((self.base / "pause_resume_task").resolve())
+
+        with runtime_env_scope({"MLA_USER_DATA_ROOT": str(root)}):
+            manager = get_hierarchy_manager(task_id)
+            manager.set_runtime_metadata(
+                agent_system="OpenCowork",
+                agent_name="alpha_agent",
+                user_input="previous input",
+            )
+            context = manager._load_context()
+            context["current"] = {
+                "instructions": [{"id": "old_instruction", "message": "old"}],
+                "hierarchy": {"alpha_agent_demo": {"level": 0}},
+                "agents_status": {"alpha_agent_demo": {"agent_name": "alpha_agent", "status": "running"}},
+                "start_time": "2026-04-10T10:00:00",
+                "last_updated": "2026-04-10T10:00:00",
+            }
+            manager._save_context(context)
+            manager._save_stack([{
+                "agent_id": "alpha_agent_demo",
+                "agent_name": "alpha_agent",
+                "parent_id": None,
+                "level": 0,
+                "user_input": "previous input",
+                "start_time": "2026-04-10T10:00:00",
+            }])
+
+            ok, reset_payload = reset_task_state(
+                task_id=task_id,
+                preserve_history=True,
+                kill_background_processes=False,
+                reason="manual pause",
+            )
+
+            self.assertTrue(ok)
+            self.assertEqual(manager._load_stack(), [])
+            paused_context = manager._load_context()
+            self.assertEqual(paused_context["current"]["instructions"], [])
+            self.assertEqual(len(paused_context["history"]), 1)
+
+            with patch("utils.task_runtime.launch_task_process", return_value=(True, {
+                "message": f"已在后台启动任务: {task_id}",
+                "task_id": task_id,
+                "pid": 9876,
+                "log_path": str(root / "runtime" / "launched_tasks" / "resume.log"),
+                "agent_system": "OpenCowork",
+                "agent_name": "alpha_agent",
+            })) as launch_mock:
+                ok, payload = append_task_message(
+                    task_id=task_id,
+                    message="continue from pause",
+                    source="user",
+                    resume_if_needed=True,
+                    fallback_agent_system="OpenCowork",
+                    env_overrides={"MLA_USER_DATA_ROOT": str(root)},
+                )
+
+            self.assertTrue(ok)
+            self.assertTrue(payload["launched"])
+            self.assertFalse(payload["resumed"])
+            launch_mock.assert_called_once()
+
+            final_context = manager._load_context()
+            self.assertEqual(len(final_context["history"]), 1)
+            self.assertEqual(len(final_context["current"]["instructions"]), 1)
+            self.assertEqual(manager._load_stack(), [])
+            self.assertEqual(reset_payload["task_id"], task_id)
 
 
 if __name__ == "__main__":

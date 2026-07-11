@@ -4,7 +4,7 @@ tools:
     level: 0
     type: tool_call_agent
     name: "file_read"
-    description: "读取指定文本文件的内容。路径参数必须是相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。可以读取单个或多个文件，也可以指定起始和结束行。默认返回带行号的 JSON 格式。警告：不要读取二进制文件（如 pdf、docx、图片等）。"
+    description: "读取指定文本文件的内容。path 默认相对于当前 task 根目录，不要传绝对路径。支持读取隐藏目录，例如 '.skills/demo/SKILL.md'。单个文件传 ['main.tex']，多个文件传 ['sec1.md', 'sec2.md']。默认返回带行号的 JSON 格式。警告：不要读取二进制文件（如 pdf、docx、图片等）。"
     parameters:
       type: "object"
       properties:
@@ -12,7 +12,7 @@ tools:
           type: "array"
           items:
             type: "string"
-          description: "文件相对路径数组，基于当前 workspace/task 根目录解析。单个文件传 ['file.txt']，多个文件传 ['file1.txt', 'file2.txt']。不要传绝对路径；只允许读取文本文件，不要读取二进制文件。"
+          description: "文件相对路径数组，基于当前 workspace/task 根目录解析。示例：['main.tex']、['notes/summary.md']、['.skills/pptx/SKILL.md']。不要传绝对路径；只允许读取文本文件，不要读取二进制文件。"
         start_line:
           type: "integer"
           description: "读取起始行号（从1开始），可选。多文件模式下应用于所有文件。"
@@ -32,13 +32,13 @@ tools:
     level: 0
     type: tool_call_agent
     name: "file_write"
-    description: "向指定文本文件写入内容。path 必须是相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。如果文件不存在会自动创建；如果存在可以选择覆盖或追加，也支持替换指定行。注意：禁止写入 reference.bib 文件，请使用专门的参考文献管理工具（reference_add/reference_delete）。"
+    description: "向指定文本文件写入内容。path 默认相对于当前 workspace/task 根目录，不要传绝对路径。示例：'notes/result.md'、'code_run/main.py'、'.skills/local_note.md'。如果文件不存在会自动创建；如果存在可以选择覆盖或追加，也支持替换指定行。维护 reference.bib 时优先使用 reference_add/reference_delete。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
-          description: "文件的相对路径，例如 'src/main.py'，相对于当前 workspace/task 根目录解析。不要传绝对路径。写入前建议使用目录列表工具检查是否有同名文件，避免覆盖他人文件。禁止路径为 'reference.bib'。"
+          description: "文件的相对路径，例如 'src/main.py'、'notes/output.md'、'.skills/demo/README.md'，相对于当前 workspace/task 根目录解析。不要传绝对路径。写入前建议先用 dir_list 检查是否已有同名文件。"
         content:
           type: "string"
           description: "要写入的文本内容。"
@@ -59,14 +59,14 @@ tools:
     level: 0
     type: tool_call_agent
     name: "dir_list"
-    description: "列出指定目录的内容。path 必须是相对于当前 workspace/task 根目录的相对路径；不传时默认列出任务根目录。可以递归列出所有子目录和文件（自动排除 code_env 目录）。"
+    description: "列出指定目录的内容。path 默认相对于当前 workspace/task 根目录；不传时默认列出任务根目录。支持列出隐藏目录，例如 '.skills'。可以递归列出所有子目录和文件（自动排除 code_env 目录）。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
           default: "."
-          description: "要列出的目录相对路径，相对于当前 workspace/task 根目录解析。不指定时列出任务根目录。"
+          description: "要列出的目录相对路径，相对于当前 workspace/task 根目录解析。示例：'.'、'sections'、'.skills'。不指定时列出任务根目录。"
         recursive:
           type: "boolean"
           default: false
@@ -77,20 +77,20 @@ tools:
     level: 0
     type: tool_call_agent
     name: "dir_create"
-    description: "创建新目录。path 必须是相对于当前 workspace/task 根目录的相对路径。如果父目录不存在会自动创建。"
+    description: "创建新目录。path 默认相对于当前 workspace/task 根目录。如果父目录不存在会自动创建。示例：'charts'、'notes/drafts'、'.skills/local_cache'。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
-          description: "要创建的目录相对路径，相对于当前 workspace/task 根目录解析。"
+          description: "要创建的目录相对路径，相对于当前 workspace/task 根目录解析。示例：'charts'、'notes/drafts'、'.skills/local_cache'。"
       required: ["path"]
 
   file_move:
     level: 0
     type: tool_call_agent
     name: "file_move"
-    description: "移动或复制文件/目录。source 和 destination 都应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。"
+    description: "移动或复制文件/目录。source 和 destination 都应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。示例：source=['drafts/a.md'] destination='archive/a.md'。"
     parameters:
       type: "object"
       properties:
@@ -101,10 +101,10 @@ tools:
           type: "array"
           items:
             type: "string"
-          description: "源文件或目录的相对路径组，相对于当前 workspace/task 根目录解析。可以单个或多个。"
+          description: "源文件或目录的相对路径组，相对于当前 workspace/task 根目录解析。示例：['drafts/a.md']、['fig1.png', 'fig2.png']。"
         destination:
           type: "string"
-          description: "目标相对路径，相对于当前 workspace/task 根目录解析。"
+          description: "目标相对路径，相对于当前 workspace/task 根目录解析。示例：'archive/a.md'、'figures/'。"
         copy:
           type: "boolean"
           default: false
@@ -115,13 +115,13 @@ tools:
     level: 0
     type: tool_call_agent
     name: "file_delete"
-    description: "删除指定的文件或目录。path 应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。"
+    description: "删除指定的文件或目录。path 应使用相对于当前 workspace/task 根目录的相对路径，不要传绝对路径。示例：'temp/output.log'、'.skills/demo'。"
     parameters:
       type: "object"
       properties:
         path:
           type: "string"
-          description: "要删除的文件或目录的相对路径，相对于当前 workspace/task 根目录解析。"
+          description: "要删除的文件或目录的相对路径，相对于当前 workspace/task 根目录解析。示例：'temp/output.log'、'.skills/demo'。"
       required: ["path"]
 
   # ==================== 网络工具 ====================
@@ -258,7 +258,7 @@ tools:
     level: 0
     type: tool_call_agent
     name: "reference_add"
-    description: "向 reference.bib 添加参考文献。如果引用键已存在则覆盖原有内容。"
+    description: "向 reference.bib 添加或更新参考文献。若 citekey 已存在，则只更新该条目；若不存在，则追加新条目。"
     parameters:
       type: "object"
       properties:
@@ -277,7 +277,7 @@ tools:
     level: 0
     type: tool_call_agent
     name: "reference_delete"
-    description: "从 reference.bib 删除指定的参考文献。"
+    description: "从 reference.bib 按 citekey 精确删除指定的参考文献。"
     parameters:
       type: "object"
       properties:
@@ -1138,7 +1138,7 @@ tools:
     level: 0
     type: tool_call_agent
     name: "final_output"
-    description: "智能体输出最终结果的工具。当智能体完成任务或需要终止执行时调用此工具。"
+    description: "智能体输出最终结果的工具。当智能体完成任务或需要终止执行时调用此工具。你的非工具调用输出不会停止智能体循环，你的非工具调用输出并不是最终输出，你必须通过这个工具结束执行任务！"
     parameters:
       type: "object"
       properties:

@@ -22,6 +22,8 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import yaml
 
+from utils.reasoning_modes import normalize_reasoning_mode, parse_bool, reasoning_mode_to_thinking_enabled
+
 
 def get_project_root() -> Path:
     """获取当前 Python 后端项目根目录或安装后的资源根目录。"""
@@ -90,6 +92,10 @@ def get_user_logs_dir() -> Path:
     return get_user_data_root() / "logs"
 
 
+def get_user_training_traces_dir() -> Path:
+    return get_user_data_root() / "training_traces"
+
+
 def get_user_runtime_dir() -> Path:
     return get_user_data_root() / "runtime"
 
@@ -127,13 +133,14 @@ def ensure_user_data_root_scaffold() -> None:
         get_user_tools_library_root(),
         get_user_conversations_dir(),
         get_user_logs_dir(),
+        get_user_training_traces_dir(),
         get_user_runtime_dir(),
         get_user_runtime_events_dir(),
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def _seed_directory_children(src_root: Path, dest_root: Path) -> None:
+def _seed_directory_children(src_root: Path, dest_root: Path, *, overwrite_existing: bool = False) -> None:
     if not src_root.exists():
         return
     dest_root.mkdir(parents=True, exist_ok=True)
@@ -142,7 +149,9 @@ def _seed_directory_children(src_root: Path, dest_root: Path) -> None:
             continue
         dest = dest_root / entry.name
         if dest.exists():
-            continue
+            if not overwrite_existing:
+                continue
+            shutil.rmtree(dest, ignore_errors=True)
         shutil.copytree(entry, dest)
 
 
@@ -153,7 +162,13 @@ def seed_user_resources_if_missing() -> None:
     """
     ensure_user_data_root_scaffold()
     project_root = get_project_root()
-    _seed_directory_children(project_root / "config" / "agent_library", get_user_agent_library_root())
+    # Built-in agent systems should stay aligned with the packaged version.
+    # Overwrite only bundled system names; custom user-added systems remain untouched.
+    _seed_directory_children(
+        project_root / "config" / "agent_library",
+        get_user_agent_library_root(),
+        overwrite_existing=True,
+    )
     # 兼容旧目录：若 ~/.agent/skills 为空，则将 ~/mla_v3/skills_library 中内容迁移/补齐过去
     old_skills_root = get_user_data_root() / "skills_library"
     if old_skills_root.exists():
@@ -233,6 +248,7 @@ def ensure_user_app_config_exists() -> Path:
         "runtime": {
             "action_window_steps": 30,
             "thinking_interval": 30,
+            "reasoning_mode": "thinking",
             "thinking_enabled": True,
             "thinking_steps": 30,
             "no_tool_retry_limit": 7,
@@ -288,21 +304,57 @@ def get_mcp_settings() -> Dict[str, Any]:
     return mcp if isinstance(mcp, dict) else {}
 
 
+def _parse_positive_int_setting(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    return max(1, parsed)
+
+
+def _resolve_action_window_steps(runtime: Dict[str, Any]) -> int:
+    """
+    action_window_steps 是唯一真实字段。
+
+    thinking_steps / thinking_interval 仅作为旧版本兼容入口；如果旧字段
+    同时出现，取较大值作为 action_window_steps，避免同一语义产生两套窗口。
+    """
+    env_candidates = [
+        _parse_positive_int_setting(os.environ.get("MLA_ACTION_WINDOW_STEPS", "").strip()),
+        _parse_positive_int_setting(os.environ.get("MLA_THINKING_STEPS", "").strip()),
+        _parse_positive_int_setting(os.environ.get("MLA_THINKING_INTERVAL", "").strip()),
+    ]
+    env_values = [value for value in env_candidates if value is not None]
+    if env_values:
+        return max(env_values)
+
+    runtime = runtime if isinstance(runtime, dict) else {}
+    config_candidates = [
+        _parse_positive_int_setting(runtime.get("action_window_steps")),
+        _parse_positive_int_setting(runtime.get("thinking_steps")),
+        _parse_positive_int_setting(runtime.get("thinking_interval")),
+    ]
+    config_values = [value for value in config_candidates if value is not None]
+    if config_values:
+        return max(config_values)
+    return 30
+
+
 def get_runtime_settings() -> Dict[str, Any]:
     """
     读取运行时配置。
     统一管理：
-    - 动作窗口步长
-    - thinking 间隔
+    - 动作窗口步长（action_window_steps 为唯一真实字段）
+    - thinking_steps / thinking_interval 仅作为旧配置兼容入口
     - fresh 是否启用
     - fresh 定时触发间隔（秒）
     """
     cfg = load_user_app_config()
     runtime = cfg.get("runtime", {}) if isinstance(cfg, dict) else {}
 
-    env_action_window = os.environ.get("MLA_ACTION_WINDOW_STEPS", "").strip()
-    env_thinking_interval = os.environ.get("MLA_THINKING_INTERVAL", "").strip()
-    env_thinking_steps = os.environ.get("MLA_THINKING_STEPS", "").strip()
+    env_reasoning_mode = os.environ.get("MLA_REASONING_MODE", "").strip()
     env_thinking_enabled = os.environ.get("MLA_THINKING_ENABLED", "").strip().lower()
     env_no_tool_retry_limit = os.environ.get("MLA_NO_TOOL_RETRY_LIMIT", "").strip()
     env_visible_skills = os.environ.get("MLA_VISIBLE_SKILLS_JSON", "").strip()
@@ -310,18 +362,18 @@ def get_runtime_settings() -> Dict[str, Any]:
     env_fresh_enabled = os.environ.get("MLA_FRESH_ENABLED", "").strip().lower()
     env_fresh_interval = os.environ.get("MLA_FRESH_INTERVAL_SEC", "").strip()
 
-    action_window_steps = int(env_action_window or runtime.get("action_window_steps", 30) or 30)
-    thinking_steps = int(
-        env_thinking_steps
-        or runtime.get("thinking_steps", runtime.get("thinking_interval", action_window_steps))
-        or action_window_steps
-    )
-    thinking_interval = int(env_thinking_interval or runtime.get("thinking_interval", thinking_steps) or thinking_steps)
-    thinking_enabled = (
-        env_thinking_enabled in {"1", "true", "yes", "on"}
-        if env_thinking_enabled
-        else bool(runtime.get("thinking_enabled", True))
-    )
+    action_window_steps = _resolve_action_window_steps(runtime)
+    env_thinking_bool = parse_bool(env_thinking_enabled)
+    if env_reasoning_mode:
+        reasoning_mode = normalize_reasoning_mode(env_reasoning_mode, thinking_enabled=env_thinking_bool)
+    elif env_thinking_bool is not None:
+        reasoning_mode = normalize_reasoning_mode(thinking_enabled=env_thinking_bool)
+    else:
+        reasoning_mode = normalize_reasoning_mode(
+            runtime.get("reasoning_mode"),
+            thinking_enabled=runtime.get("thinking_enabled", True),
+        )
+    thinking_enabled = reasoning_mode_to_thinking_enabled(reasoning_mode)
     no_tool_retry_limit = int(env_no_tool_retry_limit or runtime.get("no_tool_retry_limit", 7) or 7)
     visible_skills = runtime.get("visible_skills")
     if env_visible_skills:
@@ -336,8 +388,9 @@ def get_runtime_settings() -> Dict[str, Any]:
     fresh_interval_sec = int(env_fresh_interval or runtime.get("fresh_interval_sec", 0) or 0)
     return {
         "action_window_steps": max(1, action_window_steps),
-        "thinking_interval": max(1, thinking_interval),
-        "thinking_steps": max(1, thinking_steps),
+        "thinking_interval": max(1, action_window_steps),
+        "thinking_steps": max(1, action_window_steps),
+        "reasoning_mode": reasoning_mode,
         "thinking_enabled": bool(thinking_enabled),
         "no_tool_retry_limit": max(1, no_tool_retry_limit),
         "visible_skills": visible_skills if isinstance(visible_skills, list) else None,
@@ -414,6 +467,7 @@ def apply_runtime_env_defaults() -> None:
     os.environ["MLA_ACTION_WINDOW_STEPS"] = str(runtime["action_window_steps"])
     os.environ["MLA_THINKING_INTERVAL"] = str(runtime["thinking_interval"])
     os.environ["MLA_THINKING_STEPS"] = str(runtime["thinking_steps"])
+    os.environ["MLA_REASONING_MODE"] = str(runtime["reasoning_mode"])
     os.environ["MLA_THINKING_ENABLED"] = "true" if runtime["thinking_enabled"] else "false"
     os.environ["MLA_NO_TOOL_RETRY_LIMIT"] = str(runtime["no_tool_retry_limit"])
     if runtime.get("visible_skills") is not None:
@@ -447,6 +501,7 @@ def runtime_env_scope(overrides: Optional[Dict[str, Any]] = None) -> Iterator[No
         "MLA_ACTION_WINDOW_STEPS",
         "MLA_THINKING_INTERVAL",
         "MLA_THINKING_STEPS",
+        "MLA_REASONING_MODE",
         "MLA_THINKING_ENABLED",
         "MLA_NO_TOOL_RETRY_LIMIT",
         "MLA_MAX_TURNS",

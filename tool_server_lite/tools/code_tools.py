@@ -6,6 +6,7 @@
 
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
+import json
 import subprocess
 import sys
 import re
@@ -15,6 +16,14 @@ import shlex
 import uuid
 from datetime import datetime
 from .file_tools import BaseTool, get_abs_path
+from utils.sandbox_policy import (
+    command_sandbox_enabled,
+    prepare_landlock_env,
+    prepare_unix_permission_sandbox,
+    sanitize_command_env,
+    should_apply_unix_permission_sandbox,
+    should_wrap_command_with_landlock,
+)
 
 #def _create_venv(self, venv_path: Path) -> Tuple[bool, str]:重复两遍要记得同时维护。
 #为了美观，def _create_venv还是重复写两次吧，这样一个一个类比较独立。
@@ -545,57 +554,130 @@ class ExecuteCommandTool(BaseTool):
     ]
     
     def _is_command_safe(self, command: str) -> tuple[bool, str]:
-        """
-        检查命令是否安全
-        
-        Returns:
-            (是否安全, 错误信息)
-        """
-        return True,"不检查"
-        command = command.strip()
-        
-        if not command:
-            return False, "空命令"
-        
-        # 提取命令的第一个词（命令名）
-        cmd_parts = command.split()
-        if not cmd_parts:
-            return False, "无效命令"
-        
-        base_command = cmd_parts[0]
-        
-        # Windows下可能带.exe后缀
-        if base_command.endswith('.exe'):
-            base_command = base_command[:-4]
-        
-        # 检查基础命令是否在白名单中
-        if base_command not in self.ALLOWED_COMMANDS:
-            #return False, f"命令 '{base_command}' 不在允许列表中。仅允许只读命令如: ls, cat, grep, find, pwd, tree 等"
-            pass
-        # 检查是否包含危险模式
-        command_lower = command.lower()
-        for pattern in self.DANGEROUS_PATTERNS:
-            if pattern in command_lower:
-                return False, f"命令包含危险操作 '{pattern}'，已被拒绝"
-        
-        # git 命令特殊检查：只允许只读操作
-        if base_command == 'git':
-            git_readonly_cmds = ['status', 'log', 'diff', 'show', 'branch', 'remote', 'config', '--version']
-            if len(cmd_parts) < 2 or not any(ro_cmd in command_lower for ro_cmd in git_readonly_cmds):
-                return False, "git 命令仅允许只读操作（如 status, log, diff, show 等）"
-        
-        # pip 命令特殊检查：只允许只读操作
-        if base_command in ['pip', 'pip3']:
-            pip_readonly_cmds = ['list', 'show', 'search', 'freeze', '--version', '-V']
-            if len(cmd_parts) < 2 or not any(ro_cmd in command for ro_cmd in pip_readonly_cmds):
-                return False, "pip 命令仅允许只读操作（如 list, show, freeze 等）"
-        
+        """命令内容不做黑名单检查；边界由 task 文件策略和 OS 沙箱负责。"""
         return True, ""
 
     def _use_system_terminal_mode(self) -> bool:
         """macOS only: optionally route execute_command through Terminal.app."""
         mode = str(os.environ.get("MLA_EXECUTE_COMMAND_MODE", "direct")).strip().lower()
         return sys.platform == "darwin" and mode == "system_terminal"
+
+    def _prepend_path_entry(self, path_value: str, entry: str) -> str:
+        clean = str(entry or "").strip()
+        if not clean:
+            return str(path_value or "")
+        parts = [p for p in str(path_value or "").split(os.pathsep) if p]
+        clean_resolved = str(Path(clean).expanduser().resolve())
+        filtered = []
+        for p in parts:
+            try:
+                if str(Path(p).expanduser().resolve()) == clean_resolved:
+                    continue
+            except Exception:
+                if p == clean:
+                    continue
+            filtered.append(p)
+        return os.pathsep.join([clean, *filtered])
+
+    def _build_command_env(self) -> Dict[str, str]:
+        """
+        Normalize the environment used by execute_command.
+
+        The desktop app injects MLA_EXTERNAL_TOOL_PYTHON when the user pins an
+        interpreter. We still repeat the PATH/VIRTUAL_ENV normalization here so
+        direct mode and Terminal.app mode stay aligned even if the backend was
+        launched from a sparse Finder environment.
+        """
+        env = os.environ.copy()
+        python_bin = str(env.get("MLA_EXTERNAL_TOOL_PYTHON") or env.get("MLA_PYTHON_BIN") or "").strip()
+        if python_bin and os.path.isabs(python_bin):
+            python_path = Path(python_bin).expanduser()
+            python_dir = python_path.parent
+            env["MLA_EXTERNAL_TOOL_PYTHON"] = str(python_path)
+            env["MLA_PYTHON_BIN"] = str(python_path)
+            env["PATH"] = self._prepend_path_entry(env.get("PATH", ""), str(python_dir))
+
+            venv_dir = python_dir.parent
+            if python_dir.name == "bin" and (venv_dir / "pyvenv.cfg").exists():
+                env.setdefault("VIRTUAL_ENV", str(venv_dir))
+
+        return env
+
+    def _prepare_command_env(self, workspace: Path, abs_working_dir: Path) -> Dict[str, str]:
+        env = self._build_command_env()
+        if should_wrap_command_with_landlock():
+            return prepare_landlock_env(str(workspace), str(abs_working_dir), env)
+        if command_sandbox_enabled():
+            return sanitize_command_env(str(workspace), env)
+        return env
+
+    def _landlock_shell_args(self, command: str, abs_working_dir: Path) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "utils.landlock_exec",
+            "--cwd",
+            str(abs_working_dir),
+            "--",
+            "/bin/sh",
+            "-c",
+            command,
+        ]
+
+    def _subprocess_invocation(self, command: str, abs_working_dir: Path) -> tuple[Any, bool, Optional[Path]]:
+        if should_wrap_command_with_landlock():
+            return self._landlock_shell_args(command, abs_working_dir), False, None
+        return command, True, abs_working_dir
+
+    def _subprocess_security_kwargs(self, workspace: Path, abs_working_dir: Path) -> Dict[str, Any]:
+        if should_apply_unix_permission_sandbox():
+            return prepare_unix_permission_sandbox(str(workspace), str(abs_working_dir))
+        return {}
+
+    def _terminal_export_env_lines(self) -> str:
+        env = self._build_command_env()
+        fixed_keys = {
+            "PATH",
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
+            "CONDA_PREFIX",
+            "CONDA_DEFAULT_ENV",
+            "MLA_EXTERNAL_TOOL_PYTHON",
+            "MLA_PYTHON_BIN",
+            "MLA_USER_DATA_ROOT",
+            "MLA_AGENT_LIBRARY_DIR",
+            "MLA_SKILLS_LIBRARY_DIR",
+            "MLA_TOOLS_LIBRARY_DIR",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        }
+
+        for key in env:
+            if key.startswith("PIP_") or key.startswith("pip_"):
+                fixed_keys.add(key)
+
+        try:
+            extra_keys = json.loads(env.get("MLA_DESKTOP_EXTRA_ENV_KEYS_JSON", "[]") or "[]")
+            if isinstance(extra_keys, list):
+                fixed_keys.update(str(k) for k in extra_keys)
+        except Exception:
+            pass
+
+        valid_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        lines = []
+        for key in sorted(fixed_keys):
+            if not valid_name.match(key) or key not in env:
+                continue
+            lines.append(f"export {key}={shlex.quote(str(env.get(key, '')))}")
+        if lines:
+            lines.append("hash -r")
+        return "\n".join(lines)
 
     def _escape_applescript_str(self, s: str) -> str:
         return s.replace("\\", "\\\\").replace('"', '\\"')
@@ -999,8 +1081,12 @@ class ExecuteCommandTool(BaseTool):
         output_path: Path,
         exit_path: Path,
     ) -> None:
+        env_exports = self._terminal_export_env_lines()
+        if env_exports:
+            env_exports += "\n"
         shell = (
             "#!/bin/bash\n"
+            f"{env_exports}"
             f"cd {shlex.quote(str(abs_working_dir))} || exit 1\n"
             f"{{ {command}; }} > {shlex.quote(str(output_path))} 2>&1\n"
             f'echo "$?" > {shlex.quote(str(exit_path))}\n'
@@ -1193,6 +1279,10 @@ class ExecuteCommandTool(BaseTool):
                     output_file=output_file,
                 )
 
+            command_env = self._prepare_command_env(workspace, abs_working_dir)
+            subprocess_cmd, subprocess_shell, subprocess_cwd = self._subprocess_invocation(command, abs_working_dir)
+            subprocess_security = self._subprocess_security_kwargs(workspace, abs_working_dir)
+
             # 输出重定向到文件
             if output_file:
                 output_path = get_abs_path(str(workspace), output_file)
@@ -1206,26 +1296,30 @@ class ExecuteCommandTool(BaseTool):
                         CREATE_NO_WINDOW = 0x08000000
                         DETACHED_PROCESS = 0x00000008
                         process = subprocess.Popen(
-                            command,
-                            shell=True,
+                            subprocess_cmd,
+                            shell=subprocess_shell,
                             stdout=out_f,
                             stderr=subprocess.STDOUT,
                             text=True,
-                            cwd=str(abs_working_dir),
+                            cwd=str(subprocess_cwd) if subprocess_cwd is not None else None,
                             stdin=subprocess.DEVNULL,
+                            env=command_env,
                             creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
                             close_fds=False,
+                            **subprocess_security,
                         )
                     else:
                         process = subprocess.Popen(
-                            command,
-                            shell=True,
+                            subprocess_cmd,
+                            shell=subprocess_shell,
                             stdout=out_f,
                             stderr=subprocess.STDOUT,
                             text=True,
-                            cwd=str(abs_working_dir),
+                            cwd=str(subprocess_cwd) if subprocess_cwd is not None else None,
                             stdin=subprocess.DEVNULL,
+                            env=command_env,
                             start_new_session=True,
+                            **subprocess_security,
                         )
 
                     process_id = f"bg_cmd_{int(time.time())}_{process.pid}"
@@ -1254,14 +1348,16 @@ class ExecuteCommandTool(BaseTool):
                     # 非后台：run + 输出到文件
                     with open(output_path, "w", encoding="utf-8") as out_f:
                         result = subprocess.run(
-                            command,
-                            shell=True,
+                            subprocess_cmd,
+                            shell=subprocess_shell,
                             stdout=out_f,
                             stderr=subprocess.STDOUT,
                             text=True,
                             timeout=timeout,
-                            cwd=str(abs_working_dir),
+                            cwd=str(subprocess_cwd) if subprocess_cwd is not None else None,
                             stdin=subprocess.DEVNULL,
+                            env=command_env,
+                            **subprocess_security,
                         )
 
                     output = f"命令执行完成，输出已保存到: {output_file}\nExit code: {result.returncode}"
@@ -1278,13 +1374,15 @@ class ExecuteCommandTool(BaseTool):
 
             # 不重定向：直接捕获输出
             result = subprocess.run(
-                command,
-                shell=True,
+                subprocess_cmd,
+                shell=subprocess_shell,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(abs_working_dir),
+                cwd=str(subprocess_cwd) if subprocess_cwd is not None else None,
                 stdin=subprocess.DEVNULL,
+                env=command_env,
+                **subprocess_security,
             )
 
             output = result.stdout or ""

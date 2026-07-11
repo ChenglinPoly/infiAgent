@@ -16,10 +16,10 @@ tools:
       # - parse_document
       # - web_search_agent
       # - get_searchPdf_by_doi_or_title
-      - judge_agent
       - file_read
       - dir_list
       - dir_create
+      - execute_command
       - answer_from_papers
       - reference_list
       - reference_add
@@ -37,7 +37,7 @@ tools:
         详细分析用户的意图，并根据意图编排使用你的工具完成任务。
         例如，如果用户想要进行学术论文写作，则你应该参考下面的流程：
         **参考流程:**
-          1. 基于论文写作需求，从arxiv，google scholar上收集必要的论文标题，和原始文献。完成后注意检查 reference.bib文件是否更新。
+          1. 基于论文写作需求，从 arxiv、google scholar 上收集必要的论文标题和原始文献。完成后注意检查 reference.bib 是否已通过 reference_add 正确更新。
           2. 当所有内容都收集完成后，如果有些内容必须人类完成，且内容必要（例如 google scholar中的文章下载），则使用human_in_loop请求人类补充或完成。
           3. 如果human_in_loop明确返回人类拒绝，则尽量尝试基于当前材料完成后续任务。
         如果用户是其他目的而搜索资料，你应该自己判断是否无需收集论文，只需要收集网页资料。
@@ -62,9 +62,9 @@ tools:
     level: 2
     type: llm_call_agent
     available_tools:
-      - judge_agent
       - file_read
       - dir_list
+      - execute_command
       - answer_from_papers
       - image_read
       - file_write
@@ -83,7 +83,7 @@ tools:
         **你的流程:**
         在开始下面流程前，注意与用户交互中用户的意见，如果用户有 idea 相关的意见，参考用户意见形成论文 idea。
         idea+研究计划哲学：应该聚焦于一篇文章或者最多两三篇文章的方向上！研究问题针对一个点进行研究和改进！不是每一篇文章都对研究方案有用！目标单一，明确，可实现（要考虑 llm 模型的局限性,无法完成特别难的代码实验）是第一要务！
-        1. 对于每篇论文，你可以先通过 reference.bib查看大致方向。
+        1. 对于每篇论文，你可以先通过 reference.bib 查看大致方向。
         2. 如果需要了解详细内容，或者需要更详细的总结，或特定信息，你可以通过answer_from_papers来阅读多篇文献（如果任务类似，你可以要求该工具一次性读取多篇论文，并生成到统一文件中查看）得到自己想要了解的或者知道的答案和内容。
         3. 在你有信心基于已有文献做出最终计划后，做出实验计划，或写作计划。
         4. 你的产出应该较为详细，例如论文的实验计划等，保证后续 agent 能直接使用你的产出而不用重新分析资料。
@@ -112,7 +112,6 @@ tools:
     level: 2
     type: llm_call_agent
     available_tools:
-      - judge_agent
       - file_read
       - file_write
       - dir_list
@@ -177,9 +176,9 @@ tools:
     level: 2
     type: llm_call_agent
     available_tools:
-      - judge_agent
       - file_read
       - file_write
+      - execute_command
       - move_data_to_clean_directory
       - create_figures_python_agent
       - create_figures_by_ai
@@ -228,13 +227,13 @@ tools:
     level: 2
     type: llm_call_agent
     available_tools:
-      - judge_agent
       - file_read
       - file_write
       # - md_to_document_agent
       - sub_part_editor_agent
       - dir_list
       - dir_create
+      - execute_command
       - file_move
       - create_figures_agent
       - move_data_to_clean_directory

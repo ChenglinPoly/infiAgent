@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -367,6 +368,143 @@ def sync_task_history_from_context(task_id: str, context: Optional[Dict[str, Any
     return indexed_count
 
 
+_FTS_TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
+
+
+def _keyword_tokens(keyword: str) -> List[str]:
+    return [token for token in _FTS_TOKEN_RE.findall(str(keyword or "")) if token]
+
+
+def _normalize_fts_query(keyword: str) -> str:
+    tokens = _keyword_tokens(keyword)
+    if not tokens:
+        return ""
+    quoted = []
+    for token in tokens[:20]:
+        escaped = token.replace('"', '""')
+        quoted.append(f'"{escaped}"')
+    return " OR ".join(quoted)
+
+
+def _escape_like(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+def _like_entry_keys(conn: sqlite3.Connection, task_id: str, values: Sequence[str]) -> set[str]:
+    search_values = [str(value or "").strip() for value in values if str(value or "").strip()]
+    if not search_values:
+        return set()
+
+    clauses: List[str] = []
+    params: List[Any] = [task_id]
+    for value in search_values[:20]:
+        pattern = f"%{_escape_like(value)}%"
+        clauses.append(
+            "("
+            "c.text LIKE ? ESCAPE '\\' OR "
+            "c.instruction_text LIKE ? ESCAPE '\\' OR "
+            "c.final_output LIKE ? ESCAPE '\\' OR "
+            "c.latest_thinking LIKE ? ESCAPE '\\'"
+            ")"
+        )
+        params.extend([pattern, pattern, pattern, pattern])
+
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT c.entry_key
+        FROM history_chunks c
+        WHERE c.task_id = ? AND ({' OR '.join(clauses)})
+        """,
+        params,
+    ).fetchall()
+    return {str(row["entry_key"]) for row in rows}
+
+
+def _search_entry_keys_by_keyword(conn: sqlite3.Connection, task_id: str, keyword: str) -> tuple[set[str], str, str]:
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return set(), "", ""
+
+    fts_error = ""
+    fts_query = _normalize_fts_query(keyword)
+    if fts_query:
+        try:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT c.entry_key
+                FROM history_chunks_fts f
+                JOIN history_chunks c ON c.rowid = f.rowid
+                WHERE c.task_id = ? AND history_chunks_fts MATCH ?
+                """,
+                (task_id, fts_query),
+            ).fetchall()
+            entry_keys = {str(row["entry_key"]) for row in rows}
+            if entry_keys:
+                return entry_keys, "fts", ""
+        except sqlite3.Error as exc:
+            fts_error = str(exc)
+
+    entry_keys = _like_entry_keys(conn, task_id, [keyword])
+    if entry_keys:
+        return entry_keys, "like_fallback" if fts_query else "like", fts_error
+
+    tokens = _keyword_tokens(keyword)
+    if len(tokens) > 1:
+        entry_keys = _like_entry_keys(conn, task_id, tokens)
+        if entry_keys:
+            return entry_keys, "token_like_fallback", fts_error
+
+    return set(), "no_match", fts_error
+
+
+def _search_chunk_rows_by_query(
+    conn: sqlite3.Connection,
+    *,
+    query: str,
+    task_id: Optional[str],
+    limit: int,
+) -> List[sqlite3.Row]:
+    fts_query = _normalize_fts_query(query)
+    if fts_query:
+        base_sql = """
+            SELECT c.*
+            FROM history_chunks_fts f
+            JOIN history_chunks c ON c.rowid = f.rowid
+            WHERE history_chunks_fts MATCH ?
+        """
+        params: List[Any] = [fts_query]
+        if task_id:
+            base_sql += " AND c.task_id = ?"
+            params.append(str(task_id))
+        base_sql += " ORDER BY rank LIMIT ?"
+        params.append(limit)
+        try:
+            rows = conn.execute(base_sql, params).fetchall()
+            if rows:
+                return rows
+        except sqlite3.Error:
+            pass
+
+    pattern = f"%{_escape_like(query)}%"
+    base_sql = """
+        SELECT c.*
+        FROM history_chunks c
+        WHERE c.text LIKE ? ESCAPE '\\'
+    """
+    params = [pattern]
+    if task_id:
+        base_sql += " AND c.task_id = ?"
+        params.append(str(task_id))
+    base_sql += " ORDER BY c.entry_index ASC LIMIT ?"
+    params.append(limit)
+    return conn.execute(base_sql, params).fetchall()
+
+
 def search_task_history_sql(
     *,
     sql: Optional[str] = None,
@@ -385,19 +523,7 @@ def search_task_history_sql(
             search_query = str(query or "").strip()
             if not search_query:
                 raise ValueError("sql 模式至少需要 query 或 sql")
-            base_sql = """
-                SELECT c.*
-                FROM history_chunks_fts f
-                JOIN history_chunks c ON c.rowid = f.rowid
-                WHERE history_chunks_fts MATCH ?
-            """
-            params: List[Any] = [search_query]
-            if task_id:
-                base_sql += " AND c.task_id = ?"
-                params.append(str(task_id))
-            base_sql += " ORDER BY rank LIMIT ?"
-            params.append(limit)
-            rows = conn.execute(base_sql, params).fetchall()
+            rows = _search_chunk_rows_by_query(conn, query=search_query, task_id=task_id, limit=limit)
 
     return [_row_to_result(row) for row in rows]
 
@@ -554,6 +680,7 @@ def search_task_history_records(
     start_time_from: str = "",
     start_time_to: str = "",
     start_round: int = 0,
+    end_round: int = 0,
     enable_vector_search: bool = False,
 ) -> Dict[str, Any]:
     task_id = str(task_id or "").strip()
@@ -562,20 +689,14 @@ def search_task_history_records(
     start_time_from = str(start_time_from or "").strip()
     start_time_to = str(start_time_to or "").strip()
     start_round = max(0, int(start_round or 0))
+    end_round = max(0, int(end_round or 0))
 
     with _connect() as conn:
         entry_keys_filter: Optional[set[str]] = None
+        keyword_search_mode = ""
+        keyword_search_error = ""
         if keyword:
-            rows = conn.execute(
-                """
-                SELECT DISTINCT c.entry_key
-                FROM history_chunks_fts f
-                JOIN history_chunks c ON c.rowid = f.rowid
-                WHERE c.task_id = ? AND history_chunks_fts MATCH ?
-                """,
-                (task_id, keyword),
-            ).fetchall()
-            entry_keys_filter = {str(row["entry_key"]) for row in rows}
+            entry_keys_filter, keyword_search_mode, keyword_search_error = _search_entry_keys_by_keyword(conn, task_id, keyword)
 
         semantic_scores: Dict[str, float] = {}
         semantic_error = ""
@@ -596,6 +717,8 @@ def search_task_history_records(
                 entry_keys_filter = set(semantic_scores.keys())
             elif entry_keys_filter is not None and semantic_scores:
                 entry_keys_filter &= set(semantic_scores.keys())
+            elif semantic_error and entry_keys_filter is None and not keyword:
+                entry_keys_filter = set()
 
         sql = """
             SELECT *
@@ -612,6 +735,9 @@ def search_task_history_records(
         if start_round > 0:
             sql += " AND entry_index >= ?"
             params.append(start_round - 1)
+        if end_round > 0:
+            sql += " AND entry_index <= ?"
+            params.append(end_round - 1)
         sql += " ORDER BY start_time ASC, entry_index ASC"
         rows = conn.execute(sql, params).fetchall()
 
@@ -633,7 +759,10 @@ def search_task_history_records(
         "start_time_from": start_time_from,
         "start_time_to": start_time_to,
         "start_round": start_round,
+        "end_round": end_round,
         "enable_vector_search": bool(enable_vector_search),
         "semantic_error": semantic_error,
+        "keyword_search_mode": keyword_search_mode,
+        "keyword_search_error": keyword_search_error,
         "results": results,
     }

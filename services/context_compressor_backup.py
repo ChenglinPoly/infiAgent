@@ -17,13 +17,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.llm_client import SimpleLLMClient, ChatMessage
-
-try:
-    import tiktoken
-    HAS_TIKTOKEN = True
-except ImportError:
-    HAS_TIKTOKEN = False
-    safe_print("⚠️ tiktoken未安装，将使用简单估算方法")
+from utils.token_budget import count_tokens_text
 
 
 class ContextCompressor:
@@ -33,21 +27,11 @@ class ContextCompressor:
         """初始化压缩器"""
         self.llm_client = SimpleLLMClient()
         
-        # 初始化tiktoken编码器
-        if HAS_TIKTOKEN:
-            self.encoding = tiktoken.get_encoding("cl100k_base")
-        else:
-            self.encoding = None
+        self.encoding = None
     
     def count_tokens(self, text: str) -> int:
         """统计文本的token数"""
-        if self.encoding:
-            return len(self.encoding.encode(text))
-        else:
-            # 简单估算：中文1.5字符/token，英文4字符/token
-            chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-            other_chars = len(text) - chinese_chars
-            return int(chinese_chars / 1.5 + other_chars / 4)
+        return count_tokens_text(str(text or ""))
     
     def compress_action_history(
         self,

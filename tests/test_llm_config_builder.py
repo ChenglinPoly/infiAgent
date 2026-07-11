@@ -68,7 +68,7 @@ class LlmConfigBuilderTests(unittest.TestCase):
                 "unified": {
                     "provider": "openrouter",
                     "model": "openai/gpt-4.1-mini",
-                    "api_key": "sk-or-demo",
+                    "api_key": "demo-key-not-real",
                     "base_url": "https://openrouter.ai/api/v1",
                 },
             },
@@ -80,7 +80,7 @@ class LlmConfigBuilderTests(unittest.TestCase):
 
         parsed = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         self.assertEqual(parsed["models"][0]["name"], "openai/gpt-4.1-mini")
-        self.assertEqual(parsed["models"][0]["api_key"], "sk-or-demo")
+        self.assertEqual(parsed["models"][0]["api_key"], "demo-key-not-real")
         self.assertEqual(parsed["models"][0]["base_url"], "https://openrouter.ai/api/v1")
 
 

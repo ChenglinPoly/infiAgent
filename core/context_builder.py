@@ -11,6 +11,13 @@ import os
 from pathlib import Path
 
 from utils.context_hooks import apply_context_hooks
+from utils.experience_store import (
+    global_experience_path,
+    parse_experience_entries,
+    render_entries_block,
+    task_experience_path,
+)
+from utils.token_budget import count_tokens_text
 from utils.user_paths import get_context_settings, get_user_conversations_dir, get_user_skills_library_root
 
 
@@ -42,12 +49,7 @@ class ContextBuilder:
         except Exception:
             self.skill_loader = None
         
-        # 初始化tiktoken
-        try:
-            import tiktoken
-            self.encoding = tiktoken.get_encoding("cl100k_base")
-        except ImportError:
-            self.encoding = None
+        self.encoding = None
 
     def _resolve_compressor_model(self) -> str:
         preferred = str(self.agent_config.get("compressor_model") or "").strip() or None
@@ -56,25 +58,64 @@ class ContextBuilder:
     def _resolve_compressor_tool_choice(self, model: str) -> str:
         return self.llm_client.resolve_tool_choice("compressor", model)
 
-    def _build_task_system_add(self, task_id: str) -> str:
+    def _build_framework_runtime_hint(self) -> str:
+        return """<框架级工具规则>
+1. 大多数文件类工具参数（如 path、save_path、bib_path、working_dir）默认都相对于当前 task 根目录解析；除 task_id 这类任务管理参数外，不要给文件类工具传绝对路径。
+2. 隐藏目录是允许访问的，例如 .skills/demo/SKILL.md、.chatbi/notes.md、.cache/tmp.txt。
+3. execute_command 默认工作目录就是当前 task 根目录；如果要访问 skill 内容，通常可以直接使用 .skills/<skill_name>/... 路径。
+4. load_skill 会把 skill 部署到当前 task 的 .skills/<skill_name>/ 目录，并把对应 SKILL.md 注入当前 agent 的上下文；offload_skill 只卸载上下文中的 skill 内容，不会删除本地文件。
+5. 维护 reference.bib 时优先使用 reference_add / reference_delete；只有在明确需要时才直接编辑 bib 文件。
+6. 文件路径示例：
+   - file_read: path=['main.tex']
+   - file_read: path=['.skills/pptx/SKILL.md']
+   - file_write: path='notes/result.md'
+   - dir_list: path='.skills', recursive=true
+</框架级工具规则>"""
+
+    def _build_task_system_add(self, task_id: str, agent_name: str) -> str:
         try:
-            system_add_path = Path(task_id) / "system-add.md"
-            if not system_add_path.exists():
-                return ""
-            content = system_add_path.read_text(encoding="utf-8").strip()
-            if not content:
-                return ""
-            return f"<任务级补充系统提示>\n{content}\n</任务级补充系统提示>"
+            task_dir = Path(task_id)
+            candidate_paths = []
+            normalized_agent_name = str(agent_name or "").strip()
+            agent_system = str(getattr(self.config_loader, "agent_system_name", "") or "").strip()
+            if agent_system:
+                candidate_paths.append(task_dir / f"system-add.{agent_system}.md")
+            if normalized_agent_name:
+                candidate_paths.append(task_dir / f"system-add.{normalized_agent_name}.md")
+            candidate_paths.append(task_dir / "system-add.md")
+
+            for system_add_path in candidate_paths:
+                if not system_add_path.exists():
+                    continue
+                content = system_add_path.read_text(encoding="utf-8").strip()
+                if not content:
+                    continue
+                return f"<任务级补充系统提示>\n{content}\n</任务级补充系统提示>"
+        except Exception:
+            return ""
+        return ""
+
+    def _build_experience_blocks(self, task_id: str, agent_name: str) -> str:
+        try:
+            blocks = []
+            task_path = task_experience_path(task_id, agent_name)
+            # 只注入 status=active 的条目；inactive 保留在文件里但不进上下文
+            task_entries = [e for e in parse_experience_entries(task_path) if e.status == "active"]
+            if task_entries:
+                blocks.append(f"<任务经验>\n{render_entries_block(task_entries)}\n</任务经验>")
+
+            agent_system = str(getattr(self.config_loader, "agent_system_name", "") or "").strip() or "OpenCowork"
+            global_path = global_experience_path(agent_system, agent_name)
+            global_entries = [e for e in parse_experience_entries(global_path) if e.status == "active"]
+            if global_entries:
+                blocks.append(f"<全局经验>\n{render_entries_block(global_entries)}\n</全局经验>")
+
+            return "\n\n".join(blocks)
         except Exception:
             return ""
 
     def _count_tokens(self, text: str) -> int:
-        text = str(text or "")
-        if self.encoding:
-            return len(self.encoding.encode(text))
-        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-        other_chars = len(text) - chinese_chars
-        return int(chinese_chars / 1.5 + other_chars / 4)
+        return count_tokens_text(str(text or ""))
     
     def build_context(self, task_id: str, agent_id: str, agent_name: str, task_input: str, 
                      action_history: List[Dict] = None,
@@ -105,7 +146,9 @@ class ContextBuilder:
         
         # 1️⃣ 读取通用系统提示词（general_prompts.yaml，包含<智能体经验>）
         general_system_prompt = self._load_general_system_prompt(agent_name)
-        task_system_add = self._build_task_system_add(task_id)
+        framework_runtime_hint = self._build_framework_runtime_hint()
+        task_system_add = self._build_task_system_add(task_id, agent_name)
+        experience_blocks = self._build_experience_blocks(task_id, agent_name)
         
         # 2️⃣ 构建各个动态部分
         user_latest_input = self._build_user_latest_input(current)
@@ -145,7 +188,10 @@ class ContextBuilder:
         # 3️⃣ 组装完整上下文（通用部分在最前面）
         full_context = f"""{general_system_prompt}
 
+{framework_runtime_hint}
+
 {task_system_add}
+{experience_blocks}
 <用户最新输入>
 {user_latest_input}
 </用户最新输入>
@@ -225,7 +271,8 @@ class ContextBuilder:
             return "当前没有历史交互记录。"
         return (
             f"你现在能看到最近{visible_count}条历史交互信息，总交互信息有{total_count}条。"
-            "如果当前提供的历史信息不足以涵盖本次任务的相关历史，请使用 task_history_search 工具进行检索。"
+            "如果当前提供的历史信息不足以涵盖本次任务的相关历史，请使用 task_history_search 工具进行检索；"
+            "它只支持两种简单查询：round_range（如 '1-3'、'4'、'-2'）和 keyword（中文、文件名、路径或关键短语）。"
         )
 
     def _build_loaded_skills_xml(self, agent_id: str) -> str:
@@ -361,14 +408,19 @@ class ContextBuilder:
         safe_print("首次压缩历史交互...")
         compressed_result = self._compress_user_agent_history_with_llm(selected_history, task_id, current_task)
         
-        context["current"]["_compressed_user_agent_history"] = compressed_result
-        context["current"]["_compressed_user_agent_history_meta"] = {
+        compressed_meta = {
             "recent_items": recent_items,
             "threshold_tokens": threshold_tokens,
             "visible_count": visible_count,
             "total_count": total_count,
         }
-        self.hierarchy_manager._save_context(context)
+
+        def _store_user_history_cache(latest_context):
+            latest_current = latest_context.setdefault("current", {})
+            latest_current["_compressed_user_agent_history"] = compressed_result
+            latest_current["_compressed_user_agent_history_meta"] = compressed_meta
+
+        self.hierarchy_manager.update_context(_store_user_history_cache)
         
         return compressed_result
     
@@ -525,9 +577,11 @@ class ContextBuilder:
             
             # 保存压缩结果（针对当前agent）
             cache_key = f"_compressed_structured_call_info_{current_agent_id}"
-            context = self.hierarchy_manager.get_context()
-            context["current"][cache_key] = compressed_result
-            self.hierarchy_manager._save_context(context)
+
+            def _store_structured_call_cache(latest_context):
+                latest_context.setdefault("current", {})[cache_key] = compressed_result
+
+            self.hierarchy_manager.update_context(_store_structured_call_cache)
             
             return compressed_result
         

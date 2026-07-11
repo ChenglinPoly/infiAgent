@@ -122,6 +122,27 @@ def _parse_env_flag(value: Any) -> Optional[bool]:
     return None
 
 
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return max(1, int(value))
+    except Exception:
+        return None
+
+
+def _resolve_action_window_config(config: Dict[str, Any]) -> Optional[int]:
+    values = [
+        _positive_int_or_none(config.get("action_window_steps")),
+        _positive_int_or_none(config.get("thinking_steps")),
+        _positive_int_or_none(config.get("thinking_interval")),
+    ]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return max(values)
+
+
 def _build_launch_config_from_env_overrides(env_overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     overrides = dict(env_overrides or {})
     config: Dict[str, Any] = {}
@@ -138,13 +159,22 @@ def _build_launch_config_from_env_overrides(env_overrides: Optional[Dict[str, An
         if value:
             config[config_key] = value
 
+    action_window_values = [
+        _positive_int_or_none(overrides.get("MLA_ACTION_WINDOW_STEPS")),
+        _positive_int_or_none(overrides.get("MLA_THINKING_STEPS")),
+        _positive_int_or_none(overrides.get("MLA_THINKING_INTERVAL")),
+    ]
+    action_window_values = [value for value in action_window_values if value is not None]
+    if action_window_values:
+        action_window_steps = max(action_window_values)
+        config["action_window_steps"] = action_window_steps
+        config["thinking_steps"] = action_window_steps
+        config["thinking_interval"] = action_window_steps
+
     int_mapping = {
-        "MLA_ACTION_WINDOW_STEPS": "action_window_steps",
-        "MLA_THINKING_INTERVAL": "thinking_interval",
-        "MLA_THINKING_STEPS": "thinking_steps",
-        "MLA_NO_TOOL_RETRY_LIMIT": "no_tool_retry_limit",
         "MLA_MAX_TURNS": "max_turns",
         "MLA_FRESH_INTERVAL_SEC": "fresh_interval_sec",
+        "MLA_AUTO_RESUME_ATTEMPTS": "auto_resume_attempts",
     }
     for env_key, config_key in int_mapping.items():
         value = overrides.get(env_key)
@@ -159,15 +189,12 @@ def _build_launch_config_from_env_overrides(env_overrides: Optional[Dict[str, An
     if fresh_enabled is not None:
         config["fresh_enabled"] = fresh_enabled
 
-    thinking_enabled = _parse_env_flag(overrides.get("MLA_THINKING_ENABLED"))
-    if thinking_enabled is not None:
-        config["thinking_enabled"] = thinking_enabled
-
     seed_builtin = _parse_env_flag(overrides.get("MLA_SEED_BUILTIN_RESOURCES"))
     if seed_builtin is not None:
         config["seed_builtin_resources"] = seed_builtin
 
     json_mapping = {
+        "MLA_TOOL_RUNTIME_DEFAULTS_JSON": "tool_runtime_defaults",
         "MLA_TOOL_HOOKS_JSON": "tool_hooks",
         "MLA_CONTEXT_HOOKS_JSON": "context_hooks",
     }
@@ -189,20 +216,9 @@ def _build_launch_config_from_env_overrides(env_overrides: Optional[Dict[str, An
         except Exception:
             pass
 
-    context_int_mapping = {
-        "MLA_USER_HISTORY_COMPRESS_THRESHOLD_TOKENS": "user_history_compress_threshold_tokens",
-        "MLA_USER_HISTORY_RECENT_ITEMS": "user_history_recent_items",
-        "MLA_STRUCTURED_CALL_INFO_COMPRESS_THRESHOLD_AGENTS": "structured_call_info_compress_threshold_agents",
-        "MLA_STRUCTURED_CALL_INFO_COMPRESS_THRESHOLD_TOKENS": "structured_call_info_compress_threshold_tokens",
-    }
-    for env_key, config_key in context_int_mapping.items():
-        value = overrides.get(env_key)
-        if value is None or value == "":
-            continue
-        try:
-            config[config_key] = int(value)
-        except Exception:
-            pass
+    log_mode = str(overrides.get("MLA_TOOL_RUNTIME_DEFAULTS_LOG_MODE") or "").strip().lower()
+    if log_mode:
+        config["tool_runtime_defaults_log_mode"] = log_mode
 
     return config
 
@@ -411,50 +427,45 @@ def reset_task_state(
         return False, {"error": "缺少 task_id"}
 
     manager = get_hierarchy_manager(task_id)
-    context = manager._load_context()
-    if not isinstance(context, dict):
-        context = {"task_id": task_id, "runtime": {}, "current": {}, "history": []}
+    with manager._state_lock():
+        context = manager._load_context()
+        if not isinstance(context, dict):
+            context = {"task_id": task_id, "runtime": {}, "current": {}, "history": []}
 
-    current = context.get("current", {})
-    if not isinstance(current, dict):
-        current = {}
+        current = context.get("current", {})
+        if not isinstance(current, dict):
+            current = {}
 
-    if preserve_history and (
-        current.get("instructions")
-        or current.get("hierarchy")
-        or current.get("agents_status")
-    ):
-        history_entry = {
-            "archived_at": datetime.now().isoformat(),
-            "type": "task_reset",
-            "reason": reason or "manual reset",
-            "instructions": current.get("instructions", []),
-            "hierarchy": current.get("hierarchy", {}),
-            "agents_status": current.get("agents_status", {}),
-            "start_time": current.get("start_time", ""),
-            "last_updated": current.get("last_updated", ""),
-        }
-        history = context.get("history", [])
-        if not isinstance(history, list):
-            history = []
-        history.append(history_entry)
-        context["history"] = history
+        if preserve_history and (
+            current.get("instructions")
+            or current.get("hierarchy")
+            or current.get("agents_status")
+        ):
+            history_entry = {
+                "archived_at": datetime.now().isoformat(),
+                "type": "task_reset",
+                "reason": reason or "manual reset",
+                "instructions": current.get("instructions", []),
+                "hierarchy": current.get("hierarchy", {}),
+                "agents_status": current.get("agents_status", {}),
+                "start_time": current.get("start_time", ""),
+                "last_updated": current.get("last_updated", ""),
+            }
+            history = context.get("history", [])
+            if not isinstance(history, list):
+                history = []
+            history.append(history_entry)
+            context["history"] = history
 
-    runtime = context.get("runtime", {})
-    if not isinstance(runtime, dict):
-        runtime = {}
-    runtime["last_reset_at"] = datetime.now().isoformat()
-    runtime["last_reset_reason"] = reason or "manual reset"
-    context["runtime"] = runtime
-    context["current"] = {
-        "instructions": [],
-        "hierarchy": {},
-        "agents_status": {},
-        "start_time": datetime.now().isoformat(),
-        "last_updated": datetime.now().isoformat(),
-    }
-    manager._save_context(context)
-    manager._save_stack([])
+        runtime = context.get("runtime", {})
+        if not isinstance(runtime, dict):
+            runtime = {}
+        runtime["last_reset_at"] = datetime.now().isoformat()
+        runtime["last_reset_reason"] = reason or "manual reset"
+        context["runtime"] = runtime
+        context["current"] = manager._new_current_context()
+        manager._save_context(context)
+        manager._save_stack([])
 
     conversations_dir = get_user_conversations_dir()
     prefix = _task_file_prefix(task_id)
@@ -534,9 +545,17 @@ def launch_task_process(
         _launching_tasks.add(task_id)
 
     try:
-        start_py = Path(__file__).resolve().parent.parent / "start.py"
-        if not start_py.exists():
-            return False, {"error": f"start.py 不存在: {start_py}"}
+        if bool(getattr(sys, "frozen", False)):
+            # PyInstaller 冻结模式：可执行文件本身就是 start.main 入口（盘上没有 start.py），
+            # 直接重执行自身即可启动新任务进程。
+            launcher = [sys.executable]
+            launch_cwd = Path(sys.executable).resolve().parent
+        else:
+            start_py = Path(__file__).resolve().parent.parent / "start.py"
+            if not start_py.exists():
+                return False, {"error": f"start.py 不存在: {start_py}"}
+            launcher = [sys.executable, str(start_py)]
+            launch_cwd = start_py.parent
 
         task_path = str(Path(task_id).expanduser().resolve())
         Path(task_path).mkdir(parents=True, exist_ok=True)
@@ -567,44 +586,39 @@ def launch_task_process(
             env["MLA_SKILLS_LIBRARY_DIR"] = str(Path(config["skills_dir"]).expanduser().resolve())
         if config.get("tools_dir"):
             env["MLA_TOOLS_LIBRARY_DIR"] = str(Path(config["tools_dir"]).expanduser().resolve())
-        if config.get("action_window_steps") is not None:
-            env["MLA_ACTION_WINDOW_STEPS"] = str(max(1, int(config["action_window_steps"])))
-        if config.get("thinking_interval") is not None:
-            env["MLA_THINKING_INTERVAL"] = str(max(1, int(config["thinking_interval"])))
-        if config.get("thinking_steps") is not None:
-            env["MLA_THINKING_STEPS"] = str(max(1, int(config["thinking_steps"])))
-        if config.get("thinking_enabled") is not None:
-            env["MLA_THINKING_ENABLED"] = "true" if bool(config["thinking_enabled"]) else "false"
-        if config.get("no_tool_retry_limit") is not None:
-            env["MLA_NO_TOOL_RETRY_LIMIT"] = str(max(1, int(config["no_tool_retry_limit"])))
+        action_window_steps = _resolve_action_window_config(config)
+        if action_window_steps is not None:
+            window_value = str(action_window_steps)
+            env["MLA_ACTION_WINDOW_STEPS"] = window_value
+            env["MLA_THINKING_INTERVAL"] = window_value
+            env["MLA_THINKING_STEPS"] = window_value
         if config.get("max_turns") is not None:
             env["MLA_MAX_TURNS"] = str(max(1, int(config["max_turns"])))
         if config.get("fresh_enabled") is not None:
             env["MLA_FRESH_ENABLED"] = "true" if bool(config["fresh_enabled"]) else "false"
         if config.get("fresh_interval_sec") is not None:
             env["MLA_FRESH_INTERVAL_SEC"] = str(max(0, int(config["fresh_interval_sec"])))
+        if config.get("auto_resume_attempts") is not None:
+            env["MLA_AUTO_RESUME_ATTEMPTS"] = str(max(0, int(config["auto_resume_attempts"])))
+        if config.get("auto_resume_delay_sec") is not None:
+            env["MLA_AUTO_RESUME_DELAY_SEC"] = str(max(0.0, float(config["auto_resume_delay_sec"])))
         if config.get("mcp_servers") is not None:
             env["MLA_MCP_CONFIG_JSON"] = json.dumps({"servers": config["mcp_servers"]}, ensure_ascii=False)
+        if config.get("tool_runtime_defaults") is not None:
+            env["MLA_TOOL_RUNTIME_DEFAULTS_JSON"] = json.dumps(config["tool_runtime_defaults"], ensure_ascii=False)
+        if config.get("tool_runtime_defaults_log_mode") is not None:
+            env["MLA_TOOL_RUNTIME_DEFAULTS_LOG_MODE"] = str(config["tool_runtime_defaults_log_mode"]).strip().lower()
         if config.get("tool_hooks") is not None:
             env["MLA_TOOL_HOOKS_JSON"] = json.dumps(config["tool_hooks"], ensure_ascii=False)
         if config.get("context_hooks") is not None:
             env["MLA_CONTEXT_HOOKS_JSON"] = json.dumps(config["context_hooks"], ensure_ascii=False)
         if config.get("visible_skills") is not None:
             env["MLA_VISIBLE_SKILLS_JSON"] = json.dumps(config["visible_skills"], ensure_ascii=False)
-        if config.get("user_history_compress_threshold_tokens") is not None:
-            env["MLA_USER_HISTORY_COMPRESS_THRESHOLD_TOKENS"] = str(max(0, int(config["user_history_compress_threshold_tokens"])))
-        if config.get("user_history_recent_items") is not None:
-            env["MLA_USER_HISTORY_RECENT_ITEMS"] = str(max(0, int(config["user_history_recent_items"])))
-        if config.get("structured_call_info_compress_threshold_agents") is not None:
-            env["MLA_STRUCTURED_CALL_INFO_COMPRESS_THRESHOLD_AGENTS"] = str(max(1, int(config["structured_call_info_compress_threshold_agents"])))
-        if config.get("structured_call_info_compress_threshold_tokens") is not None:
-            env["MLA_STRUCTURED_CALL_INFO_COMPRESS_THRESHOLD_TOKENS"] = str(max(0, int(config["structured_call_info_compress_threshold_tokens"])))
         if config.get("seed_builtin_resources") is not None:
             env["MLA_SEED_BUILTIN_RESOURCES"] = "true" if bool(config["seed_builtin_resources"]) else "false"
 
         args = [
-            sys.executable,
-            str(start_py),
+            *launcher,
             "--task_id", task_path,
             "--agent_system", agent_system,
             "--agent_name", agent_name,
@@ -616,6 +630,10 @@ def launch_task_process(
             args.append("--direct-tools")
         if config.get("auto_mode") is not None:
             args.extend(["--auto-mode", "true" if bool(config.get("auto_mode")) else "false"])
+        if config.get("auto_resume_attempts") is not None:
+            args.extend(["--auto-resume-attempts", str(max(0, int(config["auto_resume_attempts"])))])
+        if config.get("auto_resume_delay_sec") is not None:
+            args.extend(["--auto-resume-delay-sec", str(max(0.0, float(config["auto_resume_delay_sec"])))])
 
         with open(log_path, "a", encoding="utf-8") as log_file:
             log_file.write(
@@ -623,7 +641,7 @@ def launch_task_process(
             )
             process = subprocess.Popen(
                 args,
-                cwd=str(start_py.parent),
+                cwd=str(launch_cwd),
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,

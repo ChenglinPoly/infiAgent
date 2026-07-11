@@ -11,8 +11,8 @@ import time
 import json
 import copy
 import re
+import queue
 import threading
-from queue import Empty, Queue
 from typing import Callable, List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,12 +20,19 @@ from pathlib import Path
 from litellm import completion  # 直接导入completion函数
 import litellm
 
+from utils.token_budget import (
+    RequestBudget,
+    build_request_budget,
+    count_tokens_text,
+    count_tokens_value,
+)
 from utils.user_paths import (
     ensure_user_llm_config_exists,
     get_task_file_prefix,
     get_user_conversations_dir,
     get_user_runtime_dir,
 )
+from utils.raw_trace_recorder import append_raw_trace_record, make_trace_id
 
 
 @dataclass
@@ -55,6 +62,7 @@ class LLMResponse:
     error_information: str = ""
     reasoning_content: str = ""  # 模型的推理/思考内容（如 Claude thinking, Deepseek reasoning）
     thinking_blocks: Optional[List[Dict]] = None  # Anthropic 专用的 thinking_blocks
+    request_budget: Optional[Dict] = None
 
 
 _RAW_TOOL_CALLS_SECTION_BEGIN = "<|tool_calls_section_begin|>"
@@ -222,15 +230,35 @@ class SimpleLLMClient:
         self.default_models.setdefault("image_generation", self.figure_models[0] if self.figure_models else "")
         self.default_models.setdefault("compressor", self.compressor_models[0] if self.compressor_models else "")
         self.default_tool_choice = self._load_default_tool_choice()
+        self.reasoning_history_mode = str(self.config.get("reasoning_history_mode") or "native").strip().lower()
+        if self.reasoning_history_mode not in {"native", "content"}:
+            self.reasoning_history_mode = "native"
         # 多模态配置
         self.multimodal = self.config.get("multimodal", False)
         self.compressor_multimodal = self.config.get("compressor_multimodal", False)
         
+        # 多部署路由状态（缓存亲和 + 故障转移）：deployment_id -> 冷却截止时间戳
+        self._deployment_cooldowns: Dict[str, float] = {}
+        try:
+            self._deployment_cooldown_seconds = float(self.config.get("deployment_cooldown_seconds", 120) or 120)
+        except (TypeError, ValueError):
+            self._deployment_cooldown_seconds = 120.0
+
+        # 密钥校验：全局 api_key、模型级 api_key、或模型 deployments 内的 api_key 任一存在即可
+        has_model_level_key = any(
+            (mc.get("api_key") or "").strip() if isinstance(mc.get("api_key"), str) else mc.get("api_key")
+            for mc in self.model_configs.values()
+        )
+        has_deployment_key = any(
+            isinstance(mc.get("deployments"), list)
+            and any(isinstance(d, dict) and str(d.get("api_key") or "").strip() for d in mc["deployments"])
+            for mc in self.model_configs.values()
+        )
+        if not self.api_key and not has_model_level_key and not has_deployment_key:
+            raise ValueError("未配置API密钥")
+
         if not self.models:
             raise ValueError("未配置可用模型列表")
-
-        if not self.api_key:
-            safe_print("⚠️ 未配置全局 API 密钥，将依赖模型级 api_key/base_url 或本地无密钥模型配置。")
         
         # 加载工具配置
         self.tools_config = {}
@@ -241,6 +269,8 @@ class SimpleLLMClient:
         # 配置LiteLLM
         litellm.set_verbose = False  # 关闭详细日志
         litellm.drop_params = True  # 自动丢弃不支持的参数（如Anthropic不支持parallel_tool_calls）
+        if hasattr(litellm, "modify_params"):
+            litellm.modify_params = True  # 让 LiteLLM 自动处理 thinking/reasoning 相关 provider 差异
         
         safe_print(f"✅ LLM客户端初始化成功（LiteLLM）")
         safe_print(f"   Base URL: {self.base_url}")
@@ -252,64 +282,190 @@ class SimpleLLMClient:
         safe_print(f"   超时配置: timeout={self.timeout}s, stream_timeout={self.stream_timeout}s, first_chunk_timeout={self.first_chunk_timeout}s")
         safe_print(f"   多模态: multimodal={self.multimodal}, compressor_multimodal={self.compressor_multimodal}")
 
-    def _emit_stream_reset(
+    def count_text_tokens(self, text: str, *, force_exact: bool = False) -> int:
+        return count_tokens_text(text, force_exact=force_exact)
+
+    def count_value_tokens(self, value: Any, *, force_exact: bool = False) -> int:
+        return count_tokens_value(value, force_exact=force_exact)
+
+    def build_request_budget(
         self,
-        stream_callback: Optional[Callable[[Dict[str, Any]], None]],
         *,
-        model: str,
-        debug_label: str,
-        attempt: int,
-        reason: str,
-    ) -> None:
-        if not stream_callback:
-            return
-        try:
-            stream_callback({
-                "kind": "reset",
-                "text": "",
-                "model": model,
-                "debug_label": debug_label,
-                "attempt": int(attempt or 1),
-                "reason": str(reason or "retry"),
-            })
-        except Exception:
-            pass
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools_definition: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: Optional[int] = None,
+        force_exact: bool = False,
+    ) -> RequestBudget:
+        return build_request_budget(
+            system_prompt=system_prompt,
+            messages=messages,
+            tools_definition=tools_definition or [],
+            context_limit=self.max_context_window,
+            max_tokens=max_tokens,
+            force_exact=force_exact,
+        )
+
+    def build_chat_request_budget(
+        self,
+        *,
+        system_prompt: str,
+        history: List,
+        tool_list: List[str],
+        max_tokens: Optional[int] = None,
+        force_exact: bool = False,
+    ) -> tuple[RequestBudget, int, int]:
+        """
+        Estimate the exact provider-facing chat request before dispatch.
+
+        This mirrors _chat_internal's message/tool normalization so callers can
+        compress history before LLMClient's hard guard rejects the request.
+        Returns:
+            (budget, outbound_message_count, tool_count)
+        """
+        tools_definition = self._build_tools_definition(tool_list)
+        messages = self._build_outbound_messages(system_prompt, history)
+        messages = self._ensure_tool_request_not_assistant_prefill(messages, tools_definition)
+        budget = self.build_request_budget(
+            system_prompt=system_prompt,
+            messages=messages[1:],
+            tools_definition=tools_definition,
+            max_tokens=max_tokens,
+            force_exact=force_exact,
+        )
+        return budget, len(messages), len(tools_definition)
+
+    @staticmethod
+    def _normalize_usage(usage_obj: Any) -> Optional[Dict[str, Any]]:
+        if usage_obj is None:
+            return None
+        if hasattr(usage_obj, "model_dump"):
+            try:
+                usage_obj = usage_obj.model_dump()
+            except Exception:
+                pass
+        elif hasattr(usage_obj, "dict"):
+            try:
+                usage_obj = usage_obj.dict()
+            except Exception:
+                pass
+        elif hasattr(usage_obj, "__dict__") and not isinstance(usage_obj, dict):
+            try:
+                usage_obj = dict(usage_obj.__dict__)
+            except Exception:
+                pass
+
+        if not isinstance(usage_obj, dict):
+            return None
+
+        normalized = {
+            "prompt_tokens": int(usage_obj.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage_obj.get("completion_tokens", 0) or 0),
+            "total_tokens": int(usage_obj.get("total_tokens", 0) or 0),
+        }
+
+        prompt_details = usage_obj.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict) and prompt_details:
+            normalized["prompt_tokens_details"] = prompt_details
+        completion_details = usage_obj.get("completion_tokens_details")
+        if isinstance(completion_details, dict) and completion_details:
+            normalized["completion_tokens_details"] = completion_details
+            reasoning_tokens = completion_details.get("reasoning_tokens")
+            if reasoning_tokens is not None:
+                normalized["reasoning_tokens"] = int(reasoning_tokens or 0)
+        if usage_obj.get("cost") is not None:
+            normalized["cost"] = usage_obj.get("cost")
+        return normalized
 
     def _fetch_response_and_first_chunk_with_timeout(
         self,
         *,
         kwargs: Dict[str, Any],
-        timeout_sec: int,
-    ):
-        """在 daemon 线程里获取 response iterator 和首包，避免超时后主线程被 executor join 卡住。"""
-        result_queue: Queue = Queue(maxsize=1)
+        first_chunk_timeout: float,
+    ) -> tuple[Any, Any]:
+        """强制限制 completion 初始化 + 首包获取时间，不等待卡死线程退出。"""
+        result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=1)
 
         def _worker():
             try:
                 iterator = completion(**kwargs)
                 first = next(iterator)
                 result_queue.put(("ok", (iterator, first)))
+            except StopIteration:
+                result_queue.put(("stop", None))
             except Exception as exc:
                 result_queue.put(("error", exc))
 
-        worker = threading.Thread(
+        thread = threading.Thread(
             target=_worker,
-            name="llm-first-chunk",
             daemon=True,
+            name="llm-first-chunk-worker",
         )
-        worker.start()
+        thread.start()
 
         try:
-            status, payload = result_queue.get(timeout=timeout_sec)
-        except Empty:
+            status, payload = result_queue.get(timeout=first_chunk_timeout)
+        except queue.Empty as exc:
             raise TimeoutError(
-                f"连接建立或首包接收超时（超过 {timeout_sec}s）- 可能原因：httpx连接池死锁、网络断开、服务器无响应"
-            )
+                f"连接建立或首包接收超时（超过 {first_chunk_timeout}s）- 可能原因：httpx连接池死锁、网络断开、服务器无响应"
+            ) from exc
 
+        if status == "stop":
+            raise StopIteration
         if status == "error":
             raise payload
-
         return payload
+
+    def _iter_stream_chunks_with_timeout(
+        self,
+        response_iterator: Any,
+        *,
+        stream_timeout: float,
+    ):
+        """对流式后续 chunk 追加应用层 watchdog，不依赖 provider 自己的 stream_timeout。"""
+        chunk_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=1)
+        stop_signal = threading.Event()
+
+        def _close_iterator():
+            close_fn = getattr(response_iterator, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
+        def _worker():
+            try:
+                for chunk in response_iterator:
+                    if stop_signal.is_set():
+                        break
+                    chunk_queue.put(("chunk", chunk))
+                chunk_queue.put(("stop", None))
+            except Exception as exc:
+                chunk_queue.put(("error", exc))
+
+        thread = threading.Thread(
+            target=_worker,
+            daemon=True,
+            name="llm-stream-chunk-worker",
+        )
+        thread.start()
+
+        while True:
+            try:
+                status, payload = chunk_queue.get(timeout=stream_timeout)
+            except queue.Empty as exc:
+                stop_signal.set()
+                _close_iterator()
+                raise TimeoutError(
+                    f"流式输出超时（超过 {stream_timeout}s 未收到新数据块）- 可能原因：网络断开、provider 流中断、LiteLLM/httpx 卡死"
+                ) from exc
+
+            if status == "stop":
+                break
+            if status == "error":
+                raise payload
+            yield payload
     
     def _parse_models_config(self, models_config: List, target_list: List, category: str):
         """
@@ -383,6 +539,142 @@ class SimpleLLMClient:
         if not normalized:
             return False
         return "kimi" in normalized or "moonshot" in normalized
+
+    @staticmethod
+    def _merge_reasoning_into_content(content: Any, reasoning_content: Any) -> Any:
+        reasoning = str(reasoning_content or "").strip()
+        if not reasoning:
+            return content
+
+        reasoning_block = f"[上一轮内部思考]\n{reasoning}"
+        visible_text = _coerce_text_content(content).strip()
+        if visible_text and reasoning in visible_text:
+            return content
+        if isinstance(content, list):
+            merged = copy.deepcopy(content)
+            merged.append({"type": "text", "text": f"\n\n{reasoning_block}"})
+            return merged
+        if visible_text:
+            return f"{visible_text}\n\n{reasoning_block}"
+        return reasoning_block
+
+    @classmethod
+    def _sanitize_outbound_message(
+        cls,
+        message: Dict[str, Any],
+        *,
+        reasoning_history_mode: str = "native",
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize history messages to provider-safe OpenAI-compatible fields."""
+        if not isinstance(message, dict):
+            return None
+
+        role = str(message.get("role") or "").strip() or "user"
+        if role == "assistant":
+            tool_calls = copy.deepcopy(message.get("tool_calls") or [])
+            reasoning = message.get("reasoning_content") or message.get("raw_reasoning_content")
+            mode = str(reasoning_history_mode or "native").strip().lower()
+            content = (
+                cls._merge_reasoning_into_content(message.get("content"), reasoning)
+                if mode == "content"
+                else message.get("content")
+            )
+            sanitized = {"role": "assistant"}
+            if message.get("name"):
+                sanitized["name"] = message["name"]
+            if tool_calls:
+                sanitized["tool_calls"] = tool_calls
+            if mode == "native":
+                if reasoning:
+                    sanitized["reasoning_content"] = str(reasoning)
+                if message.get("thinking_blocks"):
+                    sanitized["thinking_blocks"] = copy.deepcopy(message["thinking_blocks"])
+
+            has_content = False
+            if isinstance(content, list):
+                has_content = bool(content)
+            else:
+                has_content = content is not None and str(content) != ""
+
+            if has_content:
+                sanitized["content"] = content
+            elif tool_calls:
+                sanitized["content"] = None
+            elif mode == "native" and reasoning:
+                # Some providers still require content/tool_calls even when reasoning_content is present.
+                sanitized.pop("reasoning_content", None)
+                sanitized.pop("thinking_blocks", None)
+                sanitized["content"] = cls._merge_reasoning_into_content("", reasoning)
+            else:
+                return None
+            return sanitized
+
+        if role == "tool":
+            sanitized = {
+                "role": "tool",
+                "content": message.get("content", ""),
+            }
+            if message.get("tool_call_id"):
+                sanitized["tool_call_id"] = message["tool_call_id"]
+            if message.get("name"):
+                sanitized["name"] = message["name"]
+            return sanitized
+
+        sanitized = {
+            "role": role,
+            "content": message.get("content", ""),
+        }
+        if message.get("name"):
+            sanitized["name"] = message["name"]
+        return sanitized
+
+    def _build_outbound_messages(self, system_prompt: str, history: List) -> List[Dict[str, Any]]:
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in history:
+            if isinstance(msg, dict):
+                sanitized_msg = self._sanitize_outbound_message(
+                    msg,
+                    reasoning_history_mode=self.reasoning_history_mode,
+                )
+                if sanitized_msg is not None:
+                    messages.append(sanitized_msg)
+            elif isinstance(msg, ChatMessage):
+                messages.append({"role": msg.role, "content": msg.content})
+            else:
+                messages.append({"role": msg.role, "content": msg.content})
+        return messages
+
+    @staticmethod
+    def _ensure_tool_request_not_assistant_prefill(
+        messages: List[Dict[str, Any]],
+        tools_definition: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not tools_definition or not messages:
+            return messages
+        last_role = str((messages[-1] or {}).get("role") or "").strip().lower()
+        if last_role != "assistant":
+            return messages
+        safe_print("⚠️ 工具请求不能以 assistant 消息结尾；已补充 user continuation，避免 provider 将其解释为 prefix/prefill。")
+        return list(messages) + [{
+            "role": "user",
+            "content": "请根据以上进展继续执行下一步。必须在需要操作时调用合适的工具，不要把上一条 assistant 内容当作待续写前缀。",
+        }]
+
+    @staticmethod
+    def _should_retry_reasoning_history_fallback(error_message: str) -> bool:
+        text = str(error_message or "").lower()
+        if not text:
+            return False
+        markers = (
+            "invalid assistant message",
+            "content or tool_calls must be set",
+            "reasoning_content",
+            "thinking_blocks",
+            "thinking block",
+            "unsupported value",
+            "extra inputs are not permitted",
+        )
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _contains_embedded_tool_markup(text: str) -> bool:
@@ -534,6 +826,17 @@ class SimpleLLMClient:
 
         return final_tool_calls
 
+    @staticmethod
+    def _extract_thinking_blocks(message: Any) -> List[Dict[str, Any]]:
+        blocks = None
+        if message is not None:
+            blocks = getattr(message, "thinking_blocks", None)
+        if blocks is None and isinstance(message, dict):
+            blocks = message.get("thinking_blocks")
+        if not isinstance(blocks, list):
+            return []
+        return [copy.deepcopy(item) for item in blocks if isinstance(item, dict)]
+
     def _chat_internal_non_stream(
         self,
         kwargs: Dict[str, Any],
@@ -571,6 +874,7 @@ class SimpleLLMClient:
             or (message.get("reasoning_content") if isinstance(message, dict) else "")
             or ""
         )
+        thinking_blocks = self._extract_thinking_blocks(message)
 
         structured_tool_calls = self._parse_non_stream_tool_calls(
             getattr(message, "tool_calls", None) if message is not None else None
@@ -605,6 +909,15 @@ class SimpleLLMClient:
             model=response_model,
             finish_reason=finish_reason,
             reasoning_content=visible_reasoning,
+            thinking_blocks=thinking_blocks,
+            usage=self._normalize_usage(getattr(response, "usage", None)),
+            request_budget=self.build_request_budget(
+                system_prompt=kwargs["messages"][0]["content"],
+                messages=kwargs["messages"][1:],
+                tools_definition=tools_definition,
+                max_tokens=kwargs.get("max_tokens"),
+                force_exact=False,
+            ).to_dict(),
         )
     def _build_debug_messages_snapshot(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """构建适合落盘的消息快照，避免大字段让调试文件无限膨胀。"""
@@ -659,6 +972,103 @@ class SimpleLLMClient:
         with open(debug_file, "a", encoding="utf-8") as debug_handle:
             debug_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
         safe_print(f"📋 DEBUG: messages JSONL 已追加到 {debug_file}")
+
+    def _build_raw_llm_request_payload(
+        self,
+        *,
+        kwargs: Dict[str, Any],
+        debug_label: str,
+        tool_choice: Optional[str],
+        emit_tokens: Optional[str],
+        request_budget: Optional[RequestBudget] = None,
+    ) -> Dict[str, Any]:
+        """Build an untruncated provider-facing request snapshot without secrets."""
+        transport = {}
+        for key in ["api_base", "timeout", "stream_timeout"]:
+            if key in kwargs:
+                transport[key] = copy.deepcopy(kwargs.get(key))
+
+        payload: Dict[str, Any] = {
+            "debug_label": debug_label,
+            "emit_tokens": emit_tokens,
+            "model": kwargs.get("model"),
+            "messages": copy.deepcopy(kwargs.get("messages") or []),
+            "temperature": kwargs.get("temperature"),
+            "max_tokens": kwargs.get("max_tokens"),
+            "stream": kwargs.get("stream"),
+            "stream_options": copy.deepcopy(kwargs.get("stream_options")),
+            "tools": copy.deepcopy(kwargs.get("tools") or []),
+            "tool_choice": kwargs.get("tool_choice", tool_choice),
+            "parallel_tool_calls": kwargs.get("parallel_tool_calls"),
+            "extra_body": copy.deepcopy(kwargs.get("extra_body") or {}),
+            "extra_headers": copy.deepcopy(kwargs.get("extra_headers") or {}),
+            "transport": transport,
+        }
+        if request_budget is not None:
+            payload["request_budget"] = request_budget.to_dict()
+        return payload
+
+    @staticmethod
+    def _raw_tool_calls_payload(tool_calls: Optional[List[ToolCall]]) -> List[Dict[str, Any]]:
+        result = []
+        for tool_call in tool_calls or []:
+            result.append({
+                "id": getattr(tool_call, "id", ""),
+                "type": "function",
+                "function": {
+                    "name": getattr(tool_call, "name", ""),
+                    "arguments": copy.deepcopy(getattr(tool_call, "arguments", {}) or {}),
+                },
+            })
+        return result
+
+    def _llm_response_to_raw_payload(self, response: LLMResponse) -> Dict[str, Any]:
+        return {
+            "status": response.status,
+            "model": response.model,
+            "finish_reason": response.finish_reason,
+            "message": {
+                "role": "assistant",
+                "content": response.output,
+                "reasoning_content": response.reasoning_content,
+                "thinking_blocks": copy.deepcopy(response.thinking_blocks or []),
+                "tool_calls": self._raw_tool_calls_payload(response.tool_calls),
+            },
+            "usage": copy.deepcopy(response.usage or {}),
+            "request_budget": copy.deepcopy(response.request_budget or {}),
+            "error_information": response.error_information,
+        }
+
+    def _append_raw_llm_io_record(
+        self,
+        *,
+        trace_id: str,
+        debug_task_id: Optional[str],
+        debug_label: str,
+        request_payload: Dict[str, Any],
+        response: Optional[LLMResponse] = None,
+        error: Optional[Any] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        error_payload: Dict[str, Any] = {}
+        if error is not None:
+            error_payload = {
+                "type": type(error).__name__ if isinstance(error, BaseException) else "Error",
+                "message": str(error),
+            }
+        try:
+            append_raw_trace_record(
+                kind="llm.io",
+                task_id=debug_task_id,
+                trace_id=trace_id,
+                debug_label=debug_label,
+                request=request_payload,
+                response=self._llm_response_to_raw_payload(response) if response is not None else {},
+                error=error_payload,
+                metadata=metadata or {},
+            )
+        except Exception:
+            pass
 
     def resolve_model(self, category: str = "execution", preferred: Optional[str] = None) -> str:
         model_groups = {
@@ -745,13 +1155,6 @@ class SimpleLLMClient:
             if retry_count > 0:
                 safe_print(f"   🔄 LLM重试 {retry_count}/{max_retries}...")
                 time.sleep(2 * retry_count)  # 指数退避：2秒, 4秒, 6秒
-                self._emit_stream_reset(
-                    stream_callback,
-                    model=model,
-                    debug_label=debug_label,
-                    attempt=retry_count + 1,
-                    reason="retry",
-                )
                 
                 # 根据上次错误生成提示（帮助 LLM 避免重复错误）
                 if last_error:
@@ -763,8 +1166,7 @@ class SimpleLLMClient:
             # 调用内部实现
             response = self._chat_internal(
                 history, model, fixed_system_prompt, tool_list, 
-                tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback,
-                retry_count + 1,
+                tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
             )
             
             # 如果成功，直接返回
@@ -784,19 +1186,11 @@ class SimpleLLMClient:
                     safe_print(f"   📝 已添加参数类型提示，立即重试...")
                     type_fix_attempted = True
                     last_error = response
-                    self._emit_stream_reset(
-                        stream_callback,
-                        model=model,
-                        debug_label=debug_label,
-                        attempt=retry_count + 1,
-                        reason="type_fix_retry",
-                    )
                     
                     # 立即重试，不计入retry_count
                     response = self._chat_internal(
                         history, model, fixed_system_prompt, tool_list, 
-                        tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback,
-                        retry_count + 1,
+                        tool_choice, temperature, max_tokens, emit_tokens, debug_task_id, debug_label, stream_callback
                     )
                     
                     if response.status == "success":
@@ -812,9 +1206,16 @@ class SimpleLLMClient:
             safe_print(f"   ⚠️ {error_type} (第{retry_count + 1}次)")
             last_error = response
 
-            if not self._is_retriable_error(response.error_information):
-                safe_print(f"   ⛔ 非可恢复错误，停止重试")
-                raise Exception(f"LLM 调用失败（不可重试）: {response.error_information}")
+            if response.finish_reason == "context_limit_exceeded":
+                safe_print("   ⛔ 请求在发送前已确定超过上下文上限，停止重试")
+                raise Exception(f"LLM 请求超出上下文窗口: {response.error_information}")
+            if self._is_non_retriable_error(response.error_information):
+                if self._has_alternative_deployment(model):
+                    # 多部署下密钥/鉴权错误不中止：坏部署已进入冷却，下次尝试自动切换备用部署
+                    safe_print("   🔁 检测到密钥/鉴权类错误，但存在可用备用部署，切换后继续重试")
+                else:
+                    safe_print("   ⛔ 检测到不可重试错误，停止重试")
+                    raise Exception(f"LLM 调用失败（不可重试）: {response.error_information}")
             
             if retry_count < max_retries:
                 continue  # 继续重试
@@ -842,7 +1243,6 @@ class SimpleLLMClient:
         debug_task_id: Optional[str] = None,
         debug_label: str = "execution",
         stream_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        attempt_index: int = 1,
     ) -> LLMResponse:
         """
         LLM调用的内部实现（使用 LiteLLM 原生超时机制）
@@ -855,9 +1255,10 @@ class SimpleLLMClient:
             debug_task_id: 可选 task_id；传入后调试请求会按 task 追加到 conversations 目录
             debug_label: 调试记录标签，用于区分不同类型的 LLM 调用
         """
+        active_deployment_id = ""  # 本次调用实际使用的部署（多部署路由时非空），异常时用于冷却标记
         try:
             def _emit_stream_chunk(kind: str, text: str, current_model: str):
-                if not stream_callback or (kind != "reset" and not text):
+                if not stream_callback or not text:
                     return
                 try:
                     stream_callback({
@@ -865,7 +1266,6 @@ class SimpleLLMClient:
                         "text": text,
                         "model": current_model,
                         "debug_label": debug_label,
-                        "attempt": int(attempt_index or 1),
                     })
                 except Exception:
                     pass
@@ -874,26 +1274,93 @@ class SimpleLLMClient:
             tools_definition = self._build_tools_definition(tool_list)
             
             # 转换消息格式（兼容 ChatMessage 和 dict 两种输入）
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in history:
-                if isinstance(msg, dict):
-                    # dict 格式：直接使用（支持 tool/assistant/multimodal 等复杂消息）
-                    messages.append(msg)
-                elif isinstance(msg, ChatMessage):
-                    # ChatMessage 格式：转换为 dict（向后兼容）
-                    messages.append({"role": msg.role, "content": msg.content})
-                else:
-                    # 尝试 duck typing
-                    messages.append({"role": msg.role, "content": msg.content})
+            messages = self._build_outbound_messages(system_prompt, history)
+            messages = self._ensure_tool_request_not_assistant_prefill(messages, tools_definition)
+
+            # === 主调用前进行一次硬预算检查 ===
+            rough_budget = self.build_request_budget(
+                system_prompt=system_prompt,
+                messages=messages[1:],
+                tools_definition=tools_definition,
+                max_tokens=max_tokens,
+                force_exact=False,
+            )
+            budget = rough_budget
+            near_limit = rough_budget.total_with_reserved_tokens >= int(self.max_context_window * 0.7)
+            if near_limit:
+                budget = self.build_request_budget(
+                    system_prompt=system_prompt,
+                    messages=messages[1:],
+                    tools_definition=tools_definition,
+                    max_tokens=max_tokens,
+                    force_exact=True,
+                )
+
+            if budget.over_budget:
+                error_msg = (
+                    "Prompt exceeds max_context_window before request dispatch: "
+                    f"used_input={budget.used_input_tokens}, "
+                    f"available_input={budget.available_input_tokens}, "
+                    f"system={budget.system_prompt_tokens}, "
+                    f"messages={budget.message_tokens}, "
+                    f"tools={budget.tool_tokens}, "
+                    f"image_surcharge={budget.image_surcharge_tokens}, "
+                    f"reserved_output={budget.reserved_output_tokens}, "
+                    f"safety_margin={budget.safety_margin_tokens}, "
+                    f"context_limit={budget.context_limit}"
+                )
+                safe_print(f"❌ {error_msg}")
+                response_obj = LLMResponse(
+                    status="error",
+                    output="",
+                    tool_calls=[],
+                    model=model,
+                    finish_reason="context_limit_exceeded",
+                    error_information=error_msg,
+                    request_budget=budget.to_dict(),
+                )
+                self._append_raw_llm_io_record(
+                    trace_id=make_trace_id("llm"),
+                    debug_task_id=debug_task_id,
+                    debug_label=debug_label,
+                    request_payload={
+                        "debug_label": debug_label,
+                        "emit_tokens": emit_tokens,
+                        "model": model,
+                        "messages": copy.deepcopy(messages),
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "tools": copy.deepcopy(tools_definition),
+                        "tool_choice": tool_choice,
+                        "request_budget": budget.to_dict(),
+                    },
+                    response=response_obj,
+                    metadata={"stage": "preflight_budget"},
+                )
+                return response_obj
             
             # 获取模型级别的配置（可覆盖全局 api_key 和 base_url）
             model_extra_params = self.model_configs.get(model, {})
-            model_api_key = model_extra_params.get("api_key", self.api_key)
-            model_base_url = model_extra_params.get("base_url", self.base_url)
-            
+            # 多部署路由：模型条目配置了 deployments 时，按"缓存亲和 + 故障转移"选一个部署；
+            # 未配置则完全走原有单密钥路径（向后兼容）。
+            deployment = self._select_deployment(model)
+            if deployment:
+                active_deployment_id = deployment["_id"]
+                litellm_model = deployment["model"]
+                model_api_key = str(deployment.get("api_key") or "").strip() or model_extra_params.get("api_key", self.api_key)
+                # 部署自带 base_url 用之；否则留空让 LiteLLM 按模型前缀走该 provider 默认端点。
+                # 注意：不回退到全局 base_url——跨平台部署下全局 base_url 会指错平台。
+                model_base_url = str(deployment.get("base_url") or "").strip()
+                if deployment.get("_index", 0) != 0:
+                    safe_print(f"   🔀 部署路由: {model} → {litellm_model} (deployment#{deployment['_index']}，主部署冷却中)")
+            else:
+                litellm_model = model
+                model_api_key = model_extra_params.get("api_key", self.api_key)
+                model_base_url = model_extra_params.get("base_url", self.base_url)
+
             # 构建请求参数
             kwargs = {
-                "model": model,
+                "model": litellm_model,
                 "messages": messages,
                 "temperature": temperature,
                 "api_key": model_api_key,
@@ -901,6 +1368,7 @@ class SimpleLLMClient:
                 # --- LiteLLM 原生超时设定（从配置文件读取）---
                 "timeout": self.timeout,              # 建立连接及整体响应的最大等待时间（秒）
                 "stream_timeout": self.stream_timeout,  # 两个流式数据块（chunk）之间的最大间隔时间（秒）
+                "stream_options": {"include_usage": True},
             }
             
             # 只在 base_url 非空时添加 api_base
@@ -974,20 +1442,38 @@ class SimpleLLMClient:
             # 这类报错文案在不同 provider/router 上差异很大，因此只要是 tool_choice=required
             # 且首轮失败信息明确指向 tool_choice 不兼容，就降级为 auto 重试一次。
             tried_kimi_non_stream_fallback = False
+            tried_tool_choice_fallback = False
             for _compat_try in range(3):
                 safe_print(f"   🌊 正在调用LLM (timeout={kwargs['timeout']}s, stream_timeout={kwargs['stream_timeout']}s)...")
                 safe_print(f"   📨 请求模型: {model}")
                 safe_print(f"   🛠️ 工具数量: {len(tools_definition)}")
                 safe_print(f"   📝 消息数: {len(messages)}")
                 request_start_time = time.time()
+                raw_trace_id = make_trace_id("llm")
+                raw_request_payload = self._build_raw_llm_request_payload(
+                    kwargs=kwargs,
+                    debug_label=debug_label,
+                    tool_choice=tool_choice,
+                    emit_tokens=emit_tokens,
+                    request_budget=budget,
+                )
 
                 if not kwargs.get("stream", True):
-                    return self._chat_internal_non_stream(
+                    response_obj = self._chat_internal_non_stream(
                         kwargs=kwargs,
                         model=model,
                         tools_definition=tools_definition,
                         debug_label=debug_label,
                     )
+                    self._append_raw_llm_io_record(
+                        trace_id=raw_trace_id,
+                        debug_task_id=debug_task_id,
+                        debug_label=debug_label,
+                        request_payload=raw_request_payload,
+                        response=response_obj,
+                        metadata={"mode": "non_stream", "attempt_index": _compat_try},
+                    )
+                    return response_obj
 
                 # 累积变量
                 accumulated_content = ""
@@ -997,6 +1483,7 @@ class SimpleLLMClient:
                 accumulated_tool_calls = {}  # index -> {id, name, arguments}
                 finish_reason = "unknown"
                 response_model = model
+                usage = None
                 chunk_count = 0
                 content_stream_state = _EmbeddedToolCallStreamState()
                 reasoning_stream_state = _EmbeddedToolCallStreamState()
@@ -1035,11 +1522,10 @@ class SimpleLLMClient:
                 try:
                     # --- 强制首包超时检测（包含 completion 调用以防止连接池死锁）---
                     try:
-                        # 强制首包超时时间（秒），包含连接建立+首包接收，防止 httpx 连接池死锁
-                        first_chunk_timeout = self.first_chunk_timeout  # 从配置文件读取
+                        first_chunk_timeout = self.first_chunk_timeout
                         response_iterator, first_chunk = self._fetch_response_and_first_chunk_with_timeout(
                             kwargs=kwargs,
-                            timeout_sec=first_chunk_timeout,
+                            first_chunk_timeout=first_chunk_timeout,
                         )
 
                         # 处理首包
@@ -1050,6 +1536,9 @@ class SimpleLLMClient:
                         # 处理首包逻辑
                         if hasattr(first_chunk, 'model'):
                             response_model = first_chunk.model
+                        normalized_usage = self._normalize_usage(getattr(first_chunk, "usage", None))
+                        if normalized_usage:
+                            usage = normalized_usage
 
                         if first_chunk.choices:
                             delta = first_chunk.choices[0].delta
@@ -1083,7 +1572,7 @@ class SimpleLLMClient:
 
                     except StopIteration:
                         safe_print("   ⚠️ 响应为空（无数据块）")
-                        return LLMResponse(
+                        response_obj = LLMResponse(
                             status="error",
                             output="",
                             tool_calls=[],
@@ -1091,13 +1580,32 @@ class SimpleLLMClient:
                             finish_reason="empty",
                             error_information="Empty response - no chunks received"
                         )
+                        self._append_raw_llm_io_record(
+                            trace_id=raw_trace_id,
+                            debug_task_id=debug_task_id,
+                            debug_label=debug_label,
+                            request_payload=raw_request_payload,
+                            response=response_obj,
+                            metadata={
+                                "mode": "stream",
+                                "attempt_index": _compat_try,
+                                "elapsed_ms": int((time.time() - request_start_time) * 1000),
+                            },
+                        )
+                        return response_obj
 
                     # --- 继续处理剩余 chunk ---
-                    for chunk in response_iterator:
+                    for chunk in self._iter_stream_chunks_with_timeout(
+                        response_iterator,
+                        stream_timeout=self.stream_timeout,
+                    ):
                         chunk_count += 1
 
                         if hasattr(chunk, 'model'):
                             response_model = chunk.model
+                        normalized_usage = self._normalize_usage(getattr(chunk, "usage", None))
+                        if normalized_usage:
+                            usage = normalized_usage
 
                         if not chunk.choices:
                             continue
@@ -1192,35 +1700,84 @@ class SimpleLLMClient:
                         and not tried_kimi_non_stream_fallback
                     ):
                         safe_print("⚠️ Kimi raw tool-call markup detected without parsed tool_calls; retrying once with non-stream mode...")
-                        self._emit_stream_reset(
-                            stream_callback,
-                            model=response_model,
-                            debug_label=debug_label,
-                            attempt=attempt_index,
-                            reason="kimi_non_stream_fallback",
-                        )
                         kwargs["stream"] = False
                         tried_kimi_non_stream_fallback = True
                         continue
 
-                    return LLMResponse(
+                    response_obj = LLMResponse(
                         status="success",
                         output=sanitized_content,
                         tool_calls=final_tool_calls,
                         model=response_model,
                         finish_reason=finish_reason,
-                        reasoning_content=sanitized_reasoning
+                        reasoning_content=sanitized_reasoning,
+                        thinking_blocks=[],
+                        usage=usage,
+                        request_budget=budget.to_dict(),
                     )
+                    self._append_raw_llm_io_record(
+                        trace_id=raw_trace_id,
+                        debug_task_id=debug_task_id,
+                        debug_label=debug_label,
+                        request_payload=raw_request_payload,
+                        response=response_obj,
+                        metadata={
+                            "mode": "stream",
+                            "attempt_index": _compat_try,
+                            "elapsed_ms": int((time.time() - request_start_time) * 1000),
+                            "chunk_count": chunk_count,
+                            "accumulated_content": accumulated_content,
+                            "accumulated_reasoning_content": accumulated_reasoning_content,
+                            "embedded_content_tool_markup": embedded_content_markup,
+                            "embedded_reasoning_tool_markup": embedded_reasoning_markup,
+                        },
+                    )
+                    return response_obj
 
                 except Exception as _compat_e:
                     _compat_msg = str(_compat_e)
+                    self._append_raw_llm_io_record(
+                        trace_id=raw_trace_id,
+                        debug_task_id=debug_task_id,
+                        debug_label=debug_label,
+                        request_payload=raw_request_payload,
+                        error=_compat_e,
+                        metadata={
+                            "mode": "stream",
+                            "attempt_index": _compat_try,
+                            "elapsed_ms": int((time.time() - request_start_time) * 1000),
+                        },
+                    )
                     if (
-                        _compat_try == 0
+                        self.reasoning_history_mode == "native"
+                        and self._should_retry_reasoning_history_fallback(_compat_msg)
+                    ):
+                        safe_print("⚠️ 当前 provider 不兼容历史 reasoning_content/thinking_blocks，自动降级为 content 合并模式并在本次运行保持。")
+                        self.reasoning_history_mode = "content"
+                        messages = self._build_outbound_messages(system_prompt, history)
+                        messages = self._ensure_tool_request_not_assistant_prefill(messages, tools_definition)
+                        kwargs["messages"] = messages
+                        try:
+                            self._append_debug_record(
+                                messages=messages,
+                                model=model,
+                                debug_task_id=debug_task_id,
+                                debug_label=f"{debug_label}.reasoning_fallback",
+                                tool_choice=tool_choice,
+                                tool_count=len(tools_definition),
+                                emit_tokens=emit_tokens,
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    if (
+                        not tried_tool_choice_fallback
                         and kwargs.get("tool_choice") == "required"
                         and tools_definition
                         and _should_retry_without_required_tool_choice(_compat_msg)
                     ):
                         safe_print("⚠️ 当前模型/路由不兼容 tool_choice=required，自动降级为 tool_choice=auto 重试一次...")
+                        tried_tool_choice_fallback = True
                         kwargs.pop("tool_choice", None)
                         continue
                     raise
@@ -1228,8 +1785,15 @@ class SimpleLLMClient:
         except Exception as e:
             # 捕获所有异常，包括 LiteLLM 抛出的超时异常
             error_msg = str(e)
-            lowered_error_msg = error_msg.lower()
-            is_timeout = any(keyword in lowered_error_msg for keyword in ["timeout", "timed out", "time out"]) or "超时" in error_msg
+            lower_error = error_msg.lower()
+            is_timeout = isinstance(e, TimeoutError) or "超时" in error_msg or any(
+                keyword in lower_error for keyword in ["timeout", "timed out", "time out"]
+            )
+
+            # 多部署路由：传输/配额/鉴权类失败 → 当前部署进入冷却，外层重试自动切换下一部署。
+            # 注意只用 error_msg（str(e)）分类，不用含本地 traceback 的全文，避免行号误匹配状态码。
+            if active_deployment_id and self._should_failover_error(error_msg):
+                self._mark_deployment_failure(active_deployment_id, error_msg)
             
             if is_timeout:
                 safe_print(f"⏱️  LLM调用超时 (原生超时机制)")
@@ -1253,6 +1817,106 @@ class SimpleLLMClient:
                 finish_reason="timeout" if is_timeout else "error",
                 error_information=f"{error_msg}\n\nDetails:\n{error_detail}"
             )
+
+    @staticmethod
+    def _is_non_retriable_error(error_info: str) -> bool:
+        text = str(error_info or "").lower()
+        markers = [
+            "invalid api key",
+            "incorrect api key",
+            "authentication error",
+            "authentication failed",
+            "api key provided by upstream",
+        ]
+        return any(marker in text for marker in markers)
+
+    # ==================== 多部署路由（缓存亲和 + 故障转移） ====================
+    # 配置形式（llm_config.yaml，向后兼容——不配 deployments 则一切如旧）：
+    #   models:
+    #     - name: deepseek-v4-flash          # 逻辑别名，对话/日志中的 model 标识
+    #       default: true
+    #       deployments:                     # 按顺序 = 优先级；首个为主部署
+    #         - model: openrouter/deepseek/deepseek-v4-flash
+    #           api_key: <your-api-key>
+    #         - model: openai/deepseek-v4-flash     # openai 兼容端点必须配 base_url
+    #           base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    #           api_key: sk-...
+    # 顶层可选 deployment_cooldown_seconds（默认 120）控制故障冷却时长。
+
+    def _deployment_entries(self, model: str) -> List[Dict[str, Any]]:
+        """读取模型条目的 deployments 配置；无该字段返回空列表（走原单密钥路径）。"""
+        raw = (self.model_configs.get(model) or {}).get("deployments")
+        if not isinstance(raw, list):
+            return []
+        entries: List[Dict[str, Any]] = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            dep_model = str(item.get("model") or item.get("name") or "").strip()
+            if not dep_model:
+                continue
+            entry = dict(item)
+            entry["model"] = dep_model
+            entry["_id"] = f"{model}#{index}"
+            entry["_index"] = index
+            entries.append(entry)
+        return entries
+
+    def _select_deployment(self, model: str) -> Optional[Dict[str, Any]]:
+        """有序故障转移选择：
+
+        - 缓存亲和：返回列表中第一个未在冷却中的部署——健康时恒选主部署，
+          让 provider 侧 prompt cache 尽量命中同一平台/账号；
+        - 故障转移：部署失败进入冷却后自动选下一顺位；冷却到期自动回到主部署；
+        - 兜底：全部冷却时选冷却最早到期的，绝不因路由本身硬失败。
+        """
+        entries = self._deployment_entries(model)
+        if not entries:
+            return None
+        now = time.time()
+        for entry in entries:
+            if self._deployment_cooldowns.get(entry["_id"], 0.0) <= now:
+                return entry
+        return min(entries, key=lambda e: self._deployment_cooldowns.get(e["_id"], 0.0))
+
+    def _has_alternative_deployment(self, model: str) -> bool:
+        """是否存在可立即使用的备用部署（用于决定鉴权类错误要不要继续重试）。"""
+        entries = self._deployment_entries(model)
+        if len(entries) < 2:
+            return False
+        now = time.time()
+        return any(self._deployment_cooldowns.get(e["_id"], 0.0) <= now for e in entries)
+
+    def _mark_deployment_failure(self, deployment_id: str, error_info: str) -> None:
+        seconds = self._deployment_cooldown_seconds
+        if self._is_non_retriable_error(error_info):
+            seconds = max(seconds, 1800.0)  # 密钥/鉴权错误短期不会自愈，冷却更久
+        self._deployment_cooldowns[deployment_id] = time.time() + seconds
+        safe_print(f"   🧊 部署 {deployment_id} 进入冷却 {int(seconds)}s，后续请求自动切换下一部署")
+
+    @staticmethod
+    def _should_failover_error(error_msg: str) -> bool:
+        """仅传输/配额/鉴权类错误触发部署切换；schema/参数类模型输出问题不切（换平台无益）。
+
+        只应传入 str(exception)，不要传含本地 traceback 的全文（行号会误匹配状态码）。
+        """
+        text = str(error_msg or "").lower()
+        markers = [
+            # 超时/连接
+            "timeout", "timed out", "time out", "超时",
+            "connection", "connect error", "connection refused", "connection reset",
+            # 限流/配额
+            "rate limit", "ratelimit", "429", "too many requests",
+            "insufficient quota", "quota",
+            # 服务端故障
+            "internal server error", "internalservererror",
+            "service unavailable", "serviceunavailable", "unavailable",
+            "overloaded", "bad gateway", "gateway timeout",
+            "502", "503", "504",
+            # 鉴权（配合 _has_alternative_deployment 决定是否继续重试）
+            "invalid api key", "incorrect api key", "authentication", "unauthorized", "forbidden", "401", "403",
+        ]
+        return any(marker in text for marker in markers)
     
     def set_tools_config(self, tools_config: Dict):
         """
@@ -1393,8 +2057,7 @@ class SimpleLLMClient:
         Returns:
             友好的错误类型描述
         """
-        lowered = error_info.lower()
-        if "timeout" in lowered or "timed out" in lowered or "time out" in lowered or "超时" in error_info:
+        if "timeout" in error_info.lower() or "timed out" in error_info.lower():
             return "连接超时"
         elif "Internal Server Error" in error_info:
             return "服务器内部错误"
@@ -1416,69 +2079,10 @@ class SimpleLLMClient:
             return "速率限制"
         elif "insufficient" in error_info.lower() or "quota" in error_info.lower():
             return "余额不足"
+        elif "context window" in error_info.lower() or "context_limit_exceeded" in error_info.lower() or "Prompt exceeds max_context_window" in error_info:
+            return "上下文超限"
         else:
             return "未知错误"
-
-    def _is_retriable_error(self, error_info: str) -> bool:
-        """
-        仅对更可能因网络/服务端抖动恢复的错误继续重试。
-        """
-        error_text = str(error_info or "")
-        lowered = error_text.lower()
-
-        non_retriable_markers = [
-            "invalid api key",
-            "incorrect api key",
-            "authentication",
-            "unauthorized",
-            "permission denied",
-            "forbidden",
-            "insufficient",
-            "quota",
-            "credit balance",
-            "payment required",
-            "model not found",
-            "no such model",
-            "unknown model",
-            "context length",
-            "maximum context length",
-            "prompt is too long",
-            "content policy",
-            "safety system",
-            "did not match schema",
-            "expected array, but got string",
-            "expected string, but got array",
-            "expected integer, but got null",
-            "not in request.tools",
-        ]
-        if any(marker in lowered for marker in non_retriable_markers):
-            return False
-
-        retriable_markers = [
-            "timeout",
-            "timed out",
-            "time out",
-            "internal server error",
-            "server error",
-            "service unavailable",
-            "bad gateway",
-            "gateway timeout",
-            "connection reset",
-            "connection aborted",
-            "connection refused",
-            "connection error",
-            "temporarily unavailable",
-            "temporarily overloaded",
-            "overloaded",
-            "rate limit",
-            "too many requests",
-            "httpx",
-        ]
-        if any(marker in lowered for marker in retriable_markers):
-            return True
-
-        # 对未知错误保守重试一次的价值通常高于直接放弃。
-        return True
     
     def _generate_retry_hint(self, error_info: str, retry_count: int) -> str:
         """

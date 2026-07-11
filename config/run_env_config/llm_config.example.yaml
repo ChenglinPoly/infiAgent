@@ -1,66 +1,59 @@
-
-
 temperature: 0
 max_tokens: 0
 max_context_window: 500000
-base_url: https://openrouter.ai/api/v1
-api_key: 
-timeout: 600              # LiteLLM 原生：建立连接及整体响应的最大等待时间 
-stream_timeout: 30        # LiteLLM 原生：两个流式数据块之间的最大间隔时间
-first_chunk_timeout: 30   # 应用层强制：连接建立+首包接收的最大时间（防止连接池死锁）
 
-# 不同用途的默认 tool_choice 策略。也可以在具体模型对象里再写 tool_choice 覆盖。
+base_url: https://openrouter.ai/api/v1
+api_key: ""
+
+timeout: 600
+stream_timeout: 30
+first_chunk_timeout: 30
+
 tool_choice:
-  execution: required
-  thinking: none
-  compressor: none
-  image_generation: none
-  read_figure: none
+  execution: auto
+  thinking: auto
+  compressor: auto
+  image_generation: auto
+  read_figure: auto
 
 models:
-# 简单格式：如果不配置 url 和 key，默认使用用全局 api_key + base_url
-- openai/google/gemini-3-flash-preview
-# 对象格式：覆盖 api_key 和/或 base_url，使用其他供应商的模型。
-# - name: openai/qwen/qwen3.5-27b
-#   default: true
-#   api_key:
-#   base_url: https://openrouter.ai/api/v1
-#   tool_choice: auto
-# - name: openai/qwen-plus
-#   api_key:
-#   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-#   tool_choice: auto
+  - name: openrouter/qwen/qwen3.6-plus
+    default: true
+    tool_choice: auto
 
 figure_models:
-# 同理
-- google/gemini-3-pro-image-preview
-# - name: openai/qwen-vl-max
-#   default: true
-#   api_key:
-#   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  - name: openrouter/qwen/qwen3.6-plus
+    default: true
+    tool_choice: auto
 
 compressor_models:
-- openai/google/gemini-3-flash-preview    # 用全局 key
-# - name: openai/google/gemini-3-flash-preview
-#   default: true
-
+  - name: openrouter/qwen/qwen3.6-plus
+    default: true
+    tool_choice: auto
 
 thinking_models:
-- openai/google/gemini-3-flash-preview    # thinking agent 专用模型
-# - name: openai/google/gemini-3-flash-preview
-#   default: true
-#   tool_choice: none
+  - name: openrouter/qwen/qwen3.6-plus
+    default: true
+    tool_choice: auto
 
 read_figure_models:
-- openai/google/gemini-3-flash-preview    # 图片分析专用（ToolServer 侧 vision_tool text-only 模式使用）
+  - name: openrouter/qwen/qwen3.6-plus
+    default: true
+    tool_choice: auto
 
-# 多模态配置
-multimodal: true           # 主模型（models）+ thinking agent 是否支持多模态图片嵌入
-compressor_multimodal: true   # 压缩模型（compressor_models）是否支持多模态图片嵌入
+multimodal: true
+compressor_multimodal: true
 
-
-
-
-
-
-
+# ===== 多部署路由（3.12.21+，可选）=====
+# 同一逻辑模型挂多平台/多密钥：健康时恒用第一个部署（保 prompt cache 命中），
+# 失败自动冷却切换下一个，冷却到期自动切回主部署。老单密钥格式完全兼容。
+# models:
+#   - name: deepseek-v4-flash            # 逻辑别名
+#     default: true
+#     deployments:                        # 顺序 = 优先级
+#       - model: openrouter/deepseek/deepseek-v4-flash
+#         api_key: sk-or-...
+#       - model: openai/deepseek-v4-flash        # openai 兼容端点必须写 base_url
+#         base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#         api_key: sk-...
+# deployment_cooldown_seconds: 120        # 顶层可选，故障冷却时长

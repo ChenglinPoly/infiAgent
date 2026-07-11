@@ -18,6 +18,10 @@ try:
     from playwright.async_api import async_playwright, Browser, Page, BrowserContext
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
+    async_playwright = None
+    Browser = Any
+    Page = Any
+    BrowserContext = Any
     PLAYWRIGHT_AVAILABLE = False
 
 # 全局浏览器会话管理
@@ -1835,4 +1839,3 @@ class BrowserScrollTool(BaseTool):
                 "output": "",
                 "error": f"滚动失败: {str(e)}"
             }
-

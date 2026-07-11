@@ -6,6 +6,7 @@ Agent执行器 - 使用标准消息格式的核心执行逻辑
 """
 from typing import Any, Dict, List, Optional
 import sys
+import copy
 import json
 import os
 import time
@@ -24,6 +25,7 @@ from core.context_builder import ContextBuilder
 from core.tool_executor import ToolExecutor
 from utils.conversation_storage import ConversationStorage
 from utils.event_emitter import get_event_emitter as get_jsonl_emitter
+from utils.reasoning_modes import normalize_reasoning_mode
 from utils.skill_loader import reset_skill_loader
 from utils.user_paths import apply_runtime_env_defaults, get_runtime_settings
 from utils.runtime_control import (
@@ -43,6 +45,42 @@ from .event_handlers import ConsoleLogHandler, JsonlStreamHandler
 from .events import *
 from .runtime_exceptions import InfiAgentRunError
 from utils.windows_compat import safe_print
+
+
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return max(1, int(value))
+    except Exception:
+        return None
+
+
+def _resolve_agent_action_window_steps(agent_config: Dict, runtime: Dict) -> int:
+    values = [
+        _positive_int_or_none(agent_config.get("action_window_steps")),
+        _positive_int_or_none(agent_config.get("thinking_steps")),
+        _positive_int_or_none(agent_config.get("thinking_interval")),
+    ]
+    explicit_values = [value for value in values if value is not None]
+    if explicit_values:
+        return max(explicit_values)
+    return _positive_int_or_none(runtime.get("action_window_steps")) or 30
+
+
+def _resolve_agent_reasoning_mode(agent_config: Dict, runtime: Dict) -> str:
+    agent_mode = agent_config.get("reasoning_mode")
+    if agent_mode not in (None, ""):
+        return normalize_reasoning_mode(
+            agent_mode,
+            thinking_enabled=agent_config.get("thinking_enabled", runtime.get("thinking_enabled", True)),
+        )
+    if agent_config.get("thinking_enabled") not in (None, ""):
+        return normalize_reasoning_mode(thinking_enabled=agent_config.get("thinking_enabled"))
+    return normalize_reasoning_mode(
+        runtime.get("reasoning_mode"),
+        thinking_enabled=runtime.get("thinking_enabled", True),
+    )
 
 
 class AgentExecutor:
@@ -75,8 +113,9 @@ class AgentExecutor:
 
         # 从配置中提取信息
         self.available_tools = list(agent_config.get("available_tools", []))
-        if "task_history_search" not in self.available_tools and "task_history_search" in config_loader.all_tools:
-            self.available_tools.append("task_history_search")
+        for framework_tool in ("task_history_search", "load_skill", "offload_skill"):
+            if framework_tool not in self.available_tools and framework_tool in config_loader.all_tools:
+                self.available_tools.append(framework_tool)
         self.max_turns = self._resolve_max_turns()
         requested_model = self._get_agent_model_preference("execution")
         self._inject_mcp_tools()
@@ -133,24 +172,40 @@ class AgentExecutor:
         self.pending_tools = []  # 待执行的工具（用于恢复）
         self.latest_thinking = ""
         self.first_thinking_done = False
-        runtime = get_runtime_settings()
-        self.thinking_enabled = bool(self.agent_config.get("thinking_enabled", runtime.get("thinking_enabled", True)))
-        self.thinking_steps = int(
-            self.agent_config.get("thinking_steps")
-            or runtime.get("thinking_steps", runtime.get("thinking_interval", runtime.get("action_window_steps", 30)))
-        )
-        self.action_window_steps = self.thinking_steps
-        self.thinking_interval = self.thinking_steps
+        self._apply_runtime_settings(get_runtime_settings())
+        self.last_fresh_at = time.time()
+        self.tool_call_counter = 0
+        self.llm_turn_counter = 0  # LLM调用轮次计数器（用于消息分组）
+        self.current_task_id = None
+
+    @staticmethod
+    def _normalize_reasoning_mode(value: Any = None, *, thinking_enabled: Any = None) -> str:
+        return normalize_reasoning_mode(value, thinking_enabled=thinking_enabled)
+
+    def _apply_runtime_settings(self, runtime: Optional[Dict] = None) -> None:
+        runtime = runtime or get_runtime_settings()
+        self.reasoning_mode = _resolve_agent_reasoning_mode(self.agent_config, runtime)
+        self.thinking_enabled = self.reasoning_mode == "thinking"
+        self.action_window_steps = _resolve_agent_action_window_steps(self.agent_config, runtime)
+        self.thinking_steps = self.action_window_steps
+        self.thinking_interval = self.action_window_steps
         self.no_tool_retry_limit = int(
             self.agent_config.get("no_tool_retry_limit")
             or runtime.get("no_tool_retry_limit", 7)
         )
         self.fresh_enabled = runtime.get("fresh_enabled", False)
         self.fresh_interval_sec = runtime.get("fresh_interval_sec", 0)
-        self.last_fresh_at = time.time()
-        self.tool_call_counter = 0
-        self.llm_turn_counter = 0  # LLM调用轮次计数器（用于消息分组）
-        self.current_task_id = None
+
+    def _should_run_react_reflection(self) -> bool:
+        return getattr(self, "reasoning_mode", "thinking") == "react"
+
+    def _tool_call_required_for_response(self) -> bool:
+        return getattr(self, "reasoning_mode", "thinking") in {"thinking", "react_lite"}
+
+    def _execution_tool_choice_override(self) -> Optional[str]:
+        if getattr(self, "reasoning_mode", "thinking") == "react_lite":
+            return "required"
+        return None
 
     def _get_agent_model_preference(self, category: str) -> Optional[str]:
         field_map = {
@@ -248,8 +303,16 @@ class AgentExecutor:
             self.agent_id = self.hierarchy_manager.push_agent(self.agent_name, user_input)
             self.tool_executor.set_agent_context(agent_id=self.agent_id, agent_name=self.agent_name)
 
-            # 尝试加载已有的对话历史
-            start_turn = self._load_state_from_storage(task_id)
+            # 尝试加载已有的对话历史。若历史里已有 final_output，
+            # _load_state_from_storage 会直接返回该最终结果，避免把 dict
+            # 当作 turn index 继续进入 range(...)。
+            loaded_state = self._load_state_from_storage(task_id)
+            if isinstance(loaded_state, dict):
+                status = str(loaded_state.get("status") or "success")
+                self.event_emitter.dispatch(AgentEndEvent(status=status, result=loaded_state))
+                self.hierarchy_manager.pop_agent(self.agent_id, loaded_state.get("output", ""))
+                return loaded_state
+            start_turn = int(loaded_state or 0)
             
             try:
                 # 首次thinking（初始规划）
@@ -299,8 +362,8 @@ class AgentExecutor:
                     # 从 action_history 构建标准 messages 数组
                     messages = self._build_messages_from_action_history()
                     
-                    # 无 thinking 模式：在动作调用前先进行一轮 ReAct 反思（纯文本，不调用工具）
-                    if not self.thinking_enabled:
+                    # ReAct 模式：在动作调用前先进行一轮纯文本反思；ReAct Lite 直接要求工具调用。
+                    if self._should_run_react_reflection():
                         self._run_react_reflection(
                             task_id=task_id,
                             task_input=user_input,
@@ -310,8 +373,21 @@ class AgentExecutor:
                         )
                         messages = self._build_messages_from_action_history()
 
+                    full_system_prompt, messages = self._fit_execution_context_to_budget(
+                        task_id=task_id,
+                        user_input=user_input,
+                        system_prompt=full_system_prompt,
+                        messages=messages,
+                        turn=turn,
+                    )
+
                     # 调用LLM（使用标准 messages 格式）
-                    llm_response = self._execute_llm_call(full_system_prompt, messages, task_id=task_id)
+                    llm_response = self._execute_llm_call(
+                        full_system_prompt,
+                        messages,
+                        task_id=task_id,
+                        tool_choice=self._execution_tool_choice_override(),
+                    )
                     
                     if llm_response.status != "success":
                         error_result = {
@@ -325,7 +401,7 @@ class AgentExecutor:
                         return error_result
 
                     if not llm_response.tool_calls:
-                        if self.thinking_enabled:
+                        if self._tool_call_required_for_response():
                             if max_tool_try < self.no_tool_retry_limit:
                                 max_tool_try += 1
                                 self.event_emitter.dispatch(CliDisplayEvent(
@@ -342,17 +418,20 @@ class AgentExecutor:
                                     },
                                     "assistant_content": llm_response.output or "",
                                     "reasoning_content": llm_response.reasoning_content or "",
+                                    "thinking_blocks": llm_response.thinking_blocks or [],
                                 })
                                 self.llm_turn_counter += 1
                                 self._save_state(task_id, user_input, turn)
                                 continue
 
-                            thinking_result = self._trigger_thinking(
-                                task_id,
-                                user_input,
-                                is_initial=False,
-                                is_forced=True
-                            )
+                            thinking_result = ""
+                            if self.thinking_enabled:
+                                thinking_result = self._trigger_thinking(
+                                    task_id,
+                                    user_input,
+                                    is_initial=False,
+                                    is_forced=True
+                                )
                             error_output = thinking_result or "多次未调用工具"
                             error_result = {
                                 "status": "error",
@@ -362,7 +441,8 @@ class AgentExecutor:
                             error_result = self._with_model_outputs(error_result)
                             self.hierarchy_manager.pop_agent(self.agent_id, str(error_result))
                             self.event_emitter.dispatch(AgentEndEvent(status='error', result=error_result))
-                            self.event_emitter.dispatch(ThinkingFailEvent(agent_name=self.agent_name, error_message=f"[{self.agent_name}] 强制thinking: {thinking_result if thinking_result else '分析失败'}"))
+                            if self.thinking_enabled:
+                                self.event_emitter.dispatch(ThinkingFailEvent(agent_name=self.agent_name, error_message=f"[{self.agent_name}] 强制thinking: {thinking_result if thinking_result else '分析失败'}"))
                             return error_result
 
                         text_response = (llm_response.output or "").strip()
@@ -372,6 +452,7 @@ class AgentExecutor:
                                 text=text_response,
                                 llm_turn=self.llm_turn_counter,
                                 reasoning_content=llm_response.reasoning_content or "",
+                                thinking_blocks=llm_response.thinking_blocks or [],
                             )
                             self.llm_turn_counter += 1
                             self._save_state(task_id, user_input, turn)
@@ -392,6 +473,7 @@ class AgentExecutor:
                     # 提取本轮 LLM 输出的文本内容和推理内容（所有 tool_call 共享）
                     current_assistant_content = llm_response.output or ""
                     current_reasoning_content = llm_response.reasoning_content or ""
+                    current_thinking_blocks = llm_response.thinking_blocks or []
                     current_llm_turn = self.llm_turn_counter
 
                     # 执行所有工具调用
@@ -400,6 +482,7 @@ class AgentExecutor:
                             tool_call, task_id, user_input, turn,
                             assistant_content=current_assistant_content,
                             reasoning_content=current_reasoning_content,
+                            thinking_blocks=current_thinking_blocks,
                             llm_turn=current_llm_turn
                         )
                         if final_output_result:
@@ -446,8 +529,8 @@ class AgentExecutor:
         finally:
             unregister_running_task(task_id)
 
-    def _load_state_from_storage(self, task_id: str) -> int:
-        """从存储加载状态, 返回起始轮次."""
+    def _load_state_from_storage(self, task_id: str) -> Any:
+        """从存储加载状态，返回起始轮次；若任务已完成则返回 final_result。"""
         loaded_data = self.conversation_storage.load_actions(task_id, self.agent_id)
         start_turn = 0
         
@@ -496,14 +579,15 @@ class AgentExecutor:
         Returns:
             OpenAI 格式的 messages 列表
         """
-        # 初始 user 消息
-        messages = [{
+        next_step_prompt = {
             "role": "user", 
             "content": "请根据当前任务和上下文，执行下一步操作。请调用合适的工具来完成任务。不要重复已执行的动作！"
-        }]
+        }
         
         if not self.action_history:
-            return messages
+            return [next_step_prompt]
+
+        messages = []
 
         use_kimi_history_tool_ids = self._should_normalize_kimi_history_tool_ids()
         history_tool_call_index = 0
@@ -528,6 +612,8 @@ class AgentExecutor:
                     assistant_msg = {"role": "assistant", "content": assistant_content}
                     if action.get("reasoning_content"):
                         assistant_msg["reasoning_content"] = action["reasoning_content"]
+                    if action.get("thinking_blocks"):
+                        assistant_msg["thinking_blocks"] = action["thinking_blocks"]
                     messages.append(assistant_msg)
                 continue
             
@@ -535,7 +621,12 @@ class AgentExecutor:
             if tool_name == "_no_tool_call":
                 assistant_content = action.get("assistant_content", "")
                 if assistant_content:
-                    messages.append({"role": "assistant", "content": assistant_content})
+                    assistant_msg = {"role": "assistant", "content": assistant_content}
+                    if action.get("reasoning_content"):
+                        assistant_msg["reasoning_content"] = action["reasoning_content"]
+                    if action.get("thinking_blocks"):
+                        assistant_msg["thinking_blocks"] = action["thinking_blocks"]
+                    messages.append(assistant_msg)
                 messages.append({
                     "role": "user",
                     "content": action["result"].get("output", "请调用工具")
@@ -549,6 +640,7 @@ class AgentExecutor:
                 turns[turn] = {
                     "assistant_content": action.get("assistant_content", ""),
                     "reasoning_content": action.get("reasoning_content", ""),
+                    "thinking_blocks": action.get("thinking_blocks", []),
                     "tool_calls": [],
                     "tool_results": [],
                     "images": []
@@ -610,16 +702,17 @@ class AgentExecutor:
         for turn_num in sorted(turns.keys()):
             turn_data = turns[turn_num]
             
-            # assistant 消息（包含 content、tool_calls、reasoning_content）
+            # assistant 消息优先保留 LiteLLM 标准化 reasoning_content。
+            # 若 provider 不兼容，LLMClient 会在本次运行中自动降级为 content 合并模式。
             assistant_msg = {
                 "role": "assistant",
                 "content": turn_data["assistant_content"] or None,
                 "tool_calls": turn_data["tool_calls"]
             }
-            # 如果有 reasoning_content，添加到 assistant 消息中
-            # LiteLLM 会将其传递给支持 thinking 的模型（如 Anthropic Claude）
             if turn_data.get("reasoning_content"):
                 assistant_msg["reasoning_content"] = turn_data["reasoning_content"]
+            if turn_data.get("thinking_blocks"):
+                assistant_msg["thinking_blocks"] = turn_data["thinking_blocks"]
             messages.append(assistant_msg)
             
             # tool result 消息（每个 tool_call 对应一个）
@@ -636,6 +729,8 @@ class AgentExecutor:
                     "text": f"上面是 image_read 获取的 {len(img_group['base64_list'])} 张图片。Agent 的问题是: {img_group['query']}"
                 })
                 messages.append({"role": "user", "content": content_parts})
+
+        messages.append(next_step_prompt)
         
         return messages
 
@@ -659,6 +754,8 @@ class AgentExecutor:
         tool_choice: Optional[str] = None,
         debug_label: str = "execution",
         stream_tokens: bool = True,
+        stream_group: str = "llm",
+        content_as_reasoning: bool = False,
     ):
         """
         执行LLM调用并分发事件
@@ -691,13 +788,15 @@ class AgentExecutor:
             tool_list=effective_tool_list,
             tool_choice=execution_tool_choice,
             max_tokens=max_tokens_override,
-            emit_tokens="token",  # 主 Agent 调用：流式发送 content token
+            emit_tokens="thinking" if stream_group == "thinking" else "token",
             debug_task_id=task_id,
             debug_label=debug_label,
             stream_callback=self._build_llm_stream_callback(
-                stream_group="llm",
+                stream_group=stream_group,
                 agent_name=self.agent_name,
                 model=self.execution_model,
+                debug_label=debug_label,
+                content_as_reasoning=content_as_reasoning,
             ) if self.stream_llm_tokens and stream_tokens else None,
         )
 
@@ -708,6 +807,7 @@ class AgentExecutor:
             "model": llm_response.model or self.execution_model,
             "content": llm_response.output or "",
             "reasoning_content": llm_response.reasoning_content or "",
+            "thinking_blocks": llm_response.thinking_blocks or [],
             "finish_reason": llm_response.finish_reason or "",
             "tool_calls": [
                 {
@@ -737,6 +837,7 @@ class AgentExecutor:
         text: str,
         llm_turn: int,
         reasoning_content: str = "",
+        thinking_blocks: List[Dict] = None,
     ) -> None:
         action_record = {
             "_turn": llm_turn,
@@ -748,6 +849,7 @@ class AgentExecutor:
             },
             "assistant_content": text,
             "reasoning_content": reasoning_content,
+            "thinking_blocks": thinking_blocks or [],
             "_has_image": False,
             "_image_base64": None,
         }
@@ -756,13 +858,49 @@ class AgentExecutor:
         self.action_history_fact.append(fact_record)
         self.action_history.append(action_record)
 
+    def _format_react_tools_info(self) -> str:
+        """Format visible tools as prompt text for planning-only ReAct reflection."""
+        available_tools = list(getattr(self, "available_tools", []) or [])
+        if not available_tools:
+            return "可用工具：(无)"
+
+        tools_config = getattr(getattr(self, "config_loader", None), "all_tools", None) or {}
+        if not tools_config:
+            return f"可用工具：{', '.join(available_tools)}"
+
+        tools_details = ["<可用工具详情>"]
+        for tool_name in available_tools:
+            tool_cfg = tools_config.get(tool_name)
+            if not isinstance(tool_cfg, dict):
+                tools_details.append(f"\n【{tool_name}】 (无详细信息)")
+                continue
+
+            description = tool_cfg.get("description", "无描述")
+            params = tool_cfg.get("parameters", {}) or {}
+            tools_details.append(f"\n【{tool_name}】")
+            tools_details.append(f"  描述: {description}")
+
+            if isinstance(params, dict) and "properties" in params:
+                required_params = params.get("required", []) or []
+                tools_details.append("  参数:")
+                for param_name, param_info in (params.get("properties") or {}).items():
+                    param_info = param_info if isinstance(param_info, dict) else {}
+                    param_desc = param_info.get("description", "")
+                    param_type = param_info.get("type", "")
+                    required = "必需" if param_name in required_params else "可选"
+                    tools_details.append(f"    - {param_name} ({param_type}, {required}): {param_desc}")
+
+        tools_details.append("\n</可用工具详情>")
+        return "\n".join(tools_details)
+
     def _build_react_reflection_prompt(self) -> str:
-        tool_names = ", ".join(self.available_tools) if self.available_tools else "(无可用工具)"
+        tools_info = self._format_react_tools_info()
         return (
             "你当前处于 ReAct 反思阶段。请先简短输出当前进展、下一步最应该采取的动作、"
-            "以及是否需要使用 task_history_search 检索历史任务。"
-            "只输出纯文本思考，不要调用工具，不要输出 JSON/XML/markdown 标记。"
-            f"可用工具如下：{tool_names}"
+            "以及是否需要使用 task_history_search 检索历史任务。\n"
+            "本阶段只能做规划，不能调用工具；但你必须参考下面的工具说明，确保下一步动作与工具能力、参数要求匹配。\n"
+            "只输出纯文本思考，不要调用工具，不要输出 JSON/XML/markdown 标记。\n"
+            f"{tools_info}"
         )
 
     def _run_react_reflection(
@@ -786,7 +924,9 @@ class AgentExecutor:
             tool_list=[],
             tool_choice="none",
             debug_label="react_reflection",
-            stream_tokens=False,
+            stream_tokens=True,
+            stream_group="llm",
+            content_as_reasoning=True,
         )
         if llm_response.status != "success":
             raise Exception(llm_response.error_information or "ReAct reflection failed")
@@ -798,6 +938,7 @@ class AgentExecutor:
             text=reflection_text,
             llm_turn=self.llm_turn_counter,
             reasoning_content=llm_response.reasoning_content or "",
+            thinking_blocks=llm_response.thinking_blocks or [],
         )
         self.llm_turn_counter += 1
         self._save_state(task_id, task_input, turn)
@@ -808,6 +949,7 @@ class AgentExecutor:
 
     def _execute_tool_call(self, tool_call: Dict, task_id: str, user_input: str, turn: int,
                           assistant_content: str = "", reasoning_content: str = "",
+                          thinking_blocks: List[Dict] = None,
                           llm_turn: int = 0) -> Dict:
         """
         执行单个工具调用并分发事件
@@ -874,6 +1016,7 @@ class AgentExecutor:
             "result": tool_result,
             "assistant_content": assistant_content,
             "reasoning_content": reasoning_content,  # 模型的推理/思考内容
+            "thinking_blocks": thinking_blocks or [],
             "_has_image": False,
             "_image_base64": None
         }
@@ -1024,19 +1167,6 @@ class AgentExecutor:
 
         # 重新读取运行时参数
         runtime = get_runtime_settings()
-        self.thinking_enabled = bool(self.agent_config.get("thinking_enabled", runtime.get("thinking_enabled", True)))
-        self.thinking_steps = int(
-            self.agent_config.get("thinking_steps")
-            or runtime.get("thinking_steps", runtime.get("thinking_interval", runtime.get("action_window_steps", 30)))
-        )
-        self.action_window_steps = self.thinking_steps
-        self.thinking_interval = self.thinking_steps
-        self.no_tool_retry_limit = int(
-            self.agent_config.get("no_tool_retry_limit")
-            or runtime.get("no_tool_retry_limit", 7)
-        )
-        self.fresh_enabled = runtime.get("fresh_enabled", False)
-        self.fresh_interval_sec = runtime.get("fresh_interval_sec", 0)
         self.last_fresh_at = time.time()
 
         # 重新加载 config_loader / agent_config / llm_client / context_builder / tool_executor
@@ -1044,8 +1174,9 @@ class AgentExecutor:
         self.config_loader = loader_cls(self.config_loader.agent_system_name)
         self.agent_config = self.config_loader.get_tool_config(self.agent_name)
         self.available_tools = list(self.agent_config.get("available_tools", []))
-        if "task_history_search" not in self.available_tools and "task_history_search" in self.config_loader.all_tools:
-            self.available_tools.append("task_history_search")
+        for framework_tool in ("task_history_search", "load_skill", "offload_skill"):
+            if framework_tool not in self.available_tools and framework_tool in self.config_loader.all_tools:
+                self.available_tools.append(framework_tool)
         self._inject_mcp_tools()
 
         self.llm_client = SimpleLLMClient()
@@ -1061,6 +1192,7 @@ class AgentExecutor:
             llm_client=self.llm_client,
             max_context_window=self.llm_client.max_context_window
         )
+        self._apply_runtime_settings(runtime)
         self.tool_executor = ToolExecutor(
             self.config_loader,
             self.hierarchy_manager,
@@ -1271,6 +1403,8 @@ class AgentExecutor:
         stream_group: str,
         agent_name: str,
         model: str,
+        debug_label: str = "execution",
+        content_as_reasoning: bool = False,
         is_initial: bool = False,
         is_forced: bool = False,
     ):
@@ -1285,6 +1419,7 @@ class AgentExecutor:
                     "model": str((chunk or {}).get("model") or model or ""),
                     "attempt": attempt,
                     "reason": str((chunk or {}).get("reason") or "retry"),
+                    "debug_label": str((chunk or {}).get("debug_label") or debug_label or ""),
                 }
                 self._emit_sdk_stream_event(event_type, payload)
                 return
@@ -1301,15 +1436,18 @@ class AgentExecutor:
                     "attempt": attempt,
                     "is_initial": bool(is_initial),
                     "is_forced": bool(is_forced),
+                    "debug_label": str((chunk or {}).get("debug_label") or debug_label or ""),
                 }
             else:
-                event_type = "run.llm.reasoning_token" if kind == "reasoning" else "run.llm.token"
+                effective_kind = "reasoning" if content_as_reasoning and kind == "content" else kind
+                event_type = "run.llm.reasoning_token" if effective_kind == "reasoning" else "run.llm.token"
                 payload = {
                     "agent_name": agent_name,
                     "model": current_model,
                     "text": text,
-                    "token_kind": kind,
+                    "token_kind": effective_kind,
                     "attempt": attempt,
+                    "debug_label": str((chunk or {}).get("debug_label") or debug_label or ""),
                 }
             self._emit_sdk_stream_event(event_type, payload)
 
@@ -1344,10 +1482,215 @@ class AgentExecutor:
         payload["last_thinking_model"] = str(last_thinking.get("model") or "")
         return payload
 
-    def _compress_action_history_if_needed(self):
+    def _fit_execution_context_to_budget(
+        self,
+        *,
+        task_id: str,
+        user_input: str,
+        system_prompt: str,
+        messages: List[Dict],
+        turn: int,
+    ) -> tuple[str, List[Dict]]:
+        """
+        Final preflight for the provider-facing execution request.
+
+        The normal compressor only sees action_history. The real request also
+        includes system context, sanitized messages, tool schemas, output
+        reservation, and safety margin. If that final request is over budget,
+        compress action_history with a tighter target and rebuild the context.
+        """
+        effective_tool_list = list(self.available_tools)
+        max_tokens_override = self.agent_config.get("max_tokens")
+
+        for attempt in range(4):
+            budget, outbound_message_count, tool_count = self.llm_client.build_chat_request_budget(
+                system_prompt=system_prompt,
+                history=messages,
+                tool_list=effective_tool_list,
+                max_tokens=max_tokens_override,
+                force_exact=False,
+            )
+            if attempt > 0 or budget.total_with_reserved_tokens >= int(self.llm_client.max_context_window * 0.7):
+                budget, outbound_message_count, tool_count = self.llm_client.build_chat_request_budget(
+                    system_prompt=system_prompt,
+                    history=messages,
+                    tool_list=effective_tool_list,
+                    max_tokens=max_tokens_override,
+                    force_exact=True,
+                )
+            if not budget.over_budget:
+                if attempt > 0:
+                    self.event_emitter.dispatch(CliDisplayEvent(
+                        message=(
+                            "✅ 上下文已压缩到请求预算内: "
+                            f"used_input={budget.used_input_tokens}, "
+                            f"available_input={budget.available_input_tokens}, "
+                            f"messages={outbound_message_count}, tools={tool_count}"
+                        ),
+                        style='success'
+                    ))
+                return system_prompt, messages
+
+            self.event_emitter.dispatch(CliDisplayEvent(
+                message=(
+                    "⚠️ 最终LLM请求超出上下文预算，准备压缩历史动作: "
+                    f"used_input={budget.used_input_tokens}, "
+                    f"available_input={budget.available_input_tokens}, "
+                    f"system={budget.system_prompt_tokens}, "
+                    f"messages={budget.message_tokens}, tools={budget.tool_tokens}"
+                ),
+                style='warning'
+            ))
+
+            if not self.action_history:
+                return system_prompt, messages
+
+            non_action_budget = (
+                budget.system_prompt_tokens
+                + budget.tool_tokens
+                + budget.image_surcharge_tokens
+                + 2048
+            )
+            target_action_tokens = int((budget.available_input_tokens - non_action_budget) * 0.85)
+            # Tighten on repeated attempts; message JSON/tool-call structure can be larger
+            # than the XML-ish estimate used by ActionCompressor.
+            target_action_tokens = int(target_action_tokens * (0.75 ** attempt))
+            target_action_tokens = max(512, target_action_tokens)
+
+            changed = self._compress_action_history_if_needed(
+                max_action_tokens=target_action_tokens,
+                force=True,
+                reason=f"preflight_over_budget_attempt_{attempt + 1}",
+            )
+            if not changed:
+                changed = self._hard_trim_action_history_for_budget(target_action_tokens)
+                if changed:
+                    self.event_emitter.dispatch(CliDisplayEvent(
+                        message=f"⚠️ LLM压缩未缩小上下文，已启用保底截断到约 {target_action_tokens} tokens",
+                        style='warning'
+                    ))
+
+            if not changed:
+                return system_prompt, messages
+
+            system_prompt = self.context_builder.build_context(
+                task_id,
+                self.agent_id,
+                self.agent_name,
+                user_input,
+                action_history=self.action_history,
+                include_action_history=False
+            )
+            messages = self._build_messages_from_action_history()
+            try:
+                self._save_state(task_id, user_input, turn)
+            except Exception:
+                pass
+
+        return system_prompt, messages
+
+    def _truncate_text_for_context(self, text: Any, max_tokens: int) -> str:
+        value = str(text or "")
+        if not value:
+            return value
+        try:
+            if not hasattr(self, 'action_compressor'):
+                from services.action_compressor import ActionCompressor
+                self.action_compressor = ActionCompressor(
+                    self.llm_client,
+                    preferred_model=self._get_agent_model_preference("compressor"),
+                    max_tokens=self.agent_config.get("max_tokens"),
+                    debug_task_id=self.current_task_id,
+                )
+            return self.action_compressor._fallback_compress(value, max(64, int(max_tokens)))
+        except Exception:
+            chars = max(256, int(max_tokens) * 3)
+            half = max(128, chars // 2)
+            return f"{value[:half]}\n\n[中间内容因上下文超限被省略]\n\n{value[-half:]}"
+
+    def _hard_trim_action_for_context(self, action: Dict[str, Any], max_tokens: int) -> Dict[str, Any]:
+        trimmed = copy.deepcopy(action or {})
+        per_field_tokens = max(128, int(max_tokens) // 4)
+
+        for field_name in ("assistant_content", "reasoning_content"):
+            if trimmed.get(field_name):
+                trimmed[field_name] = self._truncate_text_for_context(trimmed.get(field_name), per_field_tokens)
+
+        arguments = trimmed.get("arguments")
+        if isinstance(arguments, dict):
+            trimmed_args = {}
+            for key, value in arguments.items():
+                value_text = str(value)
+                if len(value_text) > per_field_tokens * 4:
+                    trimmed_args[key] = self._truncate_text_for_context(value_text, per_field_tokens)
+                else:
+                    trimmed_args[key] = value
+            trimmed["arguments"] = trimmed_args
+
+        result = trimmed.get("result")
+        if isinstance(result, dict) and result.get("output"):
+            result["output"] = self._truncate_text_for_context(result.get("output"), max(128, int(max_tokens) // 2))
+            result["_hard_trimmed"] = True
+
+        if trimmed.get("_image_base64"):
+            trimmed["_image_base64"] = None
+            trimmed["_has_image"] = False
+            result = trimmed.setdefault("result", {})
+            if isinstance(result, dict):
+                output = str(result.get("output") or "")
+                result["output"] = (output + "\n\n[图片base64已因上下文预算被省略]").strip()
+
+        return trimmed
+
+    def _hard_trim_action_history_for_budget(self, max_action_tokens: int) -> bool:
+        if not self.action_history:
+            return False
+
+        original = copy.deepcopy(self.action_history)
+        if len(self.action_history) == 1:
+            self.action_history = [
+                self._hard_trim_action_for_context(
+                    self.action_history[0],
+                    max(256, int(max_action_tokens)),
+                )
+            ]
+        else:
+            older_actions = self.action_history[:-1]
+            latest_action = self.action_history[-1]
+            tool_names = [str(action.get("tool_name") or "") for action in older_actions if action.get("tool_name")]
+            summary = (
+                "Older actions were omitted by deterministic context-budget fallback. "
+                f"count={len(older_actions)}; tools={', '.join(tool_names[-20:])}"
+            )
+            self.action_history = [
+                {
+                    "tool_name": "_historical_summary",
+                    "arguments": {},
+                    "result": {
+                        "status": "success",
+                        "output": summary,
+                        "_is_summary": True,
+                        "_hard_trimmed": True,
+                    },
+                },
+                self._hard_trim_action_for_context(
+                    latest_action,
+                    max(256, int(max_action_tokens) // 2),
+                ),
+            ]
+
+        return self.action_history != original
+
+    def _compress_action_history_if_needed(
+        self,
+        *,
+        max_action_tokens: Optional[int] = None,
+        force: bool = False,
+        reason: str = "auto",
+    ) -> bool:
         """检查并压缩历史动作（如果超过上下文窗口限制）"""
         if not self.action_history:
-            return
+            return False
         
         try:
             from services.action_compressor import ActionCompressor
@@ -1362,29 +1705,35 @@ class AgentExecutor:
                 )
             else:
                 self.action_compressor.debug_task_id = self.current_task_id
-            
+	            
             # 使用新的压缩策略（传入 thinking 和 task_input）
             original_len = len(self.action_history)
+            original_snapshot = copy.deepcopy(self.action_history)
             compressed = self.action_compressor.compress_if_needed(
                 self.action_history,
                 self.llm_client.max_context_window,
                 thinking=self.latest_thinking,
-                task_input=self.current_task_input
+                task_input=self.current_task_input,
+                max_action_tokens=max_action_tokens,
+                force=force,
             )
 
             # 如果发生了压缩，替换
-            if len(compressed) < original_len:
+            changed = compressed != original_snapshot
+            if changed:
                 self.event_emitter.dispatch(CliDisplayEvent(
-                    message=f"✅ 历史动作已压缩: {original_len}条 → {len(compressed)}条", 
+                    message=f"✅ 历史动作已压缩({reason}): {original_len}条 → {len(compressed)}条", 
                     style='success'
                 ))
                 self.action_history = compressed
+            return changed
         except Exception as e:
             self.event_emitter.dispatch(CliDisplayEvent(
                 message=f"⚠️ 压缩失败: {e}", 
                 style='warning'
             ))
             traceback.print_exc()
+            return False
     
     def _recover_pending_tools(self, task_id: str):
         """恢复pending状态的工具调用"""

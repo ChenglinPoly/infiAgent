@@ -14,7 +14,8 @@ from pathlib import Path
 
 # ===================== 配置 =====================
 IMAGE_PATH = Path(__file__).parent / "截屏2026-02-03 08.44.28.png"
-API_KEY = "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"
+import os
+API_KEY = os.environ.get("OPENROUTER_API_KEY", "")  # 手动运行本脚本前先设置环境变量
 BASE_URL = "https://openrouter.ai/api/v1"
 MODEL = "openai/google/gemini-3-flash-preview"
 MAX_DIM = 1568
